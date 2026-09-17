@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "playtest": "vite build --ssr tools/playtest.ts --outDir node_modules/.gridburg --logLevel error && node node_modules/.gridburg/playtest.js",
+    "settle": "vite build --ssr tools/settle.ts --outDir node_modules/.gridburg --logLevel error && node node_modules/.gridburg/settle.js",
+    "seeds": "vite build --ssr tools/seeds.ts --outDir node_modules/.gridburg --logLevel error && node node_modules/.gridburg/seeds.js",
+    "calibrate": "vite build --ssr tools/calibrate.ts --outDir node_modules/.gridburg --logLevel error && node node_modules/.gridburg/calibrate.js"
   },
   "devDependencies": {
     "typescript": "~6.0.2",

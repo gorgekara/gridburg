@@ -23,6 +23,8 @@ export class Game {
   tax = 10;
   speed = 1;
   simTime = 0;
+  /** A scenario city: buildings are fixed, the budget never earns, and nothing may be demolished. */
+  frozen = false;
   /** Segment ids in the order last sent to the worker; congestion frames are indexed the same way. */
   segOrder: number[] = [];
   segCong: Uint8Array = new Uint8Array(0);
@@ -85,7 +87,7 @@ export class Game {
 
   /** Change a tile's kind. Returns false if unchanged. */
   setKind(i: number, k: number, cost: number): boolean {
-    if (this.kind[i] === k) return false;
+    if (this.frozen || this.kind[i] === k) return false;
     this.kind[i] = k;
     this.level[i] = isService(k) ? 1 : 0;
     this.pendingSpent += cost;
@@ -125,7 +127,8 @@ export class Game {
     this.onEdit?.();
   }
 
-  load(d: SaveData): void {
+  load(d: SaveData, frozen = false): void {
+    this.frozen = frozen;
     this.seed = d.seed;
     this.terrain = generateTerrain(d.seed);
     this.net = Network.fromPlain(d.net);
@@ -143,7 +146,7 @@ export class Game {
     this.carsPrev = new Float32Array(MAX_CARS * 4);
     this.carsNext = new Float32Array(MAX_CARS * 4);
     const payload = this.payload();
-    this.send({ type: 'load', seed: d.seed, level: this.level.slice(), money: d.money, tick: d.tick, tax: d.tax, ...payload });
+    this.send({ type: 'load', seed: d.seed, level: this.level.slice(), money: d.money, tick: d.tick, tax: d.tax, frozen, ...payload });
     this.onTerrain?.();
     this.onEdit?.();
   }
@@ -165,8 +168,9 @@ export class Game {
     this.send({ type: 'tax', value: v });
   }
 
-  warm(ticks: number): void {
-    this.send({ type: 'warm', ticks });
+  /** Fast-forward: growth ticks, or whole seconds of traffic when `traffic` is set. */
+  warm(ticks: number, traffic = false): void {
+    this.send({ type: 'warm', ticks, traffic });
   }
 }
 

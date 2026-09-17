@@ -43,6 +43,8 @@ const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
 export class Input {
   tool: Tool = 'road';
   mode: RoadMode = 'straight';
+  /** In a scenario, only the level's own tools work. Null means everything. */
+  allowed: Set<Tool> | null = null;
   onToolChange: ((t: Tool) => void) | null = null;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
@@ -116,6 +118,10 @@ export class Input {
   }
 
   setTool(t: Tool): void {
+    if (t !== 'none' && this.allowed && !this.allowed.has(t)) {
+      this.onToast?.('That tool is not part of this puzzle');
+      return;
+    }
     this.cancel();
     this.tool = t;
     this.rectMat.color.setHex(TOOL_COLOR[t]);

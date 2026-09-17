@@ -10,6 +10,7 @@ export interface HudActions {
   setTax(v: number): void;
   newCity(): void;
   demoCity(): void;
+  puzzles(): void;
   share(): void;
   togglePollution(): boolean;
 }
@@ -118,7 +119,11 @@ export class Hud {
   private hint = el('div', 'hint');
   private alerts = el('div', 'alerts');
   private costEl = el('div', 'cost');
+  private status = el('div', 'status');
+  private moneyChip = el('button');
   private help: HTMLElement;
+  /** In a scenario only the level's own tools are offered. */
+  private allowed: Set<Tool> | null = null;
 
   constructor(root: HTMLElement, actions: HudActions) {
     // ---- top-left: headline numbers as icon chips ------------------------------------------
@@ -174,6 +179,7 @@ export class Hud {
       return b;
     };
     menu.append(
+      menuItem('puzzle', 'Traffic puzzles', actions.puzzles),
       menuItem('plus', 'New city', () => { if (confirm('Start a new city on a new map? Your current city will be lost.')) actions.newCity(); }),
       menuItem('city', 'Load demo city', actions.demoCity),
       menuItem('link', 'Copy share link', actions.share),
@@ -228,6 +234,8 @@ export class Hud {
     }
 
     this.polBtn = polBtn;
+    this.status = status;
+    this.moneyChip = moneyChip;
     root.append(chips, budget, right, menu, this.alerts, status, speed);
 
     // Build menu: a panel of tool cards above a row of category buttons.
@@ -311,12 +319,38 @@ export class Hud {
           small. Pumps and outlets sit on the river; keep the pump <b>upstream</b> (arrows show the flow)</li>
           <li><b>Pollution</b> from industry and coal spreads through the ground and drives residents away. Press <b>P</b> to see it</li>
         </ul>
+        <p><b>Traffic puzzles</b> — five ready-made cities with one thing wrong with each. The buildings are
+        fixed and the budget never earns, so the only thing to change is the traffic. Open them from the menu.</p>
         <p><b>Left drag</b> build · <b>Right drag</b> rotate · <b>Q / E</b> rotate · <b>WASD</b> pan · <b>Wheel</b> zoom ·
         <b>Space</b> pause · <b>Esc</b> cancel</p>
         <p class="dim">Your city saves in this browser. Share copies a link containing the whole city. Press H or click to close.</p>
       </div>`;
     h.addEventListener('click', () => h.classList.remove('open'));
     return h;
+  }
+
+  /**
+   * Offer only these tools, or everything when given null. Categories left with nothing in them
+   * disappear, so a level that is only about roads shows only roads.
+   */
+  restrict(tools: Tool[] | null): void {
+    this.allowed = tools ? new Set(tools) : null;
+    for (const [id, b] of this.toolBtns) b.classList.toggle('gone', !!this.allowed && !this.allowed.has(id));
+    for (const c of CATEGORIES) {
+      const any = c.tools.some((t) => !this.allowed || this.allowed.has(t.id));
+      this.catBtns.get(c.id)?.classList.toggle('gone', !any);
+    }
+    if (this.allowed && !this.allowed.has(this.tool)) this.setTool('none');
+  }
+
+  /** Scenario cities have fixed buildings and no income, so hide what does not apply. */
+  setPuzzleMode(on: boolean): void {
+    this.status.classList.toggle('gone', on);
+    this.income.classList.toggle('gone', on);
+    // The goal panel says what this city needs, so the sandbox advice would only argue with it.
+    this.alerts.classList.toggle('gone', on);
+    this.moneyChip.classList.toggle('flat', on);
+    this.moneyChip.disabled = on; // there are no taxes to set in a scenario
   }
 
   setTool(t: Tool): void {

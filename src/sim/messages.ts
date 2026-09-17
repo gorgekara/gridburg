@@ -18,6 +18,10 @@ export interface Stats {
   dirtyWater: boolean;
   resPollution: number; // average ground pollution under homes
   income: number; // net per second
+  arrivals: number; // trips completed since the city was loaded
+  flow: number; // arrivals per minute, over the last 30 seconds
+  stuck: number; // cars that have sat still for over twenty seconds
+  orphans: number; // standing buildings with no road link to the highway
 }
 
 export interface EditPayload {
@@ -30,11 +34,13 @@ export interface EditPayload {
 }
 
 export type MainToWorker =
-  | ({ type: 'load'; seed: number; level: Uint8Array; money: number; tick: number; tax: number } & EditPayload)
+  /** `frozen` holds buildings as they are and stops all income: a scenario's city and budget are fixed. */
+  | ({ type: 'load'; seed: number; level: Uint8Array; money: number; tick: number; tax: number; frozen: boolean } & EditPayload)
   | ({ type: 'edit'; spent: number } & EditPayload)
   | { type: 'speed'; value: number }
   | { type: 'tax'; value: number }
-  | { type: 'warm'; ticks: number };
+  /** Fast-forward: growth ticks only, or whole simulation seconds with traffic when `traffic` is set. */
+  | { type: 'warm'; ticks: number; traffic?: boolean };
 
 export type WorkerToMain =
   | { type: 'state'; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; stats: Stats }
@@ -44,5 +50,6 @@ export function emptyStats(money: number): Stats {
   return {
     money, pop: 0, jobs: 0, cars: 0, commute: 0, demand: [0, 0, 0], tick: 0, roadLength: 0, buildings: 0,
     noPath: 0, gaveUp: 0, power: [0, 0], water: [0, 0], sewage: [0, 0], dirtyWater: false, resPollution: 0, income: 0,
+    arrivals: 0, flow: 0, stuck: 0, orphans: 0,
   };
 }

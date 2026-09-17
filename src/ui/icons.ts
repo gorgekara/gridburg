@@ -35,6 +35,10 @@ const I: Record<string, string> = {
   tower: '<rect x="6" y="3" width="12" height="8" rx="2"/><path d="M8 11 6 21M16 11l2 10M12 11v10M7 16h10"/>',
   pump: '<path d="M12 21s5-5 5-9a5 5 0 0 0-10 0c0 4 5 9 5 9z"/><path d="M12 14V8.5M9.7 10.8 12 8.5l2.3 2.3"/>',
   outlet: '<path d="M3 7h9a4 4 0 0 1 4 4v2"/><path d="M3 12h8"/><path d="M16 16s2.2 2.4 2.2 3.8a2.2 2.2 0 0 1-4.4 0c0-1.4 2.2-3.8 2.2-3.8z"/>',
+  puzzle: '<path d="M10 4.5A1.8 1.8 0 0 1 13.6 4.5H17a1 1 0 0 1 1 1v3a1.8 1.8 0 0 0 0 3.6V16a1 1 0 0 1-1 1h-3.4a1.8 1.8 0 0 0-3.6 0H6.5a1 1 0 0 1-1-1v-3.4a1.8 1.8 0 0 1 0-3.6V5.5a1 1 0 0 1 1-1z"/>',
+  star: '<path d="m12 3.6 2.6 5.3 5.8.85-4.2 4.1 1 5.75L12 16.9l-5.2 2.7 1-5.75-4.2-4.1 5.8-.85z"/>',
+  check: '<path d="m4.5 12.5 5 5 10-11"/>',
+  dot: '<circle cx="12" cy="12" r="4.5"/>',
 };
 
 export function icon(name: string, size = 22): SVGSVGElement {

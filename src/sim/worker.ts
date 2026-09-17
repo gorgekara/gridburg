@@ -42,6 +42,16 @@ let dirtyShare = 0;
 let resPollution = 0;
 let unservedRes = 0;
 let pendingMoveIns: number[] = [];
+/** Scenario cities are fixed: buildings neither grow nor decay, and the budget never earns. */
+let frozen = false;
+let arrivals = 0;
+let orphans = 0;
+let stuckCars = 0;
+// Arrivals in each of the last 30 simulation seconds, so flow reads as a per-minute rate.
+const arrivalRing = new Uint16Array(30);
+let ringSlot = 0;
+/** While fast-forwarding, hold back the per-second reports and send one at the end. */
+let quiet = false;
 
 // ---- road graph snapshot --------------------------------------------------------------------
 const J_PLAIN = 0, J_YIELD = 1, J_LIGHT = 2, J_RING = 3;
@@ -388,6 +398,7 @@ function spawn(dt: number): void {
 }
 
 function stepCars(dt: number): void {
+  stuckCars = 0;
   for (const lane of laneCars) lane.length = 0;
   laneTail.fill(1e9);
   for (let s = 0; s < MAX_CARS; s++) {
@@ -459,6 +470,8 @@ function stepCars(dt: number): void {
       if (final) {
         if (c.p >= leg.p1 - 1e-3) {
           commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
+          arrivals++;
+          arrivalRing[ringSlot]++;
           freeCar(slot);
           leaderP = Infinity;
         }
@@ -471,6 +484,7 @@ function stepCars(dt: number): void {
         if (c.p < laneTail[nextKey]) laneTail[nextKey] = c.p;
         leaderP = Infinity;
       }
+      if (c.stuck > 20) stuckCars++; // well past the longest red, so this is a queue going nowhere
       if (slots[slot] && c.stuck > 30) {
         gaveUp++;
         commuteAvg = commuteAvg * 0.97 + 90 * 0.03;
@@ -565,21 +579,25 @@ function census(): void {
     }
   }
 
-  const fP = needP > 0 ? Math.min(1, capP / needP) : 1;
-  const fW = needW > 0 ? Math.min(1, capW / needW) : 1;
-  const fS = needW > 0 ? Math.min(1, capS / needW) : 1;
-  power = [Math.round(needP), capP];
-  water = [Math.round(needW), capW];
-  sewage = [Math.round(needW), capS];
-  dirtyShare = capW > 0 ? dirtyCap / capW : 0;
+  // A scenario city is served by definition: its puzzle is the traffic, not the plumbing.
+  const fP = frozen || needP <= 0 ? 1 : Math.min(1, capP / needP);
+  const fW = frozen || needW <= 0 ? 1 : Math.min(1, capW / needW);
+  const fS = frozen || needW <= 0 ? 1 : Math.min(1, capS / needW);
+  power = [Math.round(needP), frozen ? Math.round(needP) : capP];
+  water = [Math.round(needW), frozen ? Math.round(needW) : capW];
+  sewage = [Math.round(needW), frozen ? Math.round(needW) : capS];
+  dirtyShare = frozen || capW <= 0 ? 0 : dirtyCap / capW;
 
   let resN = 0, resUnserved = 0, polSum = 0;
+  orphans = 0;
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
     if (!isZone(k)) continue;
     let f = 0;
-    if (!tileConnected(i)) f |= F_NO_ROAD;
-    else if (level[i] > 0) {
+    if (!tileConnected(i)) {
+      f |= F_NO_ROAD;
+      if (level[i] > 0) orphans++;
+    } else if (level[i] > 0) {
       const h = tileHash(i);
       if (h >= fP) f |= F_NO_POWER;
       if (tileHash(i + 7919) >= fW) f |= F_NO_WATER;
@@ -616,7 +634,7 @@ function census(): void {
   extRate = entrySeg >= 0 ? (rw + jw) * 0.005 : 0;
 
   const income = (pop * 0.012 + jobs * 0.015) * tax / 10;
-  netIncome = income - roadUpkeep - upkeep;
+  netIncome = frozen ? 0 : income - roadUpkeep - upkeep;
 }
 
 function spreadPollution(): void {
@@ -641,6 +659,7 @@ function spreadPollution(): void {
 }
 
 function grow(): void {
+  if (frozen) { tick++; return; }
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
     if (!isZone(k)) continue;
@@ -687,10 +706,12 @@ function stats(): Stats {
     money: Math.round(money), pop, jobs: comJobs + indJobs, cars: activeCars, commute: commuteAvg,
     demand: [demand[0], demand[1], demand[2]], tick, roadLength: Math.round(roadLength), buildings,
     noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome,
+    arrivals, flow: arrivalRing.reduce((a, b) => a + b, 0) * (60 / arrivalRing.length), stuck: stuckCars, orphans,
   };
 }
 
 function postState(): void {
+  if (quiet) return;
   const pol = new Uint8Array(N_TILES);
   for (let i = 0; i < N_TILES; i++) pol[i] = Math.min(255, (pollution[i] * 14) | 0);
   const riv = new Uint8Array(riverPollution.length);
@@ -707,12 +728,14 @@ function substep(): void {
   subCount++;
   if (subCount >= SIM_HZ) {
     subCount = 0;
-    spreadPollution();
+    if (!frozen) spreadPollution();
     census();
     grow();
     postState();
-    noPath = 0;
-    gaveUp = 0;
+    // A fast-forward keeps counting until its one report goes out, so nothing is lost in between.
+    if (!quiet) { noPath = 0; gaveUp = 0; }
+    ringSlot = (ringSlot + 1) % arrivalRing.length;
+    arrivalRing[ringSlot] = 0;
   }
 }
 
@@ -752,6 +775,11 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       commuteAvg = 0;
       spawnBudget = 0;
       extBudget = 0;
+      frozen = m.frozen;
+      arrivals = 0;
+      arrivalRing.fill(0);
+      ringSlot = 0;
+      stuckCars = 0;
       applyNetwork(m);
       census();
       postState();
@@ -774,6 +802,19 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       tax = m.value;
       break;
     case 'warm': {
+      if (m.traffic) {
+        // Whole simulated seconds, so a scenario opens with its traffic already flowing. Only the
+        // state at the end goes out: a scenario's goals must not be judged on the warm-up.
+        quiet = true;
+        for (let n = 0; n < m.ticks * SIM_HZ; n++) substep();
+        quiet = false;
+        census();
+        postState();
+        noPath = 0;
+        gaveUp = 0;
+        writeFrame();
+        break;
+      }
       commuteAvg = 0;
       for (let n = 0; n < m.ticks; n++) { spreadPollution(); census(); grow(); }
       pendingMoveIns = [];

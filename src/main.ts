@@ -1,5 +1,6 @@
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
+import { GRID } from './constants';
 import { createScene } from './render/scene';
 import { RoadLayer } from './render/roads';
 import { RiverLayer } from './render/river';
@@ -8,6 +9,10 @@ import { OverlayLayer } from './render/overlay';
 import { CarLayer } from './render/cars';
 import { Input } from './input';
 import { Hud } from './ui/hud';
+import { PuzzleUi } from './ui/puzzle';
+import { buildScenario, scenarioById } from './scenarios/defs';
+import type { Scenario } from './scenarios/defs';
+import { Attempt, loadProgress, recordStars } from './scenarios/runtime';
 import { demoCity } from './demo';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
 
@@ -25,30 +30,47 @@ scene.add(river.group, overlay.group, roads.group, buildings.group, cars.mesh);
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
 
+/** Point the camera at a spot given in the highway's frame, the way scenarios are laid out. */
+function lookAt(along: number, side: number, height = 30, back = 30): void {
+  const e = game.terrain.entry;
+  const half = GRID / 2;
+  const tx = e.x + e.dx * along - e.dz * side - half;
+  const tz = e.z + e.dz * along + e.dx * side - half;
+  controls.target.set(tx, 0, tz);
+  camera.position.set(tx + back * 0.45, height, tz + back);
+}
+
+/** The level being played, or null in the sandbox. */
+let attempt: Attempt | null = null;
+
 const hud = new Hud(uiRoot, {
   setTool: (t) => input.setTool(t),
   setMode: (m) => input.setMode(m),
   setSpeed: (v) => { game.setSpeed(v); hud.setSpeed(v); },
   setTax: (v) => game.setTax(v),
   newCity: () => {
+    leavePuzzles();
     clearLocal();
     history.replaceState(null, '', location.pathname);
     game.load(newCity(randomSeed()));
     hud.setTax(10);
+    lookAt(12, -0.5, 30, 30);
     hud.toast('New map. Build out from the highway.');
   },
   demoCity: () => {
+    leavePuzzles();
     history.replaceState(null, '', location.pathname);
     game.load(demoCity());
     game.warm(110);
     hud.setTax(10);
     hud.toast('Demo city loaded');
   },
+  puzzles: () => puzzles.openPicker(),
   share: async () => {
-    const url = shareUrl(game.snapshot());
+    const url = attempt ? `${location.origin}${location.pathname}#p=${attempt.def.id}` : shareUrl(game.snapshot());
     try {
       await navigator.clipboard.writeText(url);
-      hud.toast('Link copied to clipboard');
+      hud.toast(attempt ? 'Link to this puzzle copied' : 'Link copied to clipboard');
     } catch {
       prompt('Copy this link:', url);
     }
@@ -60,6 +82,45 @@ const hud = new Hud(uiRoot, {
     return overlay.strong;
   },
 });
+
+const puzzles = new PuzzleUi(uiRoot, {
+  start: (def) => startPuzzle(def),
+  exit: () => {
+    leavePuzzles();
+    const saved = loadLocal();
+    game.load(saved ?? newCity(randomSeed()));
+    hud.setTax(game.tax);
+    game.setTax(game.tax);
+    lookAt(12, -0.5, 30, 30);
+  },
+});
+
+function startPuzzle(def: Scenario): void {
+  attempt = new Attempt(def);
+  game.load(buildScenario(def), true);
+  // Run the traffic before handing over, so the player arrives to a jam rather than an empty city.
+  game.warm(def.warm, true);
+  hud.restrict(def.tools);
+  hud.setPuzzleMode(true);
+  input.allowed = new Set(def.tools);
+  input.setTool('none');
+  game.setSpeed(1);
+  hud.setSpeed(1);
+  history.replaceState(null, '', `${location.pathname}#p=${def.id}`);
+  lookAt(def.look.along, def.look.side, 32, 34);
+  puzzles.begin(attempt);
+}
+
+function leavePuzzles(): void {
+  if (!attempt) return;
+  attempt = null;
+  puzzles.end();
+  hud.restrict(null);
+  hud.setPuzzleMode(false);
+  input.allowed = null;
+  input.setTool('road');
+  history.replaceState(null, '', location.pathname);
+}
 
 input.onToolChange = (t) => hud.setTool(t);
 input.onModeChange = (m) => hud.setMode(m);
@@ -78,6 +139,14 @@ game.onState = () => {
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
   hud.update(game.stats);
+  if (!attempt) return;
+  const before = loadProgress()[attempt.def.id] ?? 0;
+  const justSolved = attempt.update(game.stats);
+  puzzles.render();
+  if (justSolved) {
+    recordStars(attempt.def.id, attempt.stars);
+    puzzles.showResult(attempt, before);
+  }
 };
 game.onFrame = () => {
   roads.tint(game.segOrder, game.segCong);
@@ -94,10 +163,21 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Boot: URL link > local save > a fresh random map with the help open.
-const fromHash = loadFromHash();
-const fromLocal = fromHash ? null : loadLocal();
-if (fromHash) {
+/** A puzzle link pasted into the address bar of an open tab changes the hash without reloading. */
+window.addEventListener('hashchange', () => {
+  const id = location.hash.match(/#p=([a-z0-9-]+)/)?.[1];
+  const def = id ? scenarioById(id) : null;
+  if (def && def !== attempt?.def) startPuzzle(def);
+});
+
+// Boot: a puzzle link > a city link > local save > a fresh random map with the help open.
+const puzzleId = location.hash.match(/#p=([a-z0-9-]+)/)?.[1];
+const fromPuzzle = puzzleId ? scenarioById(puzzleId) : null;
+const fromHash = fromPuzzle ? null : loadFromHash();
+const fromLocal = fromPuzzle || fromHash ? null : loadLocal();
+if (fromPuzzle) {
+  startPuzzle(fromPuzzle);
+} else if (fromHash) {
   game.load(fromHash);
   hud.toast('Loaded shared city');
 } else if (fromLocal) {
@@ -107,21 +187,18 @@ if (fromHash) {
   game.load(newCity(randomSeed()));
   hud.showHelp();
 }
-hud.setTax(game.tax);
-game.setTax(game.tax);
+if (!fromPuzzle) {
+  hud.setTax(game.tax);
+  game.setTax(game.tax);
+  // Start looking at the highway entry, since that is where every city begins.
+  // Aim a little nearer the camera than the road end so it sits above the build menu.
+  lookAt(12, -0.5, 30, 30);
+}
 game.setSpeed(1);
 
-// Start looking at the highway entry, since that is where every city begins.
-{
-  const e = game.terrain.entry;
-  // Aim a little nearer the camera than the road end so it sits above the build menu.
-  const tx = e.x + e.dx * 12 - 40 + 4, tz = e.z + e.dz * 12 - 40 + 9;
-  controls.target.set(tx, 0, tz);
-  camera.position.set(tx + 14, 30, tz + 30);
-}
-
-setInterval(() => saveLocal(game.snapshot()), 5000);
-window.addEventListener('beforeunload', () => saveLocal(game.snapshot()));
+// A scenario is a fresh start every time, so it never touches the sandbox save.
+setInterval(() => { if (!attempt) saveLocal(game.snapshot()); }, 5000);
+window.addEventListener('beforeunload', () => { if (!attempt) saveLocal(game.snapshot()); });
 
 const dbg = { game, camera, controls, input, renderer, frames: 0 };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
