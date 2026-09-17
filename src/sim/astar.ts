@@ -1,4 +1,4 @@
-import { GRID, N_TILES, T_ROAD, neighbor } from '../constants';
+import { GRID, N_TILES, SQRT2, T_AVENUE, connected, isRoad, neighbor8 } from '../constants';
 
 // Scratch buffers reused across calls; a generation stamp avoids clearing them.
 const gScore = new Float32Array(N_TILES);
@@ -48,9 +48,18 @@ function heapPop(): number {
   return top;
 }
 
-/** A* over 4-connected road tiles. Returns tile indices from start to goal, or null. */
-export function astar(kind: Uint8Array, start: number, goal: number): number[] | null {
-  if (kind[start] !== T_ROAD || kind[goal] !== T_ROAD) return null;
+/** Avenues are cheaper to traverse so cars prefer them. Keep the heuristic admissible with the same factor. */
+const AVENUE_FACTOR = 0.7;
+
+function octile(a: number, gx: number, gz: number): number {
+  const dx = Math.abs(gx - (a % GRID));
+  const dz = Math.abs(gz - ((a / GRID) | 0));
+  return AVENUE_FACTOR * (Math.max(dx, dz) + (SQRT2 - 1) * Math.min(dx, dz));
+}
+
+/** A* over the 8-connected road graph. Returns tile indices from start to goal, or null. */
+export function astar(kind: Uint8Array, link: Uint8Array, start: number, goal: number): number[] | null {
+  if (!isRoad(kind[start]) || !isRoad(kind[goal])) return null;
   if (start === goal) return [start];
   gen++;
   heapF.length = 0;
@@ -61,7 +70,7 @@ export function astar(kind: Uint8Array, start: number, goal: number): number[] |
   gScore[start] = 0;
   seen[start] = gen;
   cameFrom[start] = -1;
-  heapPush(Math.abs(gx - (start % GRID)) + Math.abs(gz - ((start / GRID) | 0)), start);
+  heapPush(octile(start, gx, gz), start);
 
   while (heapN.length > 0) {
     const cur = heapPop();
@@ -73,16 +82,17 @@ export function astar(kind: Uint8Array, start: number, goal: number): number[] |
     }
     if (closed[cur] === gen) continue;
     closed[cur] = gen;
-    const g = gScore[cur] + 1;
-    for (let d = 0; d < 4; d++) {
-      const n = neighbor(cur, d);
-      if (n < 0 || kind[n] !== T_ROAD || closed[n] === gen) continue;
+    for (let d = 0; d < 8; d++) {
+      if (!connected(kind, link, cur, d)) continue;
+      const n = neighbor8(cur, d);
+      if (closed[n] === gen) continue;
+      const step = (d & 1 ? SQRT2 : 1) * (kind[n] === T_AVENUE ? AVENUE_FACTOR : 1);
+      const g = gScore[cur] + step;
       if (seen[n] !== gen || g < gScore[n]) {
         gScore[n] = g;
         seen[n] = gen;
         cameFrom[n] = cur;
-        const h = Math.abs(gx - (n % GRID)) + Math.abs(gz - ((n / GRID) | 0));
-        heapPush(g + h, n);
+        heapPush(g + octile(n, gx, gz), n);
       }
     }
   }

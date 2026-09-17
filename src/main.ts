@@ -13,7 +13,7 @@ import type { SaveData } from './save';
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
 
-const { renderer, scene, camera, update: updateScene } = createScene(canvas);
+const { renderer, scene, camera, controls, update: updateScene } = createScene(canvas);
 const roads = new RoadLayer();
 const buildings = new BuildingLayer();
 const cars = new CarLayer();
@@ -23,7 +23,7 @@ const game = new Game();
 const input = new Input(canvas, camera, game, scene);
 
 function current(): SaveData {
-  return { kind: game.kind, level: game.level, money: game.stats.money, tick: game.stats.tick, tax: game.tax };
+  return { kind: game.kind, link: game.link, level: game.level, money: game.stats.money, tick: game.stats.tick, tax: game.tax };
 }
 
 const hud = new Hud(uiRoot, {
@@ -34,13 +34,13 @@ const hud = new Hud(uiRoot, {
     clearLocal();
     history.replaceState(null, '', location.pathname);
     const b = blankSave();
-    game.load(b.kind, b.level, b.money, b.tick, b.tax);
+    game.load(b.kind, b.link, b.level, b.money, b.tick, b.tax);
     hud.toast('New city. Draw a road to start.');
   },
   demoCity: () => {
     history.replaceState(null, '', location.pathname);
     const d = demoCity();
-    game.load(d.kind, d.level, d.money, d.tick, d.tax);
+    game.load(d.kind, d.link, d.level, d.money, d.tick, d.tax);
     game.warm(70);
     hud.toast('Demo city loaded');
   },
@@ -60,11 +60,11 @@ input.onToolChange = (t) => hud.setTool(t);
 input.onToast = (m) => hud.toast(m);
 
 game.onEdit = () => {
-  roads.rebuild(game.kind);
-  buildings.rebuild(game.kind, game.level);
+  roads.rebuild(game.kind, game.link);
+  buildings.rebuild(game.kind, game.link, game.level);
 };
 game.onState = () => {
-  buildings.rebuild(game.kind, game.level);
+  buildings.rebuild(game.kind, game.link, game.level);
   hud.update(game.stats);
 };
 game.onFrame = () => roads.tint(game.congestion);
@@ -79,18 +79,17 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Boot: URL link > local save > demo city.
+// Boot: URL link > local save > a fresh empty map with the help open.
 const fromHash = loadFromHash();
 const fromLocal = fromHash ? null : loadLocal();
 if (fromHash) {
-  game.load(fromHash.kind, fromHash.level, fromHash.money, fromHash.tick, fromHash.tax);
+  game.load(fromHash.kind, fromHash.link, fromHash.level, fromHash.money, fromHash.tick, fromHash.tax);
   hud.toast('Loaded shared city');
 } else if (fromLocal) {
-  game.load(fromLocal.kind, fromLocal.level, fromLocal.money, fromLocal.tick, fromLocal.tax);
+  game.load(fromLocal.kind, fromLocal.link, fromLocal.level, fromLocal.money, fromLocal.tick, fromLocal.tax);
 } else {
-  const d = demoCity();
-  game.load(d.kind, d.level, d.money, d.tick, d.tax);
-  game.warm(70);
+  const b = blankSave();
+  game.load(b.kind, b.link, b.level, b.money, b.tick, b.tax);
   hud.showHelp();
 }
 game.setTax(game.tax);
@@ -99,7 +98,7 @@ game.setSpeed(1);
 setInterval(() => saveLocal(current()), 5000);
 window.addEventListener('beforeunload', () => saveLocal(current()));
 
-const dbg = { game, camera, input, renderer, frames: 0 };
+const dbg = { game, camera, controls, input, renderer, frames: 0 };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 let last = performance.now();

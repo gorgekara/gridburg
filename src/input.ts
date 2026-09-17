@@ -1,11 +1,15 @@
 import * as THREE from 'three';
-import { GRID, N_TILES, T_EMPTY, T_ROAD, T_RES, T_COM, T_IND, COST_ROAD, COST_ZONE, idx } from './constants';
+import {
+  GRID, N_TILES, T_EMPTY, T_ROAD, T_AVENUE, T_RES, T_COM, T_IND,
+  COST_ROAD, COST_AVENUE, COST_ZONE, DIRS8, idx, isRoad,
+} from './constants';
 import type { Game } from './game';
 
-export type Tool = 'road' | 'res' | 'com' | 'ind' | 'bulldoze';
+export type Tool = 'road' | 'avenue' | 'res' | 'com' | 'ind' | 'bulldoze';
 
 const TOOL_COLOR: Record<Tool, number> = {
   road: 0x8fa3b8,
+  avenue: 0xc9d2dc,
   res: 0x62c46a,
   com: 0x4f8fe8,
   ind: 0xe6b93a,
@@ -33,7 +37,6 @@ export class Input {
   private start = -1;
   private current = -1;
   private previewTiles: number[] = [];
-
   private canvas: HTMLCanvasElement;
   private camera: THREE.Camera;
   private game: Game;
@@ -73,9 +76,13 @@ export class Input {
     this.onToolChange?.(t);
   }
 
+  private isRoadTool(): boolean {
+    return this.tool === 'road' || this.tool === 'avenue';
+  }
+
   private onKey = (e: KeyboardEvent): void => {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
-    const map: Record<string, Tool> = { '1': 'road', '2': 'res', '3': 'com', '4': 'ind', '5': 'bulldoze' };
+    const map: Record<string, Tool> = { '1': 'road', '2': 'avenue', '3': 'res', '4': 'com', '5': 'ind', '6': 'bulldoze' };
     const t = map[e.key];
     if (t) this.setTool(t);
     if (e.key === 'Escape' && this.dragging) this.cancel();
@@ -129,19 +136,38 @@ export class Input {
     this.previewTiles = [];
   }
 
-  /** Tiles covered by the current drag: an L-path for roads, a rectangle otherwise. */
+  /**
+   * Tiles covered by the current drag, in order.
+   * Roads: if the drag is closer to 45° than to an axis, a diagonal run then a straight run;
+   * otherwise an L (horizontal, then vertical). Zones and bulldoze fill a rectangle.
+   */
   private computeTiles(): number[] {
     const sx = this.start % GRID;
     const sz = (this.start / GRID) | 0;
     const cx = this.current % GRID;
     const cz = (this.current / GRID) | 0;
     const out: number[] = [];
-    if (this.tool === 'road') {
-      const stepX = cx >= sx ? 1 : -1;
-      for (let x = sx; x !== cx + stepX; x += stepX) out.push(idx(x, sz));
-      const stepZ = cz >= sz ? 1 : -1;
-      for (let z = sz + stepZ; z !== cz + stepZ; z += stepZ) out.push(idx(cx, z));
-      if (cz === sz) out.length = Math.abs(cx - sx) + 1;
+    if (this.isRoadTool()) {
+      const dx = cx - sx;
+      const dz = cz - sz;
+      const stepX = Math.sign(dx);
+      const stepZ = Math.sign(dz);
+      const ax = Math.abs(dx);
+      const az = Math.abs(dz);
+      const angle = Math.atan2(az, ax);
+      const diagonal = angle > Math.PI / 8 && angle < (3 * Math.PI) / 8;
+      let x = sx;
+      let z = sz;
+      out.push(idx(x, z));
+      if (diagonal) {
+        const n = Math.min(ax, az);
+        for (let s = 0; s < n; s++) { x += stepX; z += stepZ; out.push(idx(x, z)); }
+        while (x !== cx) { x += stepX; out.push(idx(x, z)); }
+        while (z !== cz) { z += stepZ; out.push(idx(x, z)); }
+      } else {
+        while (x !== cx) { x += stepX; out.push(idx(x, z)); }
+        while (z !== cz) { z += stepZ; out.push(idx(x, z)); }
+      }
     } else {
       const x0 = Math.min(sx, cx);
       const x1 = Math.max(sx, cx);
@@ -170,31 +196,45 @@ export class Input {
     const k = g.kind;
     let placed = 0;
     let broke = false;
-    for (const t of this.previewTiles) {
-      switch (this.tool) {
-        case 'road':
-          if (k[t] === T_ROAD) break;
-          if (!g.canAfford(COST_ROAD)) { broke = true; break; }
-          g.setKind(t, T_ROAD, COST_ROAD);
+    const tiles = this.previewTiles;
+    if (this.isRoadTool()) {
+      const target = this.tool === 'avenue' ? T_AVENUE : T_ROAD;
+      const cost = this.tool === 'avenue' ? COST_AVENUE : COST_ROAD;
+      let reached = 0;
+      for (const t of tiles) {
+        if (k[t] !== target) {
+          if (!g.canAfford(cost)) { broke = true; break; }
+          g.setKind(t, target, cost);
           placed++;
-          break;
-        case 'res':
-        case 'com':
-        case 'ind': {
+        }
+        reached++;
+      }
+      // Link consecutive diagonal tiles of the stroke.
+      for (let j = 1; j < reached; j++) {
+        const a = tiles[j - 1];
+        const b = tiles[j];
+        const dx = (b % GRID) - (a % GRID);
+        const dz = ((b / GRID) | 0) - ((a / GRID) | 0);
+        if (dx !== 0 && dz !== 0 && isRoad(k[a]) && isRoad(k[b])) {
+          for (let d = 1; d < 8; d += 2) {
+            if (DIRS8[d][0] === dx && DIRS8[d][1] === dz) { g.addLink(a, d); placed++; break; }
+          }
+        }
+      }
+    } else {
+      for (const t of tiles) {
+        if (this.tool === 'bulldoze') {
+          if (k[t] === T_EMPTY) continue;
+          g.setKind(t, T_EMPTY, 0);
+          placed++;
+        } else {
           const zk = this.tool === 'res' ? T_RES : this.tool === 'com' ? T_COM : T_IND;
-          if (k[t] === T_ROAD || k[t] === zk) break;
+          if (isRoad(k[t]) || k[t] === zk) continue;
           if (!g.canAfford(COST_ZONE)) { broke = true; break; }
           g.setKind(t, zk, COST_ZONE);
           placed++;
-          break;
         }
-        case 'bulldoze':
-          if (k[t] === T_EMPTY) break;
-          g.setKind(t, T_EMPTY, 0);
-          placed++;
-          break;
       }
-      if (broke) break;
     }
     if (broke) this.onToast?.('Not enough money');
     if (placed > 0) g.flush();

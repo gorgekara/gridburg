@@ -12,8 +12,8 @@ export interface Stats {
 }
 
 export type MainToWorker =
-  | { type: 'load'; kind: Uint8Array; level: Uint8Array; money: number; tick: number; tax: number }
-  | { type: 'kind'; kind: Uint8Array; spent: number }
+  | { type: 'load'; kind: Uint8Array; link: Uint8Array; level: Uint8Array; money: number; tick: number; tax: number }
+  | { type: 'kind'; kind: Uint8Array; link: Uint8Array; spent: number }
   | { type: 'speed'; value: number }
   | { type: 'tax'; value: number }
   | { type: 'warm'; ticks: number };

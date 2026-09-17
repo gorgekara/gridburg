@@ -1,10 +1,12 @@
-import { MAX_CARS, N_TILES, START_MONEY } from './constants';
+import { MAX_CARS, N_TILES, START_MONEY, isRoad, neighbor8, opposite8 } from './constants';
 import { emptyStats } from './sim/messages';
 import type { MainToWorker, Stats, WorkerToMain } from './sim/messages';
 
 /** Main-thread mirror of the city plus the bridge to the simulation worker. */
 export class Game {
   kind = new Uint8Array(N_TILES);
+  /** Diagonal road links: bit d (odd d in 0..7) set when this tile connects to that diagonal neighbor. */
+  link = new Uint8Array(N_TILES);
   level = new Uint8Array(N_TILES);
   stats: Stats = emptyStats(START_MONEY);
   tax = 10;
@@ -50,28 +52,50 @@ export class Game {
     return this.stats.money - this.pendingSpent >= cost;
   }
 
-  /** Change a tile's kind. Returns false if unchanged. */
+  /** Change a tile's kind. Returns false if unchanged. Clears diagonal links when it stops being a road. */
   setKind(i: number, k: number, cost: number): boolean {
     if (this.kind[i] === k) return false;
     this.kind[i] = k;
     this.level[i] = 0;
+    if (!isRoad(k)) this.clearLinks(i);
     this.pendingSpent += cost;
     this.dirty = true;
     return true;
   }
 
+  /** Connect tile i to its diagonal neighbor in 8-direction d (both must be roads). */
+  addLink(i: number, d: number): void {
+    const n = neighbor8(i, d);
+    if (n < 0 || !(d & 1) || !isRoad(this.kind[i]) || !isRoad(this.kind[n])) return;
+    const bit = 1 << d;
+    const back = 1 << opposite8(d);
+    if ((this.link[i] & bit) && (this.link[n] & back)) return;
+    this.link[i] |= bit;
+    this.link[n] |= back;
+    this.dirty = true;
+  }
+
+  private clearLinks(i: number): void {
+    for (let d = 1; d < 8; d += 2) {
+      const n = neighbor8(i, d);
+      if (n >= 0) this.link[n] &= ~(1 << opposite8(d));
+    }
+    this.link[i] = 0;
+  }
+
   /** Push accumulated edits to the worker. */
   flush(): void {
     if (!this.dirty) return;
-    this.send({ type: 'kind', kind: this.kind.slice(), spent: this.pendingSpent });
+    this.send({ type: 'kind', kind: this.kind.slice(), link: this.link.slice(), spent: this.pendingSpent });
     this.stats.money -= this.pendingSpent;
     this.pendingSpent = 0;
     this.dirty = false;
     this.onEdit?.();
   }
 
-  load(kind: Uint8Array, level: Uint8Array, money: number, tick: number, tax: number): void {
+  load(kind: Uint8Array, link: Uint8Array, level: Uint8Array, money: number, tick: number, tax: number): void {
     this.kind.set(kind);
+    this.link.set(link);
     this.level.set(level);
     this.tax = tax;
     this.stats = emptyStats(money);
@@ -80,12 +104,8 @@ export class Game {
     this.dirty = false;
     this.carsPrev.fill(0);
     this.carsNext.fill(0);
-    this.send({ type: 'load', kind: kind.slice(), level: level.slice(), money, tick, tax });
+    this.send({ type: 'load', kind: kind.slice(), link: link.slice(), level: level.slice(), money, tick, tax });
     this.onEdit?.();
-  }
-
-  clear(): void {
-    this.load(new Uint8Array(N_TILES), new Uint8Array(N_TILES), START_MONEY, 0, 10);
   }
 
   setSpeed(v: number): void {

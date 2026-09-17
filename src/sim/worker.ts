@@ -1,6 +1,7 @@
 import {
-  GRID, N_TILES, MAX_CARS, SIM_HZ, T_ROAD, T_RES, T_COM, T_IND,
-  RES_POP, COM_JOBS, IND_JOBS, START_MONEY, ROAD_UPKEEP, neighbor,
+  GRID, N_TILES, MAX_CARS, SIM_HZ, T_AVENUE, T_RES, T_COM, T_IND,
+  RES_POP, COM_JOBS, IND_JOBS, START_MONEY, ROAD_UPKEEP, SQRT2, DIRS8,
+  neighbor, connected, isRoad, isZone,
 } from '../constants';
 import { astar } from './astar';
 import type { MainToWorker, Stats } from './messages';
@@ -9,6 +10,7 @@ const post = (self as unknown as { postMessage: (m: unknown, t?: Transferable[])
 
 // ---- authoritative state -------------------------------------------------
 const kind = new Uint8Array(N_TILES);
+const link = new Uint8Array(N_TILES);
 const level = new Uint8Array(N_TILES);
 const age = new Uint16Array(N_TILES);
 const frontRoad = new Int32Array(N_TILES).fill(-1);
@@ -28,6 +30,7 @@ let commuteAvg = 0;
 let spawnBudget = 0;
 let tripRate = 0;
 let noPath = 0;
+let upkeep = 0;
 let subCount = 0;
 const demand: [number, number, number] = [0, 0, 0];
 
@@ -44,6 +47,9 @@ let jobTiles: number[] = [];
 let jobW: number[] = [];
 
 const BASE_SPEED = 3; // tiles per second on a free road
+const AVENUE_SPEED = 4.5;
+const ROAD_CAP = 2; // cars per tile before slowing
+const AVENUE_CAP = 5;
 const LANE = 0.22;
 
 // ---- helpers ----------------------------------------------------------------
@@ -66,10 +72,10 @@ function pickWeighted(tiles: number[], cum: number[]): number {
 function recomputeAccess(): void {
   for (let i = 0; i < N_TILES; i++) {
     frontRoad[i] = -1;
-    if (kind[i] < T_RES) continue;
+    if (!isZone(kind[i])) continue;
     for (let d = 0; d < 4; d++) {
       const n = neighbor(i, d);
-      if (n >= 0 && kind[n] === T_ROAD) { frontRoad[i] = n; break; }
+      if (n >= 0 && isRoad(kind[n])) { frontRoad[i] = n; break; }
     }
   }
 }
@@ -88,13 +94,14 @@ function clearCars(): void {
 // ---- census & growth ----------------------------------------------------------
 function census(): void {
   pop = 0; comJobs = 0; indJobs = 0; roads = 0; buildings = 0;
+  let upkeepTiles = 0;
   resTiles = []; resW = []; jobTiles = []; jobW = [];
   let rw = 0;
   let jw = 0;
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
     const l = level[i];
-    if (k === T_ROAD) { roads++; continue; }
+    if (isRoad(k)) { roads++; upkeepTiles += k === T_AVENUE ? 2 : 1; continue; }
     if (l > 0) buildings++;
     const hasAccess = frontRoad[i] >= 0;
     if (k === T_RES) {
@@ -116,12 +123,13 @@ function census(): void {
   demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - taxPenalty, -1, 1);
   demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - taxPenalty, -1, 1);
   tripRate = rw * 0.12;
+  upkeep = upkeepTiles * ROAD_UPKEEP;
 }
 
 function grow(): void {
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
-    if (k < T_RES) continue;
+    if (!isZone(k)) continue;
     const l = level[i];
     if (frontRoad[i] < 0) {
       if (l > 0 && Math.random() < 0.08) { level[i] = l - 1; age[i] = 0; }
@@ -142,7 +150,7 @@ function grow(): void {
     }
   }
   const income = (pop * 0.005 + (comJobs + indJobs) * 0.007) * tax / 10;
-  money += income - roads * ROAD_UPKEEP;
+  money += income - upkeep;
   tick++;
 }
 
@@ -172,9 +180,16 @@ function stepCars(dt: number): void {
   for (let s = 0; s < MAX_CARS; s++) {
     const c = slots[s];
     if (!c) continue;
-    const n = carCount[currentTile(c)];
-    const f = n <= 2 ? 1 : Math.max(0.12, 1 / (1 + (n - 2) * 0.5));
-    c.t += dt * BASE_SPEED * f;
+    const tile = currentTile(c);
+    const avenue = kind[tile] === T_AVENUE;
+    const cap = avenue ? AVENUE_CAP : ROAD_CAP;
+    const n = carCount[tile];
+    const f = n <= cap ? 1 : Math.max(0.12, 1 / (1 + (n - cap) * 0.5));
+    const a = c.path[c.seg];
+    const b = c.path[c.seg + 1];
+    const diag = (a % GRID) !== (b % GRID) && ((a / GRID) | 0) !== ((b / GRID) | 0);
+    const segLen = diag ? SQRT2 : 1;
+    c.t += dt * (avenue ? AVENUE_SPEED : BASE_SPEED) * f / segLen;
     c.time += dt;
     while (c.t >= 1) {
       c.t -= 1;
@@ -202,7 +217,7 @@ function spawn(dt: number): void {
     const a = frontRoad[o];
     const b = frontRoad[d];
     if (a < 0 || b < 0 || a === b) continue;
-    const path = astar(kind, a, b);
+    const path = astar(kind, link, a, b);
     if (!path || path.length < 2) { noPath++; continue; }
     const slot = freeList.pop()!;
     slots[slot] = { path, seg: 0, t: 0, time: 0 };
@@ -285,6 +300,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   switch (m.type) {
     case 'load': {
       kind.set(m.kind);
+      link.set(m.link);
       level.set(m.level);
       age.fill(0);
       money = m.money;
@@ -301,21 +317,30 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     }
     case 'kind': {
       const nk = m.kind;
-      let roadRemoved = false;
+      let roadChanged = false;
       for (let i = 0; i < N_TILES; i++) {
         if (nk[i] !== kind[i]) {
-          if (kind[i] === T_ROAD) roadRemoved = true;
+          if (isRoad(kind[i]) || isRoad(nk[i])) roadChanged = true;
           kind[i] = nk[i];
           level[i] = 0;
           age[i] = 0;
         }
+        if (m.link[i] !== link[i]) roadChanged = true;
       }
-      if (roadRemoved) {
+      link.set(m.link);
+      if (roadChanged) {
+        // Drop cars whose remaining path is no longer drivable.
         for (let s = 0; s < MAX_CARS; s++) {
           const c = slots[s];
           if (!c) continue;
-          for (let j = c.seg; j < c.path.length; j++) {
-            if (kind[c.path[j]] !== T_ROAD) { freeCar(s); break; }
+          for (let j = c.seg; j + 1 < c.path.length; j++) {
+            const a = c.path[j];
+            const b = c.path[j + 1];
+            const dx = (b % GRID) - (a % GRID);
+            const dz = ((b / GRID) | 0) - ((a / GRID) | 0);
+            let d = -1;
+            for (let k = 0; k < 8; k++) if (DIRS8[k][0] === dx && DIRS8[k][1] === dz) { d = k; break; }
+            if (d < 0 || !connected(kind, link, a, d)) { freeCar(s); break; }
           }
         }
       }

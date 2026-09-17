@@ -11,11 +11,12 @@ export interface HudActions {
 }
 
 const TOOLS: { id: Tool; label: string; key: string; hint: string }[] = [
-  { id: 'road', label: 'Road', key: '1', hint: 'Drag to draw an L-shaped road' },
-  { id: 'res', label: 'Residential', key: '2', hint: 'Drag a rectangle; homes grow next to roads' },
-  { id: 'com', label: 'Commercial', key: '3', hint: 'Drag a rectangle; shops and offices' },
-  { id: 'ind', label: 'Industrial', key: '4', hint: 'Drag a rectangle; factories' },
-  { id: 'bulldoze', label: 'Bulldoze', key: '5', hint: 'Drag a rectangle to clear' },
+  { id: 'road', label: 'Road', key: '1', hint: 'Drag to draw a road: straight, L-shaped, or diagonal' },
+  { id: 'avenue', label: 'Avenue', key: '2', hint: 'Wide, fast road that holds more traffic. Costs more' },
+  { id: 'res', label: 'Residential', key: '3', hint: 'Drag a rectangle; homes grow next to roads' },
+  { id: 'com', label: 'Commercial', key: '4', hint: 'Drag a rectangle; shops and offices' },
+  { id: 'ind', label: 'Industrial', key: '5', hint: 'Drag a rectangle; factories' },
+  { id: 'bulldoze', label: 'Bulldoze', key: '6', hint: 'Drag a rectangle to clear' },
 ];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -148,11 +149,12 @@ export class Hud {
         Cars commute from homes to jobs on the roads you laid. Roads turn red where they jam.
         The score that matters is <b>average commute</b>.</p>
         <ul>
-          <li><b>Left drag</b> — use the selected tool (roads draw an L, zones fill a rectangle)</li>
+          <li><b>Left drag</b> — use the selected tool. Roads follow the drag: straight, L-shaped, or diagonal. Zones fill a rectangle</li>
+          <li><b>Avenues</b> are wider and faster and carry more cars; use them for the busy routes</li>
           <li><b>Right drag</b> — rotate · <b>Middle drag</b> — pan · <b>Wheel</b> — zoom</li>
-          <li><b>WASD / arrows</b> — pan · <b>1–5</b> — tools · <b>Space</b> — pause · <b>Esc</b> — cancel</li>
+          <li><b>WASD / arrows</b> — pan · <b>1–6</b> — tools · <b>Space</b> — pause · <b>Esc</b> — cancel</li>
         </ul>
-        <p>Buildings only grow on zoned tiles that touch a road. Demand depends on the balance of homes
+        <p>Start by drawing a road, then zone next to it. Buildings only grow on zoned tiles that touch a road. Demand depends on the balance of homes
         and jobs, the tax rate, and how long commutes take. Your city is saved in this browser
         automatically; <b>Share</b> copies a link that contains the whole city.</p>
         <p class="dim">Made with three.js. Simulation runs in a Web Worker. Press H or click anywhere to close.</p>

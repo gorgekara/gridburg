@@ -2,13 +2,16 @@ import { N_TILES, START_MONEY } from './constants';
 
 export interface SaveData {
   kind: Uint8Array;
+  link: Uint8Array;
   level: Uint8Array;
   money: number;
   tick: number;
   tax: number;
 }
 
-const KEY = 'gridburg.save.v1';
+// Bumped when the game stopped booting into the demo city, so old auto-saved demos don't linger.
+const KEY = 'gridburg.save.v2';
+const HEAD = 10;
 
 function toBase64Url(bytes: Uint8Array): string {
   let s = '';
@@ -24,23 +27,53 @@ function fromBase64Url(str: string): Uint8Array {
   return out;
 }
 
-/** Version byte, tax, int32 money, uint32 tick, then RLE pairs of (kind<<4|level, run). */
+/** Run-length encode a per-tile byte stream as (value, run) pairs. */
+function rle(values: (i: number) => number, out: number[]): void {
+  let i = 0;
+  while (i < N_TILES) {
+    const v = values(i);
+    let run = 1;
+    while (i + run < N_TILES && run < 255 && values(i + run) === v) run++;
+    out.push(v, run);
+    i += run;
+  }
+}
+
+/** Decode one RLE stream starting at p into dst; returns the position after it. */
+function unrle(bytes: Uint8Array, p: number, dst: (i: number, v: number) => void): number {
+  let i = 0;
+  while (p + 1 < bytes.length && i < N_TILES) {
+    const v = bytes[p];
+    const run = bytes[p + 1];
+    for (let r = 0; r < run && i < N_TILES; r++, i++) dst(i, v);
+    p += 2;
+  }
+  return p;
+}
+
+/** Pack the four diagonal link bits (1,3,5,7) into a nibble. */
+function packLink(l: number): number {
+  return ((l >> 1) & 1) | (((l >> 3) & 1) << 1) | (((l >> 5) & 1) << 2) | (((l >> 7) & 1) << 3);
+}
+
+function unpackLink(n: number): number {
+  return ((n & 1) << 1) | (((n >> 1) & 1) << 3) | (((n >> 2) & 1) << 5) | (((n >> 3) & 1) << 7);
+}
+
+/**
+ * Version byte, tax, int32 money, uint32 tick, then an RLE stream of (kind<<4|level)
+ * and, from version 2, a second RLE stream of packed diagonal links.
+ */
 export function encode(d: SaveData): string {
-  const head = new Uint8Array(10);
+  const head = new Uint8Array(HEAD);
   const dv = new DataView(head.buffer);
-  head[0] = 1;
+  head[0] = 2;
   head[1] = d.tax;
   dv.setInt32(2, Math.round(d.money));
   dv.setUint32(6, d.tick);
   const body: number[] = [];
-  let i = 0;
-  while (i < N_TILES) {
-    const v = (d.kind[i] << 4) | d.level[i];
-    let run = 1;
-    while (i + run < N_TILES && run < 255 && ((d.kind[i + run] << 4) | d.level[i + run]) === v) run++;
-    body.push(v, run);
-    i += run;
-  }
+  rle((i) => (d.kind[i] << 4) | d.level[i], body);
+  rle((i) => packLink(d.link[i]), body);
   const all = new Uint8Array(head.length + body.length);
   all.set(head);
   all.set(body, head.length);
@@ -50,23 +83,18 @@ export function encode(d: SaveData): string {
 export function decode(str: string): SaveData | null {
   try {
     const bytes = fromBase64Url(str);
-    if (bytes[0] !== 1) return null;
+    const version = bytes[0];
+    if (version !== 1 && version !== 2) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
     const tax = bytes[1];
     const money = dv.getInt32(2);
     const tick = dv.getUint32(6);
     const kind = new Uint8Array(N_TILES);
     const level = new Uint8Array(N_TILES);
-    let i = 0;
-    for (let p = 10; p + 1 < bytes.length && i < N_TILES; p += 2) {
-      const v = bytes[p];
-      const run = bytes[p + 1];
-      for (let r = 0; r < run && i < N_TILES; r++, i++) {
-        kind[i] = v >> 4;
-        level[i] = v & 15;
-      }
-    }
-    return { kind, level, money, tick, tax };
+    const link = new Uint8Array(N_TILES);
+    let p = unrle(bytes, HEAD, (i, v) => { kind[i] = v >> 4; level[i] = v & 15; });
+    if (version >= 2) p = unrle(bytes, p, (i, v) => { link[i] = unpackLink(v); });
+    return { kind, link, level, money, tick, tax };
   } catch {
     return null;
   }
@@ -107,5 +135,8 @@ export function shareUrl(d: SaveData): string {
 }
 
 export function blankSave(): SaveData {
-  return { kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), money: START_MONEY, tick: 0, tax: 10 };
+  return {
+    kind: new Uint8Array(N_TILES), link: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES),
+    money: START_MONEY, tick: 0, tax: 10,
+  };
 }

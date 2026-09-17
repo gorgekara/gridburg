@@ -43,6 +43,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #c6e4f5; }
   border-radius: 4px; padding: 2px 4px; background: rgba(0,0,0,0.3);
 }
 .tool.active .key { background: rgba(0,0,0,0.15); }
+.tool.avenue.active { background: #c9d2dc; border-color: #c9d2dc; }
 .tool.res.active { background: #62c46a; border-color: #62c46a; }
 .tool.com.active { background: #6aa6f0; border-color: #6aa6f0; }
 .tool.ind.active { background: #e6b93a; border-color: #e6b93a; }

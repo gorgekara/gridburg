@@ -79,7 +79,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const grid = new THREE.GridHelper(GRID, GRID, 0x5f8a45, 0x5f8a45);
   const gm = grid.material as THREE.LineBasicMaterial;
   gm.transparent = true;
-  gm.opacity = 0.18;
+  gm.opacity = 0.3;
   grid.position.y = 0.012;
   scene.add(grid);
 
