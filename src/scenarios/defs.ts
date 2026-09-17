@@ -5,18 +5,19 @@ import type { Tool } from '../input';
 import { Site } from './build';
 
 /**
- * What a scenario asks of the player. Every level wants a city where every building is on the
- * network, so a level can never be solved by demolishing the demand.
+ * A wave of the rush. Traffic steps up at `at` seconds into the shift and the city is paid
+ * `grant` to cope with it, so the money only ever arrives once the problem it has to solve is
+ * already visible. A level is a sequence of these, hardest last.
  */
-export type GoalKind =
-  | 'connected' // every standing building reaches the highway
-  | 'commute' // rolling average door-to-door time, at most `target` seconds
-  | 'nojam' // no driver abandons their trip
-  | 'flow'; // at least `target` arrivals a minute
-
-export interface Goal {
-  kind: GoalKind;
-  target: number;
+export interface Wave {
+  /** Seconds into the shift when this wave takes over. The first is always 0. */
+  at: number;
+  /** Trip rate from here on, as a multiple of what the city would generate on its own. */
+  demand: number;
+  /** Paid into the budget the moment the wave lands. */
+  grant: number;
+  /** Shown as the wave lands, and on the timeline. Two or three words. */
+  name: string;
 }
 
 export interface Scenario {
@@ -24,22 +25,25 @@ export interface Scenario {
   name: string;
   /** One line for the level card. */
   blurb: string;
-  /** What is wrong with the city, and the shape of a fix. */
+  /** What the shift is, and where it will hurt. */
   brief: string;
   seed: number;
-  /** Money the player gets. There is no income in a scenario: this is the whole budget. */
-  budget: number;
-  /** Spend this much or less to earn three stars. */
-  par: number;
-  /** Seconds every goal has to hold at once before the level is solved. */
-  hold: number;
-  /**
-   * Seconds of traffic fast-forwarded before the player takes over. Long enough that the jam has
-   * finished forming: a level must not be solvable by arriving early and waiting.
-   */
+  /** Cash in hand when the shift opens. The rest arrives with the waves. */
+  opening: number;
+  /** How long the shift runs, in simulated seconds. Survive it and the level is won. */
+  duration: number;
+  waves: Wave[];
+  /** Stalled cars the city shrugs off. Below this the gridlock meter falls. */
+  tolerated: number;
+  /** Stalled cars that fill the gridlock meter in `patience` seconds. */
+  gridlock: number;
+  /** Seconds of full gridlock before the shift is lost. */
+  patience: number;
+  /** Trips delivered for one, two and three stars. */
+  targets: [number, number, number];
+  /** Seconds of traffic run before the player takes over, so the roads are not empty at the whistle. */
   warm: number;
   tools: Tool[];
-  goals: Goal[];
   /** Where to point the camera, in the highway's frame. */
   look: { along: number; side: number };
   /** The city as the player finds it. Call `buildScenario` to get something loadable. */
@@ -53,16 +57,24 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'first-mile',
     name: 'First Mile',
-    blurb: 'Two districts, and no way in.',
+    blurb: 'Two districts, no way in, and the shift has started.',
     brief: 'The developers built a neighbourhood and a business park with their own streets, then went '
-      + 'home without connecting either of them to the highway. Nobody can get in or out. Link them up.',
+      + 'home without connecting either of them to the highway. Get them linked before the morning '
+      + 'builds, and keep the link wide enough for what comes after it.',
     seed: 14,
-    budget: 2000,
-    par: 650,
-    hold: 20,
-    warm: 10,
+    opening: 900,
+    duration: 180,
+    waves: [
+      { at: 0, demand: 0.7, grant: 0, name: 'Early shift' },
+      { at: 60, demand: 1.3, grant: 700, name: 'School run' },
+      { at: 115, demand: 2.1, grant: 800, name: 'Full rush' },
+    ],
+    tolerated: 6,
+    gridlock: 40,
+    patience: 25,
+    targets: [150, 205, 245],
+    warm: 8,
     tools: ROADS,
-    goals: [{ kind: 'connected', target: 0 }, { kind: 'commute', target: 30 }],
     look: { along: 22, side: 0 },
     build() {
       const s = new Site(this.seed);
@@ -83,17 +95,26 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'crossing',
     name: 'One Bridge',
-    blurb: 'Every car in town uses the same bridge.',
+    blurb: 'Every car in town, one two-lane bridge, four waves.',
     brief: 'The homes are on this bank and every job is on the far one, joined by a single two-lane '
-      + 'bridge. It seizes up within a minute, and so does the road feeding it. The whole crossing '
-      + 'needs more capacity, not just the span.',
+      + 'bridge. It copes with the early shift and nothing more. The whole crossing needs capacity — '
+      + 'the span, the approach to it, and somewhere else to go once both are full.',
     seed: 282,
-    budget: 2600,
-    par: 1300,
-    hold: 25,
-    warm: 120,
+    opening: 850,
+    duration: 260,
+    waves: [
+      { at: 0, demand: 0.45, grant: 0, name: 'Early shift' },
+      { at: 55, demand: 0.8, grant: 900, name: 'First commuters' },
+      { at: 115, demand: 1.15, grant: 1000, name: 'School run' },
+      { at: 175, demand: 1.5, grant: 1050, name: 'Full rush' },
+      { at: 225, demand: 1.9, grant: 0, name: 'Peak' },
+    ],
+    tolerated: 10,
+    gridlock: 60,
+    patience: 28,
+    targets: [480, 720, 920],
+    warm: 15,
     tools: ALL,
-    goals: [{ kind: 'connected', target: 0 }, { kind: 'commute', target: 30 }, { kind: 'nojam', target: 0 }],
     look: { along: 30, side: 0 },
     build() {
       const s = new Site(this.seed);
@@ -115,17 +136,26 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'four-ways',
     name: 'Four Ways',
-    blurb: 'One crossroads, taking the whole city.',
+    blurb: 'One crossroads, taking the whole city, all shift.',
     brief: 'Homes are on this side of the crossroads and the work is on the other, so every trip in '
-      + 'town goes through it, one car at a time. A junction this busy needs either more lanes or '
-      + 'somewhere else for the traffic to go.',
+      + 'town goes through it, one car at a time. It holds up early. By the middle of the shift the '
+      + 'junction is the city, and a junction this busy needs either more lanes or somewhere else to go.',
     seed: 80,
-    budget: 1600,
-    par: 400,
-    hold: 25,
-    warm: 120,
+    opening: 550,
+    duration: 240,
+    waves: [
+      { at: 0, demand: 0.5, grant: 0, name: 'Early shift' },
+      { at: 50, demand: 0.9, grant: 650, name: 'First commuters' },
+      { at: 105, demand: 1.4, grant: 750, name: 'School run' },
+      { at: 160, demand: 2.0, grant: 750, name: 'Full rush' },
+      { at: 210, demand: 2.6, grant: 0, name: 'Peak' },
+    ],
+    tolerated: 8,
+    gridlock: 55,
+    patience: 25,
+    targets: [380, 560, 700],
+    warm: 12,
     tools: ALL,
-    goals: [{ kind: 'connected', target: 0 }, { kind: 'commute', target: 30 }, { kind: 'nojam', target: 0 }],
     look: { along: 20, side: 0 },
     build() {
       const s = new Site(this.seed);
@@ -148,14 +178,24 @@ export const SCENARIOS: Scenario[] = [
     name: 'The Long Haul',
     blurb: 'The jobs are miles away down a country lane.',
     brief: 'The industrial estate went up at the far end of a lane that was a cart track first. The '
-      + 'road is not gridlocked so much as long and slow. Make the journey shorter, or make it faster.',
+      + 'road is not gridlocked so much as long and slow, and a long journey is the one thing a rush '
+      + 'hour cannot absorb. Make the journey shorter, or make it faster, before the peak arrives.',
     seed: 2481,
-    budget: 3500,
-    par: 1800,
-    hold: 25,
-    warm: 120,
+    opening: 950,
+    duration: 260,
+    waves: [
+      { at: 0, demand: 0.5, grant: 0, name: 'Early shift' },
+      { at: 55, demand: 0.9, grant: 950, name: 'First commuters' },
+      { at: 115, demand: 1.35, grant: 1050, name: 'School run' },
+      { at: 175, demand: 1.9, grant: 1100, name: 'Full rush' },
+      { at: 225, demand: 2.4, grant: 0, name: 'Peak' },
+    ],
+    tolerated: 10,
+    gridlock: 60,
+    patience: 28,
+    targets: [480, 730, 930],
+    warm: 15,
     tools: ALL,
-    goals: [{ kind: 'connected', target: 0 }, { kind: 'commute', target: 30 }],
     look: { along: 28, side: 0 },
     build() {
       const s = new Site(this.seed);
@@ -176,17 +216,27 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'rush-hour',
     name: 'Rush Hour',
-    blurb: 'A full grid, a full budget, and gridlock.',
+    blurb: 'A full grid, a drip of money, and five waves.',
     brief: 'A district of towers on a grid of ordinary streets, the whole population crossing to the '
-      + 'other half at once. Every junction is a stand-off. There is enough money here for a couple of '
-      + 'proper arteries, and not one street more.',
+      + 'other half at once. Every junction is a stand-off by the middle of the shift. The money comes '
+      + 'in instalments and never all at once, so each wave buys one artery — pick the right one.',
     seed: 19,
-    budget: 3000,
-    par: 2200,
-    hold: 30,
-    warm: 120,
+    opening: 800,
+    duration: 300,
+    waves: [
+      { at: 0, demand: 0.25, grant: 0, name: 'Early shift' },
+      { at: 55, demand: 0.45, grant: 850, name: 'First commuters' },
+      { at: 110, demand: 0.7, grant: 950, name: 'School run' },
+      { at: 170, demand: 1.0, grant: 1050, name: 'Full rush' },
+      { at: 230, demand: 1.6, grant: 950, name: 'Peak' },
+      { at: 270, demand: 2.2, grant: 0, name: 'The worst of it' },
+    ],
+    tolerated: 12,
+    gridlock: 62,
+    patience: 25,
+    targets: [750, 1150, 1420],
+    warm: 15,
     tools: ALL,
-    goals: [{ kind: 'connected', target: 0 }, { kind: 'commute', target: 30 }, { kind: 'nojam', target: 0 }],
     look: { along: 24, side: 0 },
     build() {
       const s = new Site(this.seed);
@@ -205,7 +255,12 @@ export function scenarioById(id: string): Scenario | null {
   return SCENARIOS.find((s) => s.id === id) ?? null;
 }
 
-/** A scenario's starting city, with the level's budget as its money. */
+/** Everything a level pays out over a whole shift, opening cash included. */
+export function totalBudget(def: Scenario): number {
+  return def.waves.reduce((a, w) => a + w.grant, def.opening);
+}
+
+/** A scenario's starting city, with the level's opening cash as its money. */
 export function buildScenario(def: Scenario): SaveData {
-  return def.build().toSave(def.budget);
+  return def.build().toSave(def.opening);
 }

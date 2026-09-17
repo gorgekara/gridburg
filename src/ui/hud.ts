@@ -319,8 +319,9 @@ export class Hud {
           small. Pumps and outlets sit on the river; keep the pump <b>upstream</b> (arrows show the flow)</li>
           <li><b>Pollution</b> from industry and coal spreads through the ground and drives residents away. Press <b>P</b> to see it</li>
         </ul>
-        <p><b>Traffic puzzles</b> — five ready-made cities with one thing wrong with each. The buildings are
-        fixed and the budget never earns, so the only thing to change is the traffic. Open them from the menu.</p>
+        <p><b>Traffic puzzles</b> — five ready-made cities, one rush hour each. Traffic steps up wave by wave
+        and your money arrives with it, so you rebuild while the city is moving. Let the queues stop and the
+        shift is lost. Open them from the menu.</p>
         <p><b>Left drag</b> build · <b>Right drag</b> rotate · <b>Q / E</b> rotate · <b>WASD</b> pan · <b>Wheel</b> zoom ·
         <b>Space</b> pause · <b>Esc</b> cancel</p>
         <p class="dim">Your city saves in this browser. Share copies a link containing the whole city. Press H or click to close.</p>
@@ -345,6 +346,7 @@ export class Hud {
 
   /** Scenario cities have fixed buildings and no income, so hide what does not apply. */
   setPuzzleMode(on: boolean): void {
+    document.body.classList.toggle('puzzling', on);
     this.status.classList.toggle('gone', on);
     this.income.classList.toggle('gone', on);
     // The goal panel says what this city needs, so the sandbox advice would only argue with it.

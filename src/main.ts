@@ -12,7 +12,7 @@ import { Hud } from './ui/hud';
 import { PuzzleUi } from './ui/puzzle';
 import { buildScenario, scenarioById } from './scenarios/defs';
 import type { Scenario } from './scenarios/defs';
-import { Attempt, loadProgress, recordStars } from './scenarios/runtime';
+import { Run, loadProgress, record } from './scenarios/runtime';
 import { demoCity } from './demo';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
 
@@ -40,8 +40,8 @@ function lookAt(along: number, side: number, height = 30, back = 30): void {
   camera.position.set(tx + back * 0.45, height, tz + back);
 }
 
-/** The level being played, or null in the sandbox. */
-let attempt: Attempt | null = null;
+/** The shift being played, or null in the sandbox. */
+let run: Run | null = null;
 
 const hud = new Hud(uiRoot, {
   setTool: (t) => input.setTool(t),
@@ -67,10 +67,10 @@ const hud = new Hud(uiRoot, {
   },
   puzzles: () => puzzles.openPicker(),
   share: async () => {
-    const url = attempt ? `${location.origin}${location.pathname}#p=${attempt.def.id}` : shareUrl(game.snapshot());
+    const url = run ? `${location.origin}${location.pathname}#p=${run.def.id}` : shareUrl(game.snapshot());
     try {
       await navigator.clipboard.writeText(url);
-      hud.toast(attempt ? 'Link to this puzzle copied' : 'Link copied to clipboard');
+      hud.toast(run ? 'Link to this puzzle copied' : 'Link copied to clipboard');
     } catch {
       prompt('Copy this link:', url);
     }
@@ -85,6 +85,7 @@ const hud = new Hud(uiRoot, {
 
 const puzzles = new PuzzleUi(uiRoot, {
   start: (def) => startPuzzle(def),
+  go: () => { game.setSpeed(1); hud.setSpeed(1); },
   exit: () => {
     leavePuzzles();
     const saved = loadLocal();
@@ -96,29 +97,32 @@ const puzzles = new PuzzleUi(uiRoot, {
 });
 
 function startPuzzle(def: Scenario): void {
-  attempt = new Attempt(def);
+  run = new Run(def);
   game.load(buildScenario(def), true);
-  // Run the traffic before handing over, so the player arrives to a jam rather than an empty city.
+  game.setDemand(def.waves[0].demand);
+  // Run the traffic before the whistle, so the player takes over a moving city, not an empty one.
   game.warm(def.warm, true);
   hud.restrict(def.tools);
   hud.setPuzzleMode(true);
   input.allowed = new Set(def.tools);
   input.setTool('none');
-  game.setSpeed(1);
-  hud.setSpeed(1);
+  // The briefing holds the clock: the shift starts when the player says so.
+  game.setSpeed(0);
+  hud.setSpeed(0);
   history.replaceState(null, '', `${location.pathname}#p=${def.id}`);
   lookAt(def.look.along, def.look.side, 32, 34);
-  puzzles.begin(attempt);
+  puzzles.begin(run);
 }
 
 function leavePuzzles(): void {
-  if (!attempt) return;
-  attempt = null;
+  if (!run) return;
+  run = null;
   puzzles.end();
   hud.restrict(null);
   hud.setPuzzleMode(false);
   input.allowed = null;
   input.setTool('road');
+  game.setDemand(1);
   history.replaceState(null, '', location.pathname);
 }
 
@@ -139,13 +143,23 @@ game.onState = () => {
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
   hud.update(game.stats);
-  if (!attempt) return;
-  const before = loadProgress()[attempt.def.id] ?? 0;
-  const justSolved = attempt.update(game.stats);
+  if (!run) return;
+  const was = loadProgress()[run.def.id]?.delivered ?? 0;
+  const ev = run.update(game.stats);
+  if (ev.wave) {
+    game.setDemand(ev.wave.demand);
+    if (ev.wave.grant) game.grant(ev.wave.grant);
+    puzzles.announce(ev.wave);
+    hud.toast(ev.wave.grant
+      ? `${ev.wave.name}: traffic \u00d7${ev.wave.demand}, $${ev.wave.grant.toLocaleString()} released`
+      : `${ev.wave.name}: traffic \u00d7${ev.wave.demand}`);
+  }
   puzzles.render();
-  if (justSolved) {
-    recordStars(attempt.def.id, attempt.stars);
-    puzzles.showResult(attempt, before);
+  if (ev.ended) {
+    game.setSpeed(0);
+    hud.setSpeed(0);
+    if (ev.ended === 'won') record(run.def.id, run.stars, run.delivered);
+    puzzles.showResult(run, was);
   }
 };
 game.onFrame = () => {
@@ -167,7 +181,7 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => {
   const id = location.hash.match(/#p=([a-z0-9-]+)/)?.[1];
   const def = id ? scenarioById(id) : null;
-  if (def && def !== attempt?.def) startPuzzle(def);
+  if (def && def !== run?.def) startPuzzle(def);
 });
 
 // Boot: a puzzle link > a city link > local save > a fresh random map with the help open.
@@ -197,8 +211,8 @@ if (!fromPuzzle) {
 game.setSpeed(1);
 
 // A scenario is a fresh start every time, so it never touches the sandbox save.
-setInterval(() => { if (!attempt) saveLocal(game.snapshot()); }, 5000);
-window.addEventListener('beforeunload', () => { if (!attempt) saveLocal(game.snapshot()); });
+setInterval(() => { if (!run) saveLocal(game.snapshot()); }, 5000);
+window.addEventListener('beforeunload', () => { if (!run) saveLocal(game.snapshot()); });
 
 const dbg = { game, camera, controls, input, renderer, frames: 0 };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;

@@ -52,6 +52,8 @@ const arrivalRing = new Uint16Array(30);
 let ringSlot = 0;
 /** While fast-forwarding, hold back the per-second reports and send one at the end. */
 let quiet = false;
+/** Multiplies the trip rate. A scenario's rush hour turns this up as the shift wears on. */
+let demandScale = 1;
 
 // ---- road graph snapshot --------------------------------------------------------------------
 const J_PLAIN = 0, J_YIELD = 1, J_LIGHT = 2, J_RING = 3;
@@ -365,8 +367,8 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number): boolean 
 }
 
 function spawn(dt: number): void {
-  spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
-  extBudget = Math.min(4, extBudget + extRate * dt);
+  spawnBudget = Math.min(8, spawnBudget + tripRate * demandScale * dt);
+  extBudget = Math.min(4, extBudget + extRate * demandScale * dt);
   let n = 0;
   while (spawnBudget >= 1 && n < 4 && freeList.length && resTiles.length && jobTiles.length) {
     spawnBudget -= 1;
@@ -776,6 +778,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       spawnBudget = 0;
       extBudget = 0;
       frozen = m.frozen;
+      demandScale = 1;
       arrivals = 0;
       arrivalRing.fill(0);
       ringSlot = 0;
@@ -800,6 +803,12 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       break;
     case 'tax':
       tax = m.value;
+      break;
+    case 'demand':
+      demandScale = m.value;
+      break;
+    case 'grant':
+      money += m.amount;
       break;
     case 'warm': {
       if (m.traffic) {

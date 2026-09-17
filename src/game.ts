@@ -172,6 +172,17 @@ export class Game {
   warm(ticks: number, traffic = false): void {
     this.send({ type: 'warm', ticks, traffic });
   }
+
+  /** Scale how many trips the city generates. A scenario's rush hour turns this up wave by wave. */
+  setDemand(value: number): void {
+    this.send({ type: 'demand', value });
+  }
+
+  /** Pay an instalment of a scenario's budget into the city's money. */
+  grant(amount: number): void {
+    this.stats.money += amount;
+    this.send({ type: 'grant', amount });
+  }
 }
 
 /** A fresh map: a seeded river and the fixed highway stub that connects the city to the outside. */

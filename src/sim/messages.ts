@@ -40,7 +40,11 @@ export type MainToWorker =
   | { type: 'speed'; value: number }
   | { type: 'tax'; value: number }
   /** Fast-forward: growth ticks only, or whole simulation seconds with traffic when `traffic` is set. */
-  | { type: 'warm'; ticks: number; traffic?: boolean };
+  | { type: 'warm'; ticks: number; traffic?: boolean }
+  /** Multiply how many trips the city generates. A rush hour turns this up wave by wave. */
+  | { type: 'demand'; value: number }
+  /** Hand the city money it did not earn: a scenario pays its budget out in instalments. */
+  | { type: 'grant'; amount: number };
 
 export type WorkerToMain =
   | { type: 'state'; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; stats: Stats }
