@@ -91,11 +91,16 @@ export class Hud {
   private income = el('span', 'sub');
   private pop = el('span', 'val');
   private jobs = el('span', 'val');
-  private cars = el('span', 'val');
+  private cars = el('span', 'sub2');
   private commute = el('span', 'val');
   private util: Record<'power' | 'water' | 'sewage', HTMLElement> = {
-    power: el('span', 'val'), water: el('span', 'val'), sewage: el('span', 'val'),
+    power: el('span', 'mtext'), water: el('span', 'mtext'), sewage: el('span', 'mtext'),
   };
+  private utilFill: Record<'power' | 'water' | 'sewage', HTMLElement> = {
+    power: el('div', 'mfill'), water: el('div', 'mfill'), sewage: el('div', 'mfill'),
+  };
+  private budgetIncome = el('span', 'val');
+  private polBtn: HTMLButtonElement = el('button');
   private demandBars: HTMLElement[] = [];
   private toolBtns = new Map<Tool, HTMLButtonElement>();
   private catBtns = new Map<string, HTMLButtonElement>();
@@ -116,32 +121,27 @@ export class Hud {
   private help: HTMLElement;
 
   constructor(root: HTMLElement, actions: HudActions) {
-    const top = el('div', 'bar top');
-    const moneyStat = this.stat('Money', this.money, '$');
-    moneyStat.append(this.income);
-    top.append(
-      moneyStat,
-      this.stat('Pop', this.pop),
-      this.stat('Jobs', this.jobs),
-      this.stat('Cars', this.cars),
-      this.stat('Commute', this.commute),
+    // ---- top-left: headline numbers as icon chips ------------------------------------------
+    const chips = el('div', 'chips');
+    const chip = (ic: string, title: string, ...kids: (HTMLElement | SVGElement)[]): HTMLElement => {
+      const c = el('div', 'chip');
+      c.title = title;
+      c.append(icon(ic, 17), ...kids);
+      return c;
+    };
+    const moneyChip = el('button', 'chip money');
+    moneyChip.title = 'Budget and taxes';
+    moneyChip.append(icon('money', 17), this.money, this.income, icon('caret', 12));
+    chips.append(
+      moneyChip,
+      chip('people', 'Population', this.pop),
+      chip('jobs', 'Jobs', this.jobs),
+      chip('car', 'Average commute, and cars on the road', this.commute, this.cars),
     );
-    const dem = el('div', 'demand');
-    dem.append(el('span', 'label', 'Demand'));
-    for (const [i, name] of ['R', 'C', 'I'].entries()) {
-      const wrap = el('div', 'dbar');
-      const fill = el('div', `dfill d${i}`);
-      wrap.append(fill);
-      const col = el('div', 'dcol');
-      col.append(wrap, el('span', 'dname', name));
-      dem.append(col);
-      this.demandBars.push(fill);
-    }
-    top.append(dem);
-    top.append(this.stat('Power', this.util.power), this.stat('Water', this.util.water), this.stat('Sewage', this.util.sewage));
 
-    const taxWrap = el('div', 'stat');
-    taxWrap.append(el('span', 'label', 'Tax'));
+    // Budget popover: the tax slider lives here instead of on the bar.
+    const budget = el('div', 'popover budget');
+    const taxRow = el('div', 'prow');
     this.taxInput.type = 'range';
     this.taxInput.min = '0';
     this.taxInput.max = '30';
@@ -151,37 +151,84 @@ export class Hud {
       actions.setTax(Number(this.taxInput.value));
     });
     this.taxLabel.textContent = '10%';
-    taxWrap.append(this.taxInput, this.taxLabel);
-    top.append(taxWrap);
+    taxRow.append(el('span', 'label', 'Tax rate'), this.taxInput, this.taxLabel);
+    const incRow = el('div', 'prow');
+    incRow.append(el('span', 'label', 'Net income'), this.budgetIncome);
+    budget.append(el('div', 'ptitle', 'Budget'), taxRow, incRow, el('div', 'pnote', 'Higher taxes earn more but slow growth. Roads and service buildings cost upkeep.'));
 
+    // ---- top-right: view toggle, share, help, and a small menu ---------------------------------
+    const right = el('div', 'topright');
+    const iconBtn = (ic: string, title: string, fn: () => void): HTMLButtonElement => {
+      const b = el('button', 'iconbtn');
+      b.title = title;
+      b.append(icon(ic, 19));
+      b.addEventListener('click', fn);
+      return b;
+    };
+    this.help = this.buildHelp();
+    const menu = el('div', 'popover menu');
+    const menuItem = (ic: string, label: string, fn: () => void): HTMLButtonElement => {
+      const b = el('button', 'mitem');
+      b.append(icon(ic, 17), el('span', undefined, label));
+      b.addEventListener('click', () => { menu.classList.remove('open'); fn(); });
+      return b;
+    };
+    menu.append(
+      menuItem('plus', 'New city', () => { if (confirm('Start a new city on a new map? Your current city will be lost.')) actions.newCity(); }),
+      menuItem('city', 'Load demo city', actions.demoCity),
+      menuItem('link', 'Copy share link', actions.share),
+    );
+    const polBtn = iconBtn('smog', 'Pollution view (P)', () => polBtn.classList.toggle('active', actions.togglePollution()));
+    const menuBtn = iconBtn('menu', 'Menu', () => { budget.classList.remove('open'); menu.classList.toggle('open'); });
+    right.append(
+      polBtn,
+      iconBtn('link', 'Copy a link to this city', actions.share),
+      iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
+      menuBtn,
+    );
+    moneyChip.addEventListener('click', () => { menu.classList.remove('open'); budget.classList.toggle('open'); });
+    window.addEventListener('pointerdown', (e) => {
+      const t = e.target as Node;
+      if (!budget.contains(t) && !moneyChip.contains(t)) budget.classList.remove('open');
+      if (!menu.contains(t) && !menuBtn.contains(t)) menu.classList.remove('open');
+    });
+
+    // ---- bottom-left: demand and utilities ------------------------------------------------------
+    const status = el('div', 'status');
+    const dem = el('div', 'demand');
+    dem.title = 'Demand for residential, commercial and industrial zones';
+    for (const [i, name] of ['R', 'C', 'I'].entries()) {
+      const wrap = el('div', 'dbar');
+      const fill = el('div', `dfill d${i}`);
+      wrap.append(fill);
+      const col = el('div', 'dcol');
+      col.append(wrap, el('span', 'dname', name));
+      dem.append(col);
+      this.demandBars.push(fill);
+    }
+    const meters = el('div', 'meters');
+    for (const [k, ic, title] of [['power', 'power', 'Electricity: used / available'], ['water', 'water', 'Water: used / available'], ['sewage', 'sewage', 'Sewage: produced / capacity']] as const) {
+      const row = el('div', `meter ${k}`);
+      row.title = title;
+      const bar = el('div', 'mbar');
+      bar.append(this.utilFill[k]);
+      row.append(icon(ic, 15), bar, this.util[k]);
+      meters.append(row);
+    }
+    status.append(dem, meters);
+
+    // ---- bottom-right: game speed -------------------------------------------------------------------
     const speed = el('div', 'speed');
     for (const [v, label] of [[0, '❚❚'], [1, '▶'], [2, '▶▶'], [3, '▶▶▶']] as [number, string][]) {
-      const b = el('button', 'btn', label);
+      const b = el('button', 'sbtn', label);
       b.title = v === 0 ? 'Pause (Space)' : `Speed ${v}x`;
       b.addEventListener('click', () => actions.setSpeed(v));
       this.speedBtns.set(v, b);
       speed.append(b);
     }
-    top.append(speed);
 
-    const act = el('div', 'actions');
-    const mk = (label: string, fn: () => void, title = ''): HTMLButtonElement => {
-      const b = el('button', 'btn', label);
-      b.title = title;
-      b.addEventListener('click', fn);
-      return b;
-    };
-    this.help = this.buildHelp();
-    const polBtn = mk('Pollution', () => polBtn.classList.toggle('active', actions.togglePollution()), 'Highlight ground pollution (P)');
-    act.append(
-      polBtn,
-      mk('New', () => { if (confirm('Start a new city on a new map? Your current city will be lost.')) actions.newCity(); }),
-      mk('Demo', actions.demoCity, 'Load the demo city'),
-      mk('Share', actions.share, 'Copy a link to this city'),
-      mk('?', () => this.help.classList.toggle('open'), 'Help (H)'),
-    );
-    top.append(act);
-    root.append(top, this.alerts);
+    this.polBtn = polBtn;
+    root.append(chips, budget, right, menu, this.alerts, status, speed);
 
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
@@ -239,20 +286,12 @@ export class Hud {
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       if (e.key === 'h' || e.key === 'H') this.help.classList.toggle('open');
-      if (e.key === 'p' || e.key === 'P') polBtn.classList.toggle('active', actions.togglePollution());
+      if (e.key === 'p' || e.key === 'P') this.polBtn.classList.toggle('active', actions.togglePollution());
       if (e.key === 'Escape') this.help.classList.remove('open');
     });
     this.setTool('road');
     this.setMode('straight');
     this.setSpeed(1);
-  }
-
-  private stat(label: string, val: HTMLElement, prefix = ''): HTMLElement {
-    const s = el('div', 'stat');
-    s.append(el('span', 'label', label));
-    if (prefix) s.append(el('span', 'val', prefix));
-    s.append(val);
-    return s;
   }
 
   private buildHelp(): HTMLElement {
@@ -328,19 +367,25 @@ export class Hud {
   }
 
   update(s: Stats): void {
-    this.money.textContent = fmt(s.money);
+    this.money.textContent = '$' + fmt(s.money);
     this.money.classList.toggle('neg', s.money < 0);
-    this.income.textContent = `${s.income >= 0 ? '+' : ''}${s.income.toFixed(1)}/s`;
+    const inc = `${s.income >= 0 ? '+' : ''}${s.income.toFixed(1)}/s`;
+    this.income.textContent = inc;
     this.income.classList.toggle('neg', s.income < 0);
+    this.budgetIncome.textContent = inc;
+    this.budgetIncome.classList.toggle('neg', s.income < 0);
     this.pop.textContent = fmt(s.pop);
     this.jobs.textContent = fmt(s.jobs);
-    this.cars.textContent = String(s.cars);
     this.commute.textContent = s.commute > 0 ? s.commute.toFixed(0) + 's' : '–';
     this.commute.classList.toggle('neg', s.commute > 40);
+    this.cars.textContent = `${s.cars} cars`;
     for (const k of ['power', 'water', 'sewage'] as const) {
       const [used, cap] = s[k];
-      this.util[k].textContent = `${fmt(used)}/${fmt(cap)}`;
-      this.util[k].classList.toggle('neg', used > cap);
+      this.util[k].textContent = `${fmt(used)} / ${fmt(cap)}`;
+      const short = used > cap;
+      this.util[k].classList.toggle('neg', short);
+      this.utilFill[k].style.width = `${cap > 0 ? Math.min(100, (used / cap) * 100) : used > 0 ? 100 : 0}%`;
+      this.utilFill[k].classList.toggle('short', short);
     }
     for (let i = 0; i < 3; i++) {
       const d = s.demand[i];

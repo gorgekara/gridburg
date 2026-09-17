@@ -1,5 +1,17 @@
 /** Inline stroke icons, 24x24. Kept as inner SVG markup so they inherit the button's text color. */
 const I: Record<string, string> = {
+  money: '<circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.6-1-1.7-1.5-3-1.5-1.8 0-3 1-3 2.4 0 3.2 6 1.6 6 4.8 0 1.5-1.3 2.4-3 2.4-1.4 0-2.6-.6-3.2-1.7M12 5.5v13"/>',
+  caret: '<path d="m6 9 6 6 6-6"/>',
+  people: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6"/><circle cx="17.5" cy="9" r="2.4"/><path d="M16 14.3c3 .1 5 2.3 5 5.2"/>',
+  jobs: '<rect x="3" y="7.5" width="18" height="12" rx="2"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M3 13h18"/>',
+  car: '<path d="M4 16v-3.5l2-5A2 2 0 0 1 7.9 6h8.2a2 2 0 0 1 1.9 1.5l2 5V16"/><path d="M3 16h18v2.5H3z"/><circle cx="7.5" cy="13.5" r="1"/><circle cx="16.5" cy="13.5" r="1"/>',
+  smog: '<path d="M7 14a4 4 0 0 1 .6-7.95A5 5 0 0 1 17.3 7.5 3.3 3.3 0 0 1 17 14z"/><path d="M5 17.5h10M9 21h10"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.700l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.1 1-1.1 1.800M12 17v.2"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  city: '<path d="M3 21V9l6-3v15M9 21V3l8 4v14M17 21v-9l4 2v7M2 21h20"/>',
+  sewage: '<path d="M3 7h9a4 4 0 0 1 4 4v2"/><path d="M3 12h8"/><path d="M16 16s2.2 2.4 2.2 3.8a2.2 2.2 0 0 1-4.4 0c0-1.4 2.2-3.8 2.2-3.8z"/>',
   roads: '<path d="M8 21 10 3M16 21 14 3"/><path d="M12 5v2M12 11v2M12 17v2"/>',
   traffic: '<rect x="8" y="2" width="8" height="20" rx="3"/><circle cx="12" cy="7" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="17" r="1.5"/>',
   zones: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>',
