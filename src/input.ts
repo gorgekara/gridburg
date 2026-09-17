@@ -4,19 +4,24 @@ import {
   COST_ROAD, COST_AVENUE, COST_ZONE, COST_LIGHT, COST_ROUNDABOUT, BRIDGE_FACTOR, SERVICES, idx, isService,
 } from './constants';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, buildPieces, measurePath, sampleCurve } from './roads/network';
+import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
 import { MeshBuilder } from './render/meshBuilder';
 import type { Game } from './game';
 
 export type Tool =
-  | 'road' | 'avenue' | 'roundabout' | 'light' | 'oneway'
+  | 'none'
+  | 'road' | 'avenue' | 'upgrade'
+  | 'roundabout' | 'light' | 'oneway'
   | 'res' | 'com' | 'ind'
   | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet'
   | 'bulldoze';
-export type RoadMode = 'straight' | 'curve';
+/** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
+export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
-  road: 0x8fa3b8, avenue: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff,
+  none: 0xffffff,
+  road: 0x8fa3b8, avenue: 0xc9d2dc, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a,
   bulldoze: 0xe04b3a,
@@ -25,34 +30,15 @@ const SERVICE_TOOL: Partial<Record<Tool, number>> = { coal: T_COAL, wind: T_WIND
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND };
 const ROUNDABOUT_R = 2.3;
 const BAD = 0xe04b3a;
+const GUIDE = 0xffffff;
 
 type P = { x: number; z: number };
-
-/** Ramer–Douglas–Peucker simplification of a freehand stroke. */
-function simplify(pts: P[], tol: number): P[] {
-  if (pts.length < 3) return pts.slice();
-  const keep = new Uint8Array(pts.length);
-  keep[0] = 1;
-  keep[pts.length - 1] = 1;
-  const stack: [number, number][] = [[0, pts.length - 1]];
-  while (stack.length) {
-    const [a, b] = stack.pop()!;
-    let worst = 0, wi = -1;
-    const ax = pts[a].x, az = pts[a].z, dx = pts[b].x - ax, dz = pts[b].z - az;
-    const l = Math.hypot(dx, dz) || 1;
-    for (let i = a + 1; i < b; i++) {
-      const d = Math.abs((pts[i].x - ax) * dz - (pts[i].z - az) * dx) / l;
-      if (d > worst) { worst = d; wi = i; }
-    }
-    if (worst > tol && wi > 0) { keep[wi] = 1; stack.push([a, wi], [wi, b]); }
-  }
-  return pts.filter((_, i) => keep[i]);
-}
 
 const m4 = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const one = new THREE.Vector3(1, 1, 1);
 const tmpColor = new THREE.Color();
+const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
 
 export class Input {
   tool: Tool = 'road';
@@ -60,7 +46,7 @@ export class Input {
   onToolChange: ((t: Tool) => void) | null = null;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
-  /** Live cost label next to the cursor; null hides it. */
+  /** Live label next to the cursor; null hides it. */
   onCost: ((text: string | null, x: number, y: number, ok: boolean) => void) | null = null;
 
   private raycaster = new THREE.Raycaster();
@@ -71,12 +57,20 @@ export class Input {
   private shape: THREE.Mesh; // road / roundabout preview
   private rect: THREE.InstancedMesh;
   private rectMat: THREE.MeshBasicMaterial;
+
+  // Road placement: points clicked so far for the segment being laid ([start] or [start, bend]).
+  private chain: P[] = [];
+  /** Direction the road was heading when it reached chain[0]; drives Smooth mode. */
+  private tangent: P | null = null;
+  private downScreen: { x: number; y: number } | null = null;
+  private downWorld: P | null = null;
+  private rightDown: { x: number; y: number } | null = null;
+
+  // Rectangle tools.
   private dragging = false;
-  private startP: P = { x: 0, z: 0 };
-  private raw: P[] = [];
-  private path: P[] = [];
   private startTile = -1;
   private curTile = -1;
+
   private flipped = new Set<number>();
   private canvas: HTMLCanvasElement;
   private camera: THREE.Camera;
@@ -96,7 +90,7 @@ export class Input {
 
     this.shape = new THREE.Mesh(
       new THREE.BufferGeometry(),
-      new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide }),
     );
     this.shape.frustumCulled = false;
     this.shape.renderOrder = 3;
@@ -116,7 +110,7 @@ export class Input {
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     window.addEventListener('pointerup', this.onUp);
-    canvas.addEventListener('pointerleave', () => { if (!this.dragging) this.clearHover(); });
+    canvas.addEventListener('pointerleave', () => { if (!this.dragging && !this.chain.length) this.clearHover(); });
     window.addEventListener('keydown', this.onKey);
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
@@ -129,6 +123,7 @@ export class Input {
   }
 
   setMode(m: RoadMode): void {
+    this.cancel();
     this.mode = m;
     this.onModeChange?.(m);
   }
@@ -144,17 +139,25 @@ export class Input {
   private onKey = (e: KeyboardEvent): void => {
     if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
     const map: Record<string, Tool> = {
-      r: 'road', v: 'avenue', o: 'roundabout', t: 'light', y: 'oneway',
+      r: 'road', v: 'avenue', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway',
       '1': 'res', '2': 'com', '3': 'ind', b: 'bulldoze',
     };
-    const t = map[e.key.toLowerCase()];
+    const key = e.key.toLowerCase();
+    const t = map[key];
     if (t) this.setTool(t);
-    if (e.key.toLowerCase() === 'c') this.setMode(this.mode === 'straight' ? 'curve' : 'straight');
-    if (e.key === 'Escape') this.cancel();
+    if (key === 'c') {
+      const order: RoadMode[] = ['straight', 'curve', 'smooth'];
+      this.setMode(order[(order.indexOf(this.mode) + 1) % order.length]);
+    }
+    if (e.key === 'Escape') {
+      // First Escape drops the road being laid; the next one puts the tool away.
+      if (this.chain.length || this.dragging) this.cancel();
+      else if (this.tool !== 'none') this.setTool('none');
+    }
   };
 
   // ---- picking and snapping --------------------------------------------------------------------
-  private pick(e: PointerEvent): P | null {
+  private pick(e: { clientX: number; clientY: number }): P | null {
     const r = this.canvas.getBoundingClientRect();
     this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(this.ndc, this.camera);
@@ -165,15 +168,23 @@ export class Input {
     return { x, z };
   }
 
-  /** Snap a road point to an existing node, then an existing road, then (optionally) the tile center. */
-  private snap(p: P, grid: boolean): P {
+  private gridSnap(p: P): P {
+    return { x: Math.floor(p.x) + 0.5, z: Math.floor(p.z) + 0.5 };
+  }
+
+  /** Snap a road point to an existing node, then an existing road, then the tile center. */
+  private snap(p: P): P {
     const net = this.game.net;
     const n = net.nearestNode(p.x, p.z, 0.9);
     if (n) return { x: n.x, z: n.z };
     const h = net.nearestSeg(p.x, p.z, 0.8);
     if (h) return { x: h.x, z: h.z };
-    if (grid) return { x: Math.floor(p.x) + 0.5, z: Math.floor(p.z) + 0.5 };
-    return p;
+    return this.gridSnap(p);
+  }
+
+  private onRoad(p: P): boolean {
+    const net = this.game.net;
+    return !!net.nearestNode(p.x, p.z, 0.9) || !!net.nearestSeg(p.x, p.z, 0.8);
   }
 
   private tileOf(p: P): number {
@@ -182,14 +193,13 @@ export class Input {
 
   // ---- pointer handling --------------------------------------------------------------------------
   private onDown = (e: PointerEvent): void => {
-    if (e.button !== 0) return;
+    if (e.button === 2) { this.rightDown = { x: e.clientX, y: e.clientY }; return; }
+    if (e.button !== 0 || this.tool === 'none') return;
     const p = this.pick(e);
     if (!p) return;
     if (this.isRoadTool()) {
-      this.dragging = true;
-      this.startP = this.snap(p, true);
-      this.raw = [p];
-      this.path = [this.startP];
+      this.downScreen = { x: e.clientX, y: e.clientY };
+      this.downWorld = p;
     } else if (this.isRectTool()) {
       this.dragging = true;
       this.startTile = this.tileOf(p);
@@ -201,13 +211,16 @@ export class Input {
   };
 
   private onMove = (e: PointerEvent): void => {
+    if (this.tool === 'none') { this.clearHover(); return; }
     const p = this.pick(e);
-    if (!p) { if (!this.dragging) this.clearHover(); return; }
-    if (this.dragging && this.isRoadTool()) {
-      const last = this.raw[this.raw.length - 1];
-      if (Math.hypot(p.x - last.x, p.z - last.z) > 0.7) this.raw.push(p);
-      this.path = this.roadPath(p);
-      this.previewRoad(e);
+    if (!p) { if (!this.dragging && !this.chain.length) this.clearHover(); return; }
+    if (this.isRoadTool()) {
+      // A press-and-drag previews from the press point, so a quick drag still lays a road.
+      const pressing = this.downScreen && this.downWorld && !this.chain.length
+        && Math.hypot(e.clientX - this.downScreen.x, e.clientY - this.downScreen.y) > 10;
+      if (pressing) this.previewRoad([this.snap(this.downWorld!)], null, p, e);
+      else if (this.chain.length) this.previewRoad(this.chain, this.tangent, p, e);
+      else this.updateHover(p, e);
     } else if (this.dragging) {
       const t = this.tileOf(p);
       if (t !== this.curTile) { this.curTile = t; this.updateRect(); }
@@ -217,18 +230,44 @@ export class Input {
   };
 
   private onUp = (e: PointerEvent): void => {
-    if (e.button !== 0 || !this.dragging) return;
-    if (this.isRoadTool()) this.commitRoad();
-    else this.commitRect();
-    this.cancel();
+    if (e.button === 2) {
+      // A right click that did not turn into a camera drag cancels the road being laid.
+      const d = this.rightDown;
+      this.rightDown = null;
+      if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6 && this.chain.length) this.cancel();
+      return;
+    }
+    if (e.button !== 0) return;
+    if (this.isRoadTool() && this.downScreen && this.downWorld) {
+      const moved = Math.hypot(e.clientX - this.downScreen.x, e.clientY - this.downScreen.y);
+      const up = this.pick(e) ?? this.downWorld;
+      const down = this.downWorld;
+      this.downScreen = null;
+      this.downWorld = null;
+      if (moved > 10 && this.chain.length === 0) {
+        // Drag = two clicks: press point, then release point.
+        this.roadClick(down);
+        this.roadClick(up);
+      } else {
+        this.roadClick(up);
+      }
+      if (this.chain.length) this.previewRoad(this.chain, this.tangent, up, e);
+      return;
+    }
+    if (!this.dragging) return;
+    this.commitRect();
+    this.dragging = false;
+    this.rect.count = 0;
   };
 
   private cancel(): void {
     this.dragging = false;
+    this.chain = [];
+    this.tangent = null;
+    this.downScreen = null;
+    this.downWorld = null;
     this.rect.count = 0;
     this.shape.visible = false;
-    this.raw = [];
-    this.path = [];
     this.onCost?.(null, 0, 0, true);
   }
 
@@ -239,11 +278,39 @@ export class Input {
   }
 
   // ---- roads ---------------------------------------------------------------------------------------
-  private roadPath(current: P): P[] {
-    if (this.mode === 'straight') return [this.startP, this.snap(current, true)];
-    const end = this.snap(current, false);
-    const pts = [this.startP, ...this.raw.slice(1, -1), end];
-    return simplify(pts, 0.55);
+  /** Heading of an existing dead-end road at this point, so Smooth mode can continue it. */
+  private tangentAt(p: P): P | null {
+    const net = this.game.net;
+    const n = net.nearestNode(p.x, p.z, 0.05);
+    if (!n || net.degree(n.id) !== 1) return null;
+    const s = net.segsAt(n.id)[0];
+    const atB = s.b === n.id;
+    Network.poseAt(s, atB ? s.len : 0, pose);
+    return atB ? { x: pose.tx, z: pose.tz } : { x: -pose.tx, z: -pose.tz };
+  }
+
+  /** Bend point that leaves `a` along `t` and arrives at `b` as a roughly circular arc. */
+  private smoothControl(a: P, t: P, b: P): P {
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    const dot = dx * t.x + dz * t.z;
+    let s = dot > 0.1 * len ? (len * len) / (2 * dot) : len * 0.6;
+    s = Math.max(len * 0.25, Math.min(len * 1.2, s));
+    return { x: a.x + t.x * s, z: a.z + t.z * s };
+  }
+
+  /** Guide points for the segment that would be built if the user clicked at `end`. */
+  private pendingPath(chain: P[], tangent: P | null, end: P): P[] {
+    const start = chain[0];
+    if (this.mode === 'curve' && chain.length > 1) return [start, chain[1], end];
+    if (this.mode === 'smooth' && tangent) {
+      const dx = end.x - start.x, dz = end.z - start.z;
+      const l = Math.hypot(dx, dz) || 1;
+      // Nearly straight ahead: skip the bend so it stays a clean line.
+      if ((dx * tangent.x + dz * tangent.z) / l > 0.995) return [start, end];
+      return [start, this.smoothControl(start, tangent, end), end];
+    }
+    return [start, end];
   }
 
   private roadCost(path: P[]): number {
@@ -252,53 +319,91 @@ export class Input {
     return Math.round((m.len + m.wet * (BRIDGE_FACTOR - 1)) * unit);
   }
 
-  private pathLength(path: P[]): number {
-    let l = 0;
-    for (let i = 1; i < path.length; i++) l += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
-    return l;
+  private roadClick(p: P): void {
+    const g = this.game;
+    if (this.chain.length === 0) {
+      const s = this.snap(p);
+      this.chain = [s];
+      this.tangent = this.mode === 'smooth' ? this.tangentAt(s) : null;
+      return;
+    }
+    const start = this.chain[0];
+    if (this.mode === 'curve' && this.chain.length === 1) {
+      const c = this.gridSnap(p);
+      if (Math.hypot(c.x - start.x, c.z - start.z) < 0.8) return;
+      this.chain.push(c);
+      return;
+    }
+    const end = this.snap(p);
+    if (Math.hypot(end.x - start.x, end.z - start.z) < 0.8) return;
+    const path = this.pendingPath(this.chain, this.tangent, end);
+    const cost = this.roadCost(path);
+    if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
+    const joins = this.onRoad(end);
+    const kind = this.tool === 'avenue' ? KIND_AVENUE : KIND_ROAD;
+    const added = g.net.insertPath(path, kind);
+    if (added.length) {
+      g.spend(cost);
+      g.flush();
+    }
+    // Keep laying from where this piece ended, unless it joined an existing road.
+    const prev = path[path.length - 2];
+    const hl = Math.hypot(end.x - prev.x, end.z - prev.z) || 1;
+    if (joins) {
+      this.chain = [];
+      this.tangent = null;
+      this.shape.visible = false;
+      this.onCost?.(null, 0, 0, true);
+    } else {
+      this.chain = [end];
+      this.tangent = this.mode === 'smooth' ? { x: (end.x - prev.x) / hl, z: (end.z - prev.z) / hl } : null;
+    }
   }
 
-  private previewRoad(e: PointerEvent): void {
-    if (this.pathLength(this.path) < 0.6) { this.shape.visible = false; this.onCost?.(null, 0, 0, true); return; }
-    const cost = this.roadCost(this.path);
-    const ok = this.game.canAfford(cost);
-    const b = new MeshBuilder();
+  private previewRoad(chain: P[], tangent: P | null, cursor: P, e: { clientX: number; clientY: number }): void {
     const half = GRID / 2;
-    const hw = HALF_WIDTH[this.tool === 'avenue' ? KIND_AVENUE : KIND_ROAD];
-    for (const c of buildPieces(this.path)) {
-      const sm = sampleCurve(c);
-      const pts = new Float32Array((sm.n + 1) * 2);
-      for (let i = 0; i < pts.length; i++) pts[i] = sm.pts[i] - half;
-      b.ribbon(pts, sm.n + 1, hw, 0.09, ok ? TOOL_COLOR[this.tool] : BAD);
+    const b = new MeshBuilder();
+    const start = chain[0];
+    const choosingBend = this.mode === 'curve' && chain.length === 1 && !(this.downScreen && !this.chain.length);
+    let label: string | null = null;
+    let ok = true;
+
+    if (choosingBend) {
+      // Second click of a curve: show the tangent line out of the start point.
+      const c = this.gridSnap(cursor);
+      b.ribbon([start.x - half, start.z - half, c.x - half, c.z - half], 2, 0.05, 0.1, GUIDE);
+      b.disc(c.x - half, c.z - half, 0.22, 0.11, GUIDE);
+      label = 'Click to set the bend';
+    } else {
+      const end = this.snap(cursor);
+      if (Math.hypot(end.x - start.x, end.z - start.z) >= 0.8) {
+        const path = this.pendingPath(chain, tangent, end);
+        const cost = this.roadCost(path);
+        ok = this.game.canAfford(cost);
+        const hw = HALF_WIDTH[this.tool === 'avenue' ? KIND_AVENUE : KIND_ROAD];
+        for (const c of buildPieces(path)) {
+          const sm = sampleCurve(c);
+          const pts = new Float32Array((sm.n + 1) * 2);
+          for (let i = 0; i < pts.length; i++) pts[i] = sm.pts[i] - half;
+          b.ribbon(pts, sm.n + 1, hw, 0.09, ok ? TOOL_COLOR[this.tool] : BAD);
+        }
+        if (path.length === 3) {
+          // Show the bend handle so the shape of the curve is readable.
+          const c = path[1];
+          b.ribbon([start.x - half, start.z - half, c.x - half, c.z - half], 2, 0.035, 0.1, GUIDE);
+          b.ribbon([c.x - half, c.z - half, end.x - half, end.z - half], 2, 0.035, 0.1, GUIDE);
+          b.disc(c.x - half, c.z - half, 0.16, 0.11, GUIDE);
+        }
+        b.disc(end.x - half, end.z - half, 0.26, 0.11, GUIDE);
+        label = `$${cost.toLocaleString()}`;
+      }
     }
+    b.disc(start.x - half, start.z - half, 0.26, 0.11, GUIDE);
     this.shape.geometry.dispose();
     this.shape.geometry = b.build();
     this.shape.visible = true;
-    this.onCost?.(`$${cost.toLocaleString()}`, e.clientX, e.clientY, ok);
-  }
-
-  private commitRoad(): void {
-    const g = this.game;
-    const kind = this.tool === 'avenue' ? KIND_AVENUE : KIND_ROAD;
-    if (this.pathLength(this.path) < 0.6) {
-      // A click rather than a drag: convert the road under the cursor to this type.
-      const hit = g.net.nearestSeg(this.startP.x, this.startP.z, 0.9);
-      if (!hit || hit.seg.fixed || hit.seg.kind === kind) return;
-      const delta = (kind === KIND_AVENUE ? COST_AVENUE - COST_ROAD : 0) * hit.seg.len;
-      const cost = Math.round(delta);
-      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
-      hit.seg.kind = kind;
-      g.net.version++;
-      g.spend(cost);
-      g.flush();
-      return;
-    }
-    const cost = this.roadCost(this.path);
-    if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
-    const added = g.net.insertPath(this.path, kind);
-    if (!added.length) return;
-    g.spend(cost);
-    g.flush();
+    this.hover.visible = false;
+    this.onCost?.(label, e.clientX, e.clientY, ok);
   }
 
   // ---- rectangles: zones and bulldoze --------------------------------------------------------------
@@ -358,7 +463,17 @@ export class Input {
   private click(p: P): void {
     const g = this.game;
     const net = g.net;
-    if (this.tool === 'light') {
+    if (this.tool === 'upgrade') {
+      const h = net.nearestSeg(p.x, p.z, 0.9);
+      if (!h || h.seg.fixed) return;
+      const toAvenue = h.seg.kind === KIND_ROAD;
+      const cost = toAvenue ? Math.round((COST_AVENUE - COST_ROAD) * h.seg.len) : 0;
+      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
+      h.seg.kind = toAvenue ? KIND_AVENUE : KIND_ROAD;
+      net.version++;
+      g.spend(cost);
+      g.flush();
+    } else if (this.tool === 'light') {
       const n = net.nearestNode(p.x, p.z, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Traffic lights go on junctions of three or more roads'); return; }
       if (n.ring) { this.onToast?.('Roundabouts do not need lights'); return; }
@@ -437,15 +552,21 @@ export class Input {
     let label: string | null = null;
     let ok = true;
     if (this.isRoadTool()) {
-      const s = this.snap(p, true);
+      const s = this.snap(p);
       hx = s.x; hz = s.z; size = 0.6;
+      label = 'Click to start';
     } else if (this.tool === 'light') {
       const n = this.game.net.nearestNode(p.x, p.z, 1.4);
-      if (n && this.game.net.degree(n.id) >= 3 && !n.ring) { hx = n.x; hz = n.z; size = 1.4; label = n.light ? 'Remove light' : `$${COST_LIGHT}`; }
+      if (n && this.game.net.degree(n.id) >= 3 && !n.ring) { hx = n.x; hz = n.z; size = 1.4; label = n.light ? 'Remove signal' : `$${COST_LIGHT}`; }
       else { size = 0.5; color = BAD; }
-    } else if (this.tool === 'oneway') {
+    } else if (this.tool === 'oneway' || this.tool === 'upgrade') {
       const h = this.game.net.nearestSeg(p.x, p.z, 0.9);
-      if (h && !h.seg.fixed) { hx = h.x; hz = h.z; size = 0.8; } else { size = 0.5; color = BAD; }
+      if (h && !h.seg.fixed) {
+        hx = h.x; hz = h.z; size = 0.8;
+        if (this.tool === 'upgrade') {
+          label = h.seg.kind === KIND_ROAD ? `Upgrade $${Math.round((COST_AVENUE - COST_ROAD) * h.seg.len).toLocaleString()}` : 'Downgrade to road';
+        }
+      } else { size = 0.5; color = BAD; }
     } else {
       const k = SERVICE_TOOL[this.tool];
       if (k !== undefined) {

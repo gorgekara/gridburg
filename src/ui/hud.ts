@@ -1,9 +1,11 @@
 import type { Stats } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
+import { COST_AVENUE, COST_LIGHT, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND } from '../constants';
+import { icon } from './icons';
 
 export interface HudActions {
   setTool(t: Tool): void;
-  toggleMode(): void;
+  setMode(m: RoadMode): void;
   setSpeed(v: number): void;
   setTax(v: number): void;
   newCity(): void;
@@ -12,37 +14,63 @@ export interface HudActions {
   togglePollution(): boolean;
 }
 
-interface ToolDef { id: Tool; label: string; key?: string; hint: string }
-const GROUPS: { name: string; tools: ToolDef[] }[] = [
+interface ToolDef { id: Tool; label: string; key?: string; price: string; note?: string; hint: string }
+interface Category { id: string; label: string; tools: ToolDef[] }
+
+const money = (n: number): string => `$${n.toLocaleString()}`;
+const svc = (k: number): string => money(SERVICES[k].cost);
+
+// Laid out like the Cities: Skylines build menu: pick a category, then a tool from its panel.
+const CATEGORIES: Category[] = [
   {
-    name: 'Roads',
+    id: 'roads', label: 'Roads',
     tools: [
-      { id: 'road', label: 'Road', key: 'R', hint: 'Drag to build a road. Click an existing road to convert it. C switches straight / curved' },
-      { id: 'avenue', label: 'Avenue', key: 'V', hint: 'Wide and fast, holds far more traffic. Click an existing road to upgrade it' },
-      { id: 'roundabout', label: 'Roundabout', key: 'O', hint: 'Click a junction. Traffic flows through without stopping' },
-      { id: 'light', label: 'Signal', key: 'T', hint: 'Click a junction to add or remove traffic lights. Best where two busy roads cross' },
-      { id: 'oneway', label: 'One-way', key: 'Y', hint: 'Click a road to cycle: one-way, reversed, two-way' },
+      { id: 'road', label: 'Road', key: 'R', price: `${money(COST_ROAD)} / cell`, note: 'Two lanes', hint: 'Click to start, click again to finish. It keeps going from the last point until you join a road, right-click, or press Esc' },
+      { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
+      { id: 'upgrade', label: 'Upgrade', key: 'U', price: `${money(COST_AVENUE - COST_ROAD)} / cell`, note: 'Road ⇄ avenue', hint: 'Click an existing road to turn it into an avenue, or an avenue back into a road' },
     ],
   },
   {
-    name: 'Zones',
+    id: 'traffic', label: 'Traffic',
     tools: [
-      { id: 'res', label: 'Homes', key: '1', hint: 'Residential. Drag a rectangle next to a road' },
-      { id: 'com', label: 'Shops', key: '2', hint: 'Commercial. Drag a rectangle next to a road' },
-      { id: 'ind', label: 'Industry', key: '3', hint: 'Industrial. Pollutes the ground around it, so keep it away from homes' },
+      { id: 'roundabout', label: 'Roundabout', key: 'O', price: money(COST_ROUNDABOUT), note: 'Never stops', hint: 'Click a junction. Traffic circulates one way and nobody has to wait' },
+      { id: 'light', label: 'Signal', key: 'T', price: money(COST_LIGHT), note: 'Busy crossings', hint: 'Click a junction to add or remove traffic lights. Best where two busy roads cross' },
+      { id: 'oneway', label: 'One-way', key: 'Y', price: 'Free', note: 'Click to cycle', hint: 'Click a road to cycle: one-way, reversed, two-way' },
     ],
   },
   {
-    name: 'Utilities',
+    id: 'zones', label: 'Zones',
     tools: [
-      { id: 'wind', label: 'Wind', hint: 'Wind turbine: 250 power, clean' },
-      { id: 'coal', label: 'Coal', hint: 'Coal plant: 1,500 power, heavy pollution' },
-      { id: 'tower', label: 'Water tower', hint: 'Water tower: 350 water. Keep it off polluted ground' },
-      { id: 'pump', label: 'Pump', hint: 'River pump: 1,500 water. Must touch the river, upstream of any sewage outlet' },
-      { id: 'outlet', label: 'Sewage', hint: 'Sewage outlet: 1,500 sewage. Must touch the river; pollutes it downstream (arrows show the flow)' },
+      { id: 'res', label: 'Residential', key: '1', price: `${money(COST_ZONE)} / cell`, note: 'Homes', hint: 'Drag a rectangle beside a road. Buildings grow up to three cells back from it' },
+      { id: 'com', label: 'Commercial', key: '2', price: `${money(COST_ZONE)} / cell`, note: 'Shops and offices', hint: 'Drag a rectangle beside a road. Shops want customers nearby' },
+      { id: 'ind', label: 'Industrial', key: '3', price: `${money(COST_ZONE)} / cell`, note: 'Jobs, pollutes', hint: 'Drag a rectangle beside a road. Pollutes the ground around it, so keep it away from homes' },
     ],
   },
-  { name: '', tools: [{ id: 'bulldoze', label: 'Bulldoze', key: 'B', hint: 'Drag a rectangle to remove roads, zones and buildings' }] },
+  {
+    id: 'power', label: 'Electricity',
+    tools: [
+      { id: 'wind', label: 'Wind turbine', price: svc(T_WIND), note: `${SERVICES[T_WIND].power} MW · clean`, hint: 'Place beside a road. Power travels along connected roads' },
+      { id: 'coal', label: 'Coal plant', price: svc(T_COAL), note: `${SERVICES[T_COAL].power.toLocaleString()} MW · polluting`, hint: 'Lots of power and lots of ground pollution. Keep it away from homes and water towers' },
+    ],
+  },
+  {
+    id: 'water', label: 'Water',
+    tools: [
+      { id: 'tower', label: 'Water tower', price: svc(T_TOWER), note: `${SERVICES[T_TOWER].water} water`, hint: 'Works anywhere beside a road, but keep it off polluted ground' },
+      { id: 'pump', label: 'River pump', price: svc(T_PUMP), note: `${SERVICES[T_PUMP].water.toLocaleString()} water`, hint: 'Must touch the river. Put it upstream of any sewage outlet (arrows on the water show the flow)' },
+      { id: 'outlet', label: 'Sewage outlet', price: svc(T_OUTLET), note: `${SERVICES[T_OUTLET].sewage.toLocaleString()} sewage`, hint: 'Must touch the river. Fouls the water downstream of it' },
+    ],
+  },
+  {
+    id: 'bulldoze', label: 'Bulldoze',
+    tools: [{ id: 'bulldoze', label: 'Bulldoze', key: 'B', price: 'Free', hint: 'Drag a rectangle to remove roads, zones and buildings' }],
+  },
+];
+
+const MODES: { id: RoadMode; label: string; hint: string }[] = [
+  { id: 'straight', label: 'Straight', hint: 'Two clicks: start and end' },
+  { id: 'curve', label: 'Curved', hint: 'Three clicks: start, bend, end' },
+  { id: 'smooth', label: 'Smooth', hint: 'Every click continues the road as a flowing curve' },
 ];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -70,8 +98,15 @@ export class Hud {
   };
   private demandBars: HTMLElement[] = [];
   private toolBtns = new Map<Tool, HTMLButtonElement>();
+  private catBtns = new Map<string, HTMLButtonElement>();
+  private modeBtns = new Map<RoadMode, HTMLButtonElement>();
+  private panels = new Map<string, HTMLElement>();
+  private panel = el('div', 'panel');
+  private panelTitle = el('span', 'ptitle');
+  private openCat: string | null = null;
+  private tool: Tool = 'road';
+  private mode: RoadMode = 'straight';
   private speedBtns = new Map<number, HTMLButtonElement>();
-  private modeBtn = el('button', 'btn tool mode');
   private taxLabel = el('span', 'val');
   private taxInput = el('input');
   private toastEl = el('div', 'toast');
@@ -148,32 +183,58 @@ export class Hud {
     top.append(act);
     root.append(top, this.alerts);
 
-    const bottom = el('div', 'bar bottom');
-    const rowA = el('div', 'trow');
-    const rowB = el('div', 'trow');
-    bottom.append(this.hint, rowA, rowB);
-    for (const g of GROUPS) {
-      const grp = el('div', 'group');
-      if (g.name) grp.append(el('span', 'gname', g.name));
-      const row = el('div', 'grow');
-      for (const t of g.tools) {
-        const b = el('button', `btn tool ${t.id}`);
-        if (t.key) b.append(el('span', 'key', t.key));
-        b.append(el('span', undefined, t.label));
+    // Build menu: a panel of tool cards above a row of category buttons.
+    const dock = el('div', 'dock');
+    const head = el('div', 'phead');
+    head.append(this.panelTitle, this.hint);
+    this.panel.append(head);
+    for (const c of CATEGORIES) {
+      if (c.id === 'bulldoze') continue;
+      const body = el('div', 'pbody');
+      if (c.id === 'roads') {
+        const seg = el('div', 'modes');
+        seg.append(el('span', 'mlabel', 'Draw'));
+        for (const m of MODES) {
+          const b = el('button', 'mode');
+          b.append(icon(m.id, 20), el('span', undefined, m.label));
+          b.title = `${m.hint} (C cycles)`;
+          b.addEventListener('click', () => actions.setMode(m.id));
+          this.modeBtns.set(m.id, b);
+          seg.append(b);
+        }
+        body.append(seg);
+      }
+      for (const t of c.tools) {
+        const b = el('button', `card ${t.id}`);
+        const art = el('div', 'art');
+        art.append(icon(t.id, 30));
+        b.append(art, el('span', 'cname', t.label), el('span', 'cprice', t.price));
+        if (t.note) b.append(el('span', 'cnote', t.note));
+        if (t.key) b.append(el('span', 'ckey', t.key));
         b.title = t.hint;
         b.addEventListener('click', () => actions.setTool(t.id));
         this.toolBtns.set(t.id, b);
-        row.append(b);
-        if (t.id === 'avenue') {
-          this.modeBtn.addEventListener('click', actions.toggleMode);
-          this.modeBtn.title = 'Switch between straight and freehand curved roads (C)';
-          row.append(this.modeBtn);
-        }
+        body.append(b);
       }
-      grp.append(row);
-      (g.name === 'Roads' || g.name === '' ? rowA : rowB).append(grp);
+      this.panels.set(c.id, body);
+      this.panel.append(body);
     }
-    root.append(bottom, this.toastEl, this.costEl, this.help);
+    const cats = el('div', 'cats');
+    for (const c of CATEGORIES) {
+      const b = el('button', `cat ${c.id}`);
+      b.append(icon(c.id, 24), el('span', undefined, c.label));
+      b.addEventListener('click', () => {
+        if (c.id === 'bulldoze') { actions.setTool(this.tool === 'bulldoze' ? 'none' : 'bulldoze'); return; }
+        // Clicking the open category closes it and puts the tool away, like CS.
+        if (this.openCat === c.id) { actions.setTool('none'); return; }
+        const current = c.tools.find((t) => t.id === this.tool);
+        actions.setTool(current ? current.id : c.tools[0].id);
+      });
+      this.catBtns.set(c.id, b);
+      cats.append(b);
+    }
+    dock.append(this.panel, cats);
+    root.append(dock, this.toastEl, this.costEl, this.help);
 
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
@@ -202,8 +263,9 @@ export class Hud {
         <p>A small city builder about traffic. Everyone arrives by the <b>highway</b> at the edge of the map,
         so start by drawing a road from the end of it, then zone next to your roads.</p>
         <ul>
-          <li><b>Roads</b> — drag to build. <b>C</b> switches between straight roads at any angle and freehand
-          <b>curved</b> roads that follow your drag. Crossings become junctions. Click a road with the Avenue tool to upgrade it</li>
+          <li><b>Roads</b> — pick Road or Avenue, then <b>click</b> to place points. <b>Straight</b> is two clicks,
+          <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
+          right-click or <b>Esc</b> stops. Crossings become junctions</li>
           <li><b>Traffic</b> — cars queue for real. Busy junctions jam; fix them with <b>avenues</b>, <b>signals</b>,
           <b>one-way</b> streets or <b>roundabouts</b>. Roads turn red where traffic is slow</li>
           <li><b>Utilities</b> run along roads. Buildings need <b>power</b>, <b>water</b> and <b>sewage</b> to grow past
@@ -219,16 +281,32 @@ export class Hud {
   }
 
   setTool(t: Tool): void {
+    this.tool = t;
     for (const [id, b] of this.toolBtns) b.classList.toggle('active', id === t);
-    for (const g of GROUPS) {
-      const info = g.tools.find((x) => x.id === t);
-      if (info) this.hint.textContent = info.hint;
-    }
+    const cat = CATEGORIES.find((c) => c.tools.some((x) => x.id === t)) ?? null;
+    this.openCat = cat && cat.id !== 'bulldoze' ? cat.id : null;
+    for (const [id, b] of this.catBtns) b.classList.toggle('active', cat !== null && id === cat.id);
+    for (const [id, body] of this.panels) body.classList.toggle('open', id === this.openCat);
+    this.panel.classList.toggle('open', this.openCat !== null);
+    this.panelTitle.textContent = cat ? cat.label : '';
+    this.refreshHint();
   }
 
   setMode(m: RoadMode): void {
-    this.modeBtn.replaceChildren(el('span', 'key', 'C'), el('span', undefined, m === 'curve' ? 'Curved' : 'Straight'));
-    this.modeBtn.classList.toggle('curve', m === 'curve');
+    this.mode = m;
+    for (const [id, b] of this.modeBtns) b.classList.toggle('active', id === m);
+    this.refreshHint();
+  }
+
+  private refreshHint(): void {
+    const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
+    if (!def) { this.hint.textContent = ''; return; }
+    if (this.tool === 'road' || this.tool === 'avenue') {
+      const m = MODES.find((x) => x.id === this.mode)!;
+      this.hint.textContent = `${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
+    } else {
+      this.hint.textContent = def.hint;
+    }
   }
 
   setSpeed(v: number): void {

@@ -10,9 +10,10 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 
 ## What is in it
 
-- **Freeform roads.** Straight roads at any angle, or freehand curves that follow your drag. Crossings
-  become junctions automatically, endpoints snap to existing roads, and roads over water become bridges.
-- **Two road types.** Roads and wider, faster avenues. Click an existing road with the Avenue tool to upgrade it.
+- **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
+  end) or Smooth (every click continues the road as a flowing curve). Crossings become junctions
+  automatically, endpoints snap to existing roads, and roads over water become bridges.
+- **Two road types.** Roads and wider, faster avenues, plus an Upgrade tool to convert one into the other.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop.
 - **A highway entry.** One fixed connection to the outside world. Buildings only grow when their road
@@ -27,12 +28,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 
 | Input | Action |
 | --- | --- |
-| Left drag | Build with the selected tool |
+| Left click | Place road points, signals, roundabouts and service buildings |
+| Left drag | Zone or bulldoze a rectangle (a drag also lays a single road) |
+| Right click / Esc | Stop laying a road; Esc again puts the tool away |
 | Right drag, Q / E | Rotate |
 | WASD / arrows, middle drag | Pan |
 | Wheel | Zoom |
-| R, V | Road, Avenue |
-| C | Switch straight / curved road drawing |
+| R, V, U | Road, Avenue, Upgrade |
+| C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |
 | 1, 2, 3 | Homes, Shops, Industry |
 | B | Bulldoze |

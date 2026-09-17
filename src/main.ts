@@ -27,7 +27,7 @@ const input = new Input(canvas, camera, game, scene);
 
 const hud = new Hud(uiRoot, {
   setTool: (t) => input.setTool(t),
-  toggleMode: () => input.setMode(input.mode === 'straight' ? 'curve' : 'straight'),
+  setMode: (m) => input.setMode(m),
   setSpeed: (v) => { game.setSpeed(v); hud.setSpeed(v); },
   setTax: (v) => game.setTax(v),
   newCity: () => {
@@ -114,9 +114,10 @@ game.setSpeed(1);
 // Start looking at the highway entry, since that is where every city begins.
 {
   const e = game.terrain.entry;
-  const tx = e.x + e.dx * 14 - 40, tz = e.z + e.dz * 14 - 40;
+  // Aim a little nearer the camera than the road end so it sits above the build menu.
+  const tx = e.x + e.dx * 12 - 40 + 4, tz = e.z + e.dz * 12 - 40 + 9;
   controls.target.set(tx, 0, tz);
-  camera.position.set(tx + 16, 26, tz + 26);
+  camera.position.set(tx + 14, 30, tz + 30);
 }
 
 setInterval(() => saveLocal(game.snapshot()), 5000);
