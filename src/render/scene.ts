@@ -21,17 +21,17 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xc6e4f5);
-  scene.fog = new THREE.Fog(0xc6e4f5, 90, 220);
+  scene.fog = new THREE.Fog(0xc6e4f5, 120, 280);
 
   const camera = new THREE.PerspectiveCamera(42, 1, 0.5, 400);
-  camera.position.set(28, 34, 42);
+  camera.position.set(30, 38, 46);
 
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
   controls.screenSpacePanning = false;
   controls.minDistance = 8;
-  controls.maxDistance = 130;
+  controls.maxDistance = 170;
   controls.minPolarAngle = 0.15;
   controls.maxPolarAngle = Math.PI / 2.25;
   controls.zoomSpeed = 1.2;
@@ -51,7 +51,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const sc = sun.shadow.camera;
-  sc.left = -48; sc.right = 48; sc.top = 48; sc.bottom = -48;
+  sc.left = -58; sc.right = 58; sc.top = 58; sc.bottom = -58;
   sc.near = 10; sc.far = 200;
   sun.shadow.bias = -0.0008;
   sun.shadow.normalBias = 0.02;
@@ -125,6 +125,18 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
       move.set(0, 0, 0).addScaledVector(fwd, mz * s).addScaledVector(right, mx * s);
       camera.position.add(move);
       controls.target.add(move);
+    }
+    // Q / E orbit the camera around the point it is looking at.
+    let spin = 0;
+    if (keys.has('KeyQ') || keys.has('q')) spin += 1;
+    if (keys.has('KeyE') || keys.has('e')) spin -= 1;
+    if (spin !== 0) {
+      const a = spin * dt * 1.7;
+      const ox = camera.position.x - controls.target.x;
+      const oz = camera.position.z - controls.target.z;
+      const cs = Math.cos(a), sn = Math.sin(a);
+      camera.position.x = controls.target.x + ox * cs - oz * sn;
+      camera.position.z = controls.target.z + ox * sn + oz * cs;
     }
     // Clamp the orbit target to the map.
     const t = controls.target;

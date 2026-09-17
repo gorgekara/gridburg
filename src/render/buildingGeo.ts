@@ -1,18 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND } from '../constants';
-
-/** Deterministic PRNG so every variant looks the same on every load. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
@@ -54,6 +42,21 @@ class Builder {
   cyl(r: number, h: number, x: number, y: number, z: number, color: number, seg = 10): void {
     const g = new THREE.CylinderGeometry(r, r, h, seg);
     g.translate(x, y + h / 2, z);
+    this.paint(g, color);
+  }
+
+  /** Tapered vertical cylinder with its base at y. */
+  taper(rTop: number, rBottom: number, h: number, x: number, y: number, z: number, color: number, seg = 14): void {
+    const g = new THREE.CylinderGeometry(rTop, rBottom, h, seg);
+    g.translate(x, y + h / 2, z);
+    this.paint(g, color);
+  }
+
+  /** Horizontal pipe along z, centered at (x, y, z). */
+  pipe(r: number, len: number, x: number, y: number, z: number, color: number): void {
+    const g = new THREE.CylinderGeometry(r, r, len, 10);
+    g.rotateX(Math.PI / 2);
+    g.translate(x, y, z);
     this.paint(g, color);
   }
 
@@ -223,5 +226,58 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.4, 0.36, 0.03, 0.15, 0, d / 2 + 0.005, 0x4a4a4a);
     }
   }
+  else if (kind === T_COAL) {
+    b.box(0.92, 0.04, 0.92, 0, 0, 0, 0x6f6a62);
+    b.box(0.5, 0.45, 0.55, -0.15, 0.04, 0.1, 0x8d8f94);
+    b.box(0.52, 0.06, 0.57, -0.15, 0.49, 0.1, 0x55585e);
+    b.windows(0.5, 0.45, 0.55, 0.12, 1, 3, 0.4, 0.1);
+    b.taper(0.13, 0.2, 0.75, 0.25, 0.04, -0.2, 0xcfcac0);
+    b.cyl(0.055, 1.25, 0.28, 0.04, 0.28, 0x5a5650, 10);
+    b.cyl(0.062, 0.07, 0.28, 1.2, 0.28, 0xb8433a, 10);
+    b.cyl(0.055, 1.05, 0.1, 0.04, 0.33, 0x5a5650, 10);
+    b.cyl(0.062, 0.07, 0.1, 1.0, 0.33, 0xb8433a, 10);
+    b.box(0.3, 0.12, 0.25, -0.2, 0.04, -0.3, 0x24262b);
+  } else if (kind === T_WIND) {
+    b.cyl(0.16, 0.05, 0, 0, 0, 0x8f8a80, 12);
+    b.taper(0.03, 0.055, 1.7, 0, 0.05, 0, 0xf2f2ee, 10);
+    b.box(0.1, 0.1, 0.24, 0, 1.72, 0.02, 0xe4e4df);
+  } else if (kind === T_PUMP) {
+    b.box(0.8, 0.04, 0.8, 0, 0, 0, 0x8f9aa3);
+    b.box(0.5, 0.36, 0.45, -0.1, 0.04, 0, 0xb9c7d1);
+    b.box(0.54, 0.05, 0.49, -0.1, 0.4, 0, 0x4a7fa8);
+    b.cyl(0.14, 0.3, 0.27, 0.04, 0.12, 0x4a7fa8, 12);
+    b.pipe(0.05, 0.7, 0.27, 0.14, -0.1, 0x3d6a8c);
+    b.box(0.14, 0.22, 0.02, -0.1, 0.04, 0.23, 0x2c3b47);
+  } else if (kind === T_TOWER) {
+    b.box(0.6, 0.03, 0.6, 0, 0, 0, 0x8f9aa3);
+    for (const [x, z] of [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]]) b.box(0.05, 1.0, 0.05, x, 0.03, z, 0x7d8790);
+    b.cyl(0.04, 1.0, 0, 0.03, 0, 0x6b757d, 8);
+    b.cyl(0.32, 0.4, 0, 1.0, 0, 0xcfe0ec, 16);
+    b.cyl(0.34, 0.05, 0, 1.18, 0, 0x4a7fa8, 16);
+    b.taper(0.02, 0.33, 0.16, 0, 1.4, 0, 0xa9bccb, 16);
+  } else if (kind === T_OUTLET) {
+    b.box(0.8, 0.04, 0.8, 0, 0, 0, 0x8a857a);
+    b.box(0.5, 0.3, 0.4, 0.1, 0.04, 0.05, 0xa39d8f);
+    b.box(0.54, 0.05, 0.44, 0.1, 0.34, 0.05, 0x6d5b3c);
+    b.pipe(0.11, 0.75, -0.25, 0.15, -0.05, 0x6d5b3c);
+    b.cyl(0.13, 0.22, 0.2, 0.04, -0.27, 0x7c705a, 12);
+    b.box(0.14, 0.2, 0.02, 0.1, 0.04, 0.255, 0x2f2a22);
+  }
   return b.build();
+}
+
+/** Three-bladed rotor in the XY plane, centered on the hub. */
+export function rotorGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let k = 0; k < 3; k++) {
+    const g = new THREE.BoxGeometry(0.07, 0.62, 0.02);
+    g.translate(0, 0.33, 0);
+    g.rotateZ((k * Math.PI * 2) / 3);
+    parts.push(g);
+  }
+  const hub = new THREE.CylinderGeometry(0.05, 0.05, 0.06, 10);
+  hub.rotateX(Math.PI / 2);
+  parts.push(hub);
+  const flat = parts.map((g) => (g.index ? g.toNonIndexed() : g));
+  return mergeGeometries(flat, false)!;
 }

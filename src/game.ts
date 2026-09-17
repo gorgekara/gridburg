@@ -1,17 +1,31 @@
-import { MAX_CARS, N_TILES, START_MONEY, isRoad, neighbor8, opposite8 } from './constants';
+import { GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
+import { Network, KIND_AVENUE } from './roads/network';
+import { rasterize } from './roads/raster';
+import type { Raster } from './roads/raster';
+import { generateTerrain } from './terrain';
+import type { Terrain } from './terrain';
 import { emptyStats } from './sim/messages';
-import type { MainToWorker, Stats, WorkerToMain } from './sim/messages';
+import type { EditPayload, MainToWorker, Stats, WorkerToMain } from './sim/messages';
+import type { SaveData } from './save';
 
 /** Main-thread mirror of the city plus the bridge to the simulation worker. */
 export class Game {
+  seed = 1;
+  terrain: Terrain = generateTerrain(1);
+  net = new Network();
+  raster: Raster = rasterize(this.net);
   kind = new Uint8Array(N_TILES);
-  /** Diagonal road links: bit d (odd d in 0..7) set when this tile connects to that diagonal neighbor. */
-  link = new Uint8Array(N_TILES);
   level = new Uint8Array(N_TILES);
+  flags: Uint8Array = new Uint8Array(N_TILES);
+  pollution: Uint8Array = new Uint8Array(N_TILES);
+  riverPollution: Uint8Array = new Uint8Array(0);
   stats: Stats = emptyStats(START_MONEY);
   tax = 10;
   speed = 1;
-  congestion: Uint8Array = new Uint8Array(N_TILES);
+  simTime = 0;
+  /** Segment ids in the order last sent to the worker; congestion frames are indexed the same way. */
+  segOrder: number[] = [];
+  segCong: Uint8Array = new Uint8Array(0);
   carsPrev: Float32Array = new Float32Array(MAX_CARS * 4);
   carsNext: Float32Array = new Float32Array(MAX_CARS * 4);
   prevTime = 0;
@@ -19,11 +33,14 @@ export class Game {
 
   onState: (() => void) | null = null;
   onEdit: (() => void) | null = null;
+  onTerrain: (() => void) | null = null;
   onFrame: (() => void) | null = null;
 
   private worker: Worker;
   private pendingSpent = 0;
   private dirty = false;
+  private serial = 0;
+  private rasterVersion = -1;
 
   constructor() {
     this.worker = new Worker(new URL('./sim/worker.ts', import.meta.url), { type: 'module' });
@@ -31,6 +48,9 @@ export class Game {
       const m = ev.data;
       if (m.type === 'state') {
         this.level.set(m.level);
+        this.flags = m.flags;
+        this.pollution = m.pollution;
+        this.riverPollution = m.riverPollution;
         this.stats = m.stats;
         this.onState?.();
       } else {
@@ -38,7 +58,8 @@ export class Game {
         this.carsNext = m.cars;
         this.prevTime = this.nextTime;
         this.nextTime = performance.now();
-        this.congestion = m.congestion;
+        this.simTime = m.simTime;
+        if (m.serial === this.serial) this.segCong = m.segCong;
         this.onFrame?.();
       }
     };
@@ -52,60 +73,86 @@ export class Game {
     return this.stats.money - this.pendingSpent >= cost;
   }
 
-  /** Change a tile's kind. Returns false if unchanged. Clears diagonal links when it stops being a road. */
+  spend(cost: number): void {
+    this.pendingSpent += cost;
+    this.dirty = true;
+  }
+
+  /** Can something be placed on this tile at all? */
+  buildable(i: number): boolean {
+    return !this.terrain.water[i] && !this.raster.cover[i];
+  }
+
+  /** Change a tile's kind. Returns false if unchanged. */
   setKind(i: number, k: number, cost: number): boolean {
     if (this.kind[i] === k) return false;
     this.kind[i] = k;
-    this.level[i] = 0;
-    if (!isRoad(k)) this.clearLinks(i);
+    this.level[i] = isService(k) ? 1 : 0;
     this.pendingSpent += cost;
     this.dirty = true;
     return true;
   }
 
-  /** Connect tile i to its diagonal neighbor in 8-direction d (both must be roads). */
-  addLink(i: number, d: number): void {
-    const n = neighbor8(i, d);
-    if (n < 0 || !(d & 1) || !isRoad(this.kind[i]) || !isRoad(this.kind[n])) return;
-    const bit = 1 << d;
-    const back = 1 << opposite8(d);
-    if ((this.link[i] & bit) && (this.link[n] & back)) return;
-    this.link[i] |= bit;
-    this.link[n] |= back;
-    this.dirty = true;
-  }
-
-  private clearLinks(i: number): void {
-    for (let d = 1; d < 8; d += 2) {
-      const n = neighbor8(i, d);
-      if (n >= 0) this.link[n] &= ~(1 << opposite8(d));
+  private payload(): EditPayload {
+    if (this.rasterVersion !== this.net.version) {
+      this.raster = rasterize(this.net);
+      this.rasterVersion = this.net.version;
+      // Roads pave over whatever was on the tile.
+      for (let i = 0; i < N_TILES; i++) {
+        if (this.raster.cover[i] && (isZone(this.kind[i]) || isService(this.kind[i]))) {
+          this.kind[i] = 0;
+          this.level[i] = 0;
+        }
+      }
     }
-    this.link[i] = 0;
+    const net = this.net.toPlain();
+    this.segOrder = net.segs.map((s) => s[0]);
+    this.serial++;
+    this.segCong = new Uint8Array(this.segOrder.length);
+    return {
+      kind: this.kind.slice(), net, serial: this.serial,
+      cover: this.raster.cover.slice(), accSeg: this.raster.accSeg.slice(), accS: this.raster.accS.slice(),
+    };
   }
 
   /** Push accumulated edits to the worker. */
   flush(): void {
-    if (!this.dirty) return;
-    this.send({ type: 'kind', kind: this.kind.slice(), link: this.link.slice(), spent: this.pendingSpent });
+    if (!this.dirty && this.rasterVersion === this.net.version) return;
+    this.send({ type: 'edit', spent: this.pendingSpent, ...this.payload() });
     this.stats.money -= this.pendingSpent;
     this.pendingSpent = 0;
     this.dirty = false;
     this.onEdit?.();
   }
 
-  load(kind: Uint8Array, link: Uint8Array, level: Uint8Array, money: number, tick: number, tax: number): void {
-    this.kind.set(kind);
-    this.link.set(link);
-    this.level.set(level);
-    this.tax = tax;
-    this.stats = emptyStats(money);
-    this.stats.tick = tick;
+  load(d: SaveData): void {
+    this.seed = d.seed;
+    this.terrain = generateTerrain(d.seed);
+    this.net = Network.fromPlain(d.net);
+    this.rasterVersion = -1;
+    this.kind.set(d.kind);
+    this.level.set(d.level);
+    this.flags = new Uint8Array(N_TILES);
+    this.pollution = new Uint8Array(N_TILES);
+    this.riverPollution = new Uint8Array(this.terrain.river.length);
+    this.tax = d.tax;
+    this.stats = emptyStats(d.money);
+    this.stats.tick = d.tick;
     this.pendingSpent = 0;
     this.dirty = false;
-    this.carsPrev.fill(0);
-    this.carsNext.fill(0);
-    this.send({ type: 'load', kind: kind.slice(), link: link.slice(), level: level.slice(), money, tick, tax });
+    this.carsPrev = new Float32Array(MAX_CARS * 4);
+    this.carsNext = new Float32Array(MAX_CARS * 4);
+    const payload = this.payload();
+    this.send({ type: 'load', seed: d.seed, level: this.level.slice(), money: d.money, tick: d.tick, tax: d.tax, ...payload });
+    this.onTerrain?.();
     this.onEdit?.();
+  }
+
+  snapshot(): SaveData {
+    return {
+      seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(),
+      money: this.stats.money, tick: this.stats.tick, tax: this.tax,
+    };
   }
 
   setSpeed(v: number): void {
@@ -121,4 +168,28 @@ export class Game {
   warm(ticks: number): void {
     this.send({ type: 'warm', ticks });
   }
+}
+
+/** A fresh map: a seeded river and the fixed highway stub that connects the city to the outside. */
+export function newCity(seed: number): SaveData {
+  const terrain = generateTerrain(seed);
+  const net = new Network();
+  const e = terrain.entry;
+  const a = net.addNode(e.x, e.z);
+  a.entry = true;
+  a.fixed = true;
+  const len = 7;
+  const bx = Math.max(1, Math.min(GRID - 1, e.x + e.dx * len));
+  const bz = Math.max(1, Math.min(GRID - 1, e.z + e.dz * len));
+  const b = net.addNode(bx, bz);
+  b.fixed = true;
+  net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_AVENUE, false, true);
+  return {
+    seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
+    money: START_MONEY, tick: 0, tax: 10,
+  };
+}
+
+export function randomSeed(): number {
+  return (Math.floor(Math.random() * 0xfffffff) + 1) >>> 0;
 }
