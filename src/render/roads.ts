@@ -1,6 +1,9 @@
+import { roadHeight } from '../roads/structures';
+import { Builder } from './buildingGeo';
+import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, isGreen } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, signalPhase } from '../roads/network';
 import type { Pose } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
@@ -19,19 +22,24 @@ const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
 const m4 = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const v3 = new THREE.Vector3();
-const one = new THREE.Vector3(1, 1, 1);
+const one = new THREE.Vector3(0.72, 0.72, 0.72);
 const LAMP_RED = new THREE.Color(0xff3b30);
+const LAMP_AMBER = new THREE.Color(0xffbf35);
+const LAMP_OFF = new THREE.Color(0x28312e);
 const LAMP_GREEN = new THREE.Color(0x34e36b);
 const MAX_LAMPS = 2048;
 
 /** Draws the whole road network as one vertex-colored mesh, rebuilt whenever the network changes. */
 export class RoadLayer {
   readonly group = new THREE.Group();
-  private mesh: THREE.Mesh;
+  readonly mesh: THREE.Mesh;
   private poles: THREE.InstancedMesh;
   private lamps: THREE.InstancedMesh;
   private lampInfo: { node: number; group: number }[] = [];
   private ranges = new Map<number, [number, number]>();
+  private builtNet: Network | null = null;
+  private builtVersion = -1;
+  private builtTerrain: Terrain | null = null;
   private sign = new THREE.Group();
 
   constructor() {
@@ -41,13 +49,18 @@ export class RoadLayer {
     this.mesh.frustumCulled = false;
     this.group.add(this.mesh);
 
-    const poleGeo = new THREE.BoxGeometry(0.05, 0.55, 0.05);
-    poleGeo.translate(0, 0.275, 0);
-    this.poles = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x2b2d33 }), MAX_LAMPS);
-    const lampGeo = new THREE.BoxGeometry(0.13, 0.2, 0.13);
-    lampGeo.translate(0, 0.62, 0);
-    this.lamps = new THREE.InstancedMesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }), MAX_LAMPS);
-    this.lamps.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LAMPS * 3), 3);
+    const body = new Builder(1);
+    body.box(0.08, 0.08, 0.08, 0, 0, 0, 0x4d585d);
+    body.box(0.035, 0.75, 0.035, 0, 0.04, 0, 0x707b7e);
+    body.box(0.18, 0.38, 0.11, 0, 0.53, 0, 0x20282d);
+    body.box(0.2, 0.025, 0.17, 0, 0.91, -0.02, 0x283135);
+    for (const y of [0.6, 0.72, 0.84]) body.box(0.14, 0.02, 0.08, 0, y + 0.045, -0.09, 0x283135);
+    body.box(0.08, 0.09, 0.08, 0, 0.35, 0, 0xe0b552);
+    this.poles = new THREE.InstancedMesh(body.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
+    const lampGeo = new THREE.CircleGeometry(0.043, 10);
+    lampGeo.rotateY(Math.PI); lampGeo.translate(0, 0, -0.061);
+    this.lamps = new THREE.InstancedMesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }), MAX_LAMPS * 3);
+    this.lamps.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LAMPS * 9), 3);
     for (const m of [this.poles, this.lamps]) {
       m.count = 0;
       m.frustumCulled = false;
@@ -71,6 +84,9 @@ export class RoadLayer {
   }
 
   rebuild(net: Network, terrain: Terrain): void {
+    // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
+    if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
+    this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
     const b = new MeshBuilder();
     const half = GRID / 2;
     this.ranges.clear();
@@ -84,15 +100,18 @@ export class RoadLayer {
       return tx >= 0 && tz >= 0 && tx < GRID && tz < GRID && terrain.water[tz * GRID + tx] === 1;
     };
 
-    // Curbs and bridge decks first (lowest), then asphalt, then markings.
+    // Curbs and water-crossing decks first (lowest), then asphalt, then markings.
     for (const s of net.segs.values()) {
+      if (s.structure === 2) continue;
+      b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
       const hw = HALF_WIDTH[s.kind];
       const pts = world(s.pts, s.n + 1);
       b.ribbon(pts, s.n + 1, hw + 0.09, 0.03, CURB);
-      // Bridge: a concrete deck and rails wherever the road is over water.
+      // Bridges get a solid swept deck in StructureLayer; only a surface road over water keeps the
+      // flat deck and rails here.
       let runStart = -1;
       for (let i = 0; i <= s.n + 1; i++) {
-        const wet = i <= s.n && overWater(s.pts[i * 2], s.pts[i * 2 + 1]);
+        const wet = i <= s.n && s.structure !== 1 && overWater(s.pts[i * 2], s.pts[i * 2 + 1]);
         if (wet && runStart < 0) runStart = Math.max(0, i - 1);
         if (!wet && runStart >= 0) {
           const end = Math.min(s.n, i);
@@ -107,15 +126,19 @@ export class RoadLayer {
         }
       }
     }
+    b.heightAt = null;
     for (const n of net.nodes.values()) {
       let hw = 0;
       for (const s of net.segsAt(n.id)) hw = Math.max(hw, HALF_WIDTH[s.kind]);
       if (hw > 0) b.disc(n.x - half, n.z - half, hw + 0.09, 0.031, CURB);
     }
     for (const s of net.segs.values()) {
+      if (s.structure === 2) continue;
+      b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
       const pts = world(s.pts, s.n + 1);
       this.ranges.set(s.id, b.ribbon(pts, s.n + 1, HALF_WIDTH[s.kind], 0.045, ASPHALT));
     }
+    b.heightAt = null;
     for (const n of net.nodes.values()) {
       let hw = 0;
       for (const s of net.segsAt(n.id)) hw = Math.max(hw, HALF_WIDTH[s.kind]);
@@ -133,6 +156,8 @@ export class RoadLayer {
 
     // Markings.
     for (const s of net.segs.values()) {
+      if (s.structure === 2) continue;
+      b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
       const trimA = net.degree(s.a) >= 3 ? 1.0 : 0.2;
       const trimB = net.degree(s.b) >= 3 ? 1.0 : 0.2;
       const from = trimA;
@@ -167,10 +192,26 @@ export class RoadLayer {
       }
     }
 
+    b.heightAt = null;
+    // Zebra crossings and stop bars make signal-controlled approaches legible.
+    for (const node of net.nodes.values()) {
+      if (!node.light || net.degree(node.id) < 3) continue;
+      for (const seg of net.segsAt(node.id)) {
+        const atA = seg.a === node.id, along = Math.min(0.7, seg.len * 0.3);
+        Network.poseAt(seg, atA ? along : seg.len - along, pose);
+        const hw = HALF_WIDTH[seg.kind], x = pose.x - half, z = pose.z - half;
+        for (let across = -hw + 0.08; across < hw; across += 0.18) {
+          const px = x - pose.tz * across, pz = z + pose.tx * across;
+          b.ribbon([px - pose.tx * 0.15, pz - pose.tz * 0.15, px + pose.tx * 0.15, pz + pose.tz * 0.15], 2, 0.045, 0.06, WHITE);
+        }
+      }
+    }
+
     // The highway continues off the map so the entry reads as a connection to somewhere.
-    const entry = net.entryNode();
-    if (entry) {
-      const e = terrain.entry;
+    this.sign.visible = false;
+    for (const entry of net.nodes.values()) {
+      if (!entry.entry) continue;
+      const e = entrySite(entry.x, entry.z);
       const ex = entry.x - half, ez = entry.z - half;
       const far = new Float32Array([ex, ez, ex - e.dx * 140, ez - e.dz * 140]);
       const hw = HALF_WIDTH[KIND_AVENUE];
@@ -181,8 +222,6 @@ export class RoadLayer {
       this.sign.visible = true;
       this.sign.position.set(ex + e.dx * 1.5 - e.dz * 1.3, 0, ez + e.dz * 1.5 + e.dx * 1.3);
       this.sign.rotation.y = Math.atan2(e.dx, e.dz);
-    } else {
-      this.sign.visible = false;
     }
 
     this.mesh.geometry.dispose();
@@ -204,15 +243,19 @@ export class RoadLayer {
         const tx = pose.tx * dir, tz = pose.tz * dir;
         const off = HALF_WIDTH[s.kind] + 0.16;
         v3.set(pose.x - tz * off - half, 0, pose.z + tx * off - half);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(tx, tz));
         m4.compose(v3, q, one);
         this.poles.setMatrixAt(n, m4);
-        this.lamps.setMatrixAt(n, m4);
+        for (let lens = 0; lens < 3; lens++) {
+          v3.y = (0.84 - lens * 0.12) * 0.72; m4.compose(v3, q, one);
+          this.lamps.setMatrixAt(n * 3 + lens, m4);
+        }
         this.lampInfo.push({ node: node.id, group: groups.get(s.id) ?? 0 });
         n++;
       }
     }
     this.poles.count = n;
-    this.lamps.count = n;
+    this.lamps.count = n * 3;
     this.poles.instanceMatrix.needsUpdate = true;
     this.lamps.instanceMatrix.needsUpdate = true;
     this.updateLights(0);
@@ -221,7 +264,10 @@ export class RoadLayer {
   updateLights(simTime: number): void {
     for (let i = 0; i < this.lampInfo.length; i++) {
       const l = this.lampInfo[i];
-      this.lamps.setColorAt(i, isGreen(simTime, l.node, l.group) ? LAMP_GREEN : LAMP_RED);
+      const phase = signalPhase(simTime, l.node, l.group);
+      this.lamps.setColorAt(i * 3, phase === 'red' ? LAMP_RED : LAMP_OFF);
+      this.lamps.setColorAt(i * 3 + 1, phase === 'amber' ? LAMP_AMBER : LAMP_OFF);
+      this.lamps.setColorAt(i * 3 + 2, phase === 'green' ? LAMP_GREEN : LAMP_OFF);
     }
     if (this.lamps.instanceColor) this.lamps.instanceColor.needsUpdate = true;
   }

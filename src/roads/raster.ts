@@ -1,3 +1,4 @@
+import { roadHeight } from './structures';
 import { GRID, N_TILES } from '../constants';
 import { HALF_WIDTH } from './network';
 import type { Network } from './network';
@@ -15,6 +16,9 @@ export interface Raster {
   /** World position of that nearest point, for orienting buildings. */
   accX: Float32Array;
   accZ: Float32Array;
+  /** Visual lot centers close to narrow curbs; logical zoning cells remain stable. */
+  lotX: Float32Array;
+  lotZ: Float32Array;
 }
 
 /** Project the road network onto the tile grid: which tiles are paved and which can reach a road. */
@@ -24,6 +28,7 @@ export function rasterize(net: Network): Raster {
   const accS = new Float32Array(N_TILES);
   const accX = new Float32Array(N_TILES);
   const accZ = new Float32Array(N_TILES);
+  const roadWidth = new Float32Array(N_TILES);
   const best = new Float32Array(N_TILES).fill(1e9);
 
   for (const seg of net.segs.values()) {
@@ -46,13 +51,17 @@ export function rasterize(net: Network): Raster {
           const qx = x0 + dx * u, qz = z0 + dz * u;
           const d = Math.hypot(px - qx, pz - qz);
           const t = tz * GRID + tx;
+          const distance = seg.cum[i] + (seg.cum[i + 1] - seg.cum[i]) * u;
+          if (seg.structure === 2 && Math.abs(roadHeight(seg, distance)) > 0.8) continue;
           if (d < hw + 0.42) cover[t] = 1;
+          if (seg.structure) continue;
           if (d < reach && d < best[t]) {
             best[t] = d;
             accSeg[t] = seg.id;
             accS[t] = seg.cum[i] + (seg.cum[i + 1] - seg.cum[i]) * u;
             accX[t] = qx;
             accZ[t] = qz;
+            roadWidth[t] = hw;
           }
         }
       }
@@ -66,5 +75,41 @@ export function rasterize(net: Network): Raster {
       }
     }
   }
-  return { cover, accSeg, accS, accX, accZ };
+  const lotX = new Float32Array(N_TILES), lotZ = new Float32Array(N_TILES);
+  for (let i = 0; i < N_TILES; i++) {
+    const x = i % GRID + 0.5, z = Math.floor(i / GRID) + 0.5;
+    lotX[i] = x; lotZ[i] = z;
+    if (cover[i] || accSeg[i] < 0) continue;
+    const dx = accX[i] - x, dz = accZ[i] - z;
+    // Straight roadside strips can move together without changing their spacing.
+    // Curved frontage keeps its grid position to avoid rotating lots into each other.
+    if (Math.abs(dx) > 0.001 && Math.abs(dz) > 0.001) continue;
+    const distance = Math.hypot(dx, dz);
+    const front = roadWidth[i] + 0.09 + 0.5;
+    if (distance < front) continue;
+    const offset = Math.min(0.75, Math.max(0, distance - front - Math.floor(distance - front + 0.00001)));
+    lotX[i] += dx / distance * offset;
+    lotZ[i] += dz / distance * offset;
+  }
+  // Revert conflicting shifts at junctions, propagating only when a lot moves back.
+  // Straight rows retain their shared offset; each lot can be reset at most once.
+  const pending = Array.from({ length: N_TILES }, (_, i) => i);
+  for (let cursor = 0; cursor < pending.length; cursor++) {
+    const i = pending[cursor];
+    if (cover[i] || accSeg[i] < 0) continue;
+    const x = i % GRID, z = Math.floor(i / GRID);
+    for (let oz = -2; oz <= 2; oz++) for (let ox = -2; ox <= 2; ox++) {
+      if ((!ox && !oz) || x + ox < 0 || x + ox >= GRID || z + oz < 0 || z + oz >= GRID) continue;
+      const j = (z + oz) * GRID + x + ox;
+      if (cover[j] || accSeg[j] < 0) continue;
+      if (Math.abs(lotX[i] - lotX[j]) >= 0.999 || Math.abs(lotZ[i] - lotZ[j]) >= 0.999) continue;
+      for (const t of [i, j]) {
+        const tx = t % GRID + 0.5, tz = Math.floor(t / GRID) + 0.5;
+        if (lotX[t] === tx && lotZ[t] === tz) continue;
+        lotX[t] = tx; lotZ[t] = tz;
+        pending.push(t);
+      }
+    }
+  }
+  return { cover, accSeg, accS, accX, accZ, lotX, lotZ };
 }

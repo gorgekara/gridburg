@@ -1,7 +1,16 @@
-import { N_TILES, START_MONEY } from './constants';
+import type { IncidentSnapshot } from './sim/incidents';
+import { N_TILES, START_MONEY, T_RES, RES_POP, isZone, isService } from './constants';
+import { defaultFunding, FUNDING_KEYS, validFunding, LOAN_TOTAL, NEGLECT_LIMIT } from './management';
+import type { Funding } from './management';
+import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
 export interface SaveData {
+  incidents?: IncidentSnapshot;
+  funding?: Funding;
+  debt?: number;
+  neglect?: Uint8Array;
+  cityLevel?: number;
   seed: number;
   kind: Uint8Array;
   level: Uint8Array;
@@ -11,10 +20,10 @@ export interface SaveData {
   tax: number;
 }
 
-// Bumped with the road-network rewrite; older saves use tile roads and cannot be loaded.
+// Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 3;
-const HEAD = 14;
+const VERSION = 7;
+const HEAD = 28;
 const C_OFF = 40; // coordinates are stored as (value + 40) * 256 in a uint16
 const C_SCALE = 256;
 
@@ -36,18 +45,21 @@ const packC = (v: number): number => Math.max(0, Math.min(65535, Math.round((v +
 const unpackC = (v: number): number => v / C_SCALE - C_OFF;
 
 /**
- * Header (version, tax, int32 money, uint32 tick, uint32 seed), RLE tiles as (kind<<4|level, run),
- * then the road network with compacted ids: uint16 counts, 5 bytes per node, 9 per segment.
+ * v7 header (v6 layout; segment flags add bridge/tunnel structure bits): version, tax, money, tick, seed, city level, debt and nine funding percentages.
+ * RLE tiles: (kind<<2|level, run, service-neglect seconds),
+ * then the road network with compacted ids: uint16 counts, 5 bytes per node, 9 per segment,
+ * followed by a uint32-length-prefixed JSON incident snapshot.
  */
 export function encode(d: SaveData): string {
   const bytes: number[] = new Array(HEAD).fill(0);
   const u16 = (v: number): void => { bytes.push((v >> 8) & 255, v & 255); };
   let i = 0;
   while (i < N_TILES) {
-    const v = (d.kind[i] << 4) | d.level[i];
+    const v = (d.kind[i] << 2) | d.level[i];
+    const neglect = d.neglect?.[i] ?? 0;
     let run = 1;
-    while (i + run < N_TILES && run < 255 && ((d.kind[i + run] << 4) | d.level[i + run]) === v) run++;
-    bytes.push(v, run);
+    while (i + run < N_TILES && run < 255 && ((d.kind[i + run] << 2) | d.level[i + run]) === v && (d.neglect?.[i + run] ?? 0) === neglect) run++;
+    bytes.push(v, run, neglect);
     i += run;
   }
   const index = new Map<number, number>();
@@ -58,10 +70,17 @@ export function encode(d: SaveData): string {
   for (const n of d.net.nodes) { u16(packC(n[1])); u16(packC(n[2])); bytes.push(n[3] & 255); }
   for (const s of segs) { u16(index.get(s[1])!); u16(index.get(s[2])!); u16(packC(s[3])); u16(packC(s[4])); bytes.push(s[5] & 255); }
 
+  const incidentBytes = new TextEncoder().encode(JSON.stringify(d.incidents ?? { fires: [], crime: [], patrol: [] }));
+  bytes.push((incidentBytes.length >>> 24) & 255, (incidentBytes.length >>> 16) & 255, (incidentBytes.length >>> 8) & 255, incidentBytes.length & 255);
+  for (const byte of incidentBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
   all[1] = d.tax;
+  all[14] = d.cityLevel ?? levelForPopulation(d.kind.reduce((n, k, i) => n + (k === T_RES ? RES_POP[d.level[i]] : 0), 0));
+  dv.setUint32(15, d.debt ?? 0);
+  const funding = d.funding ?? defaultFunding();
+  FUNDING_KEYS.forEach((key, i) => { all[19 + i] = funding[key]; });
   dv.setInt32(2, Math.round(d.money));
   dv.setUint32(6, d.tick);
   dv.setUint32(10, d.seed >>> 0);
@@ -71,22 +90,40 @@ export function encode(d: SaveData): string {
 export function decode(str: string): SaveData | null {
   try {
     const bytes = fromBase64Url(str);
-    if (bytes[0] !== VERSION) return null;
+    const legacy = bytes[0] === 3;
+    const version = bytes[0];
+    if (![3, 4, 5, 6, VERSION].includes(version)) return null;
+    const header = legacy ? 14 : version === 4 ? 15 : HEAD;
+    if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
     const tax = bytes[1];
+    if (tax > 30) return null;
+    const debt = version >= 5 ? dv.getUint32(15) : 0;
+    if (debt > LOAN_TOTAL) return null;
+    const funding = defaultFunding();
+    if (version >= 5) for (const [i, key] of FUNDING_KEYS.entries()) {
+      if (!validFunding(bytes[19 + i])) return null;
+      funding[key] = bytes[19 + i];
+    }
     const money = dv.getInt32(2);
     const tick = dv.getUint32(6);
     const seed = dv.getUint32(10);
     const kind = new Uint8Array(N_TILES);
     const level = new Uint8Array(N_TILES);
-    let p = HEAD;
+    const neglect = new Uint8Array(N_TILES);
+    let p = header;
     let i = 0;
     while (i < N_TILES && p + 1 < bytes.length) {
       const v = bytes[p];
       const run = bytes[p + 1];
-      for (let r = 0; r < run && i < N_TILES; r++, i++) { kind[i] = v >> 4; level[i] = v & 15; }
-      p += 2;
+      const k = v >> (legacy ? 4 : 2), l = v & (legacy ? 15 : 3);
+      if (!run || i + run > N_TILES || (k !== 0 && !isZone(k) && !isService(k)) || l > 3) return null;
+      const n = version >= 5 ? bytes[p + 2] : 0;
+      if (n === undefined || n >= NEGLECT_LIMIT) return null;
+      for (let r = 0; r < run; r++, i++) { kind[i] = k; level[i] = l; neglect[i] = n; }
+      p += version >= 5 ? 3 : 2;
     }
+    if (i !== N_TILES) return null;
     const nNodes = dv.getUint16(p); p += 2;
     const nSegs = dv.getUint16(p); p += 2;
     const net: PlainNet = { nextId: nNodes + nSegs + 1, nodes: [], segs: [] };
@@ -101,7 +138,21 @@ export function decode(str: string): SaveData | null {
       ]);
       p += 9;
     }
-    return { seed, kind, level, net, money, tick, tax };
+    let incidents: IncidentSnapshot | undefined;
+    if (version >= 6) {
+      const length = dv.getUint32(p); p += 4;
+      if (length > 1000000 || p + length !== bytes.length) return null;
+      const data = JSON.parse(new TextDecoder().decode(bytes.subarray(p, p + length)));
+      const tile = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < N_TILES;
+      const pairs = (list: unknown, max: number): boolean => Array.isArray(list) && list.length <= N_TILES && list.every(v => Array.isArray(v) && v.length === 2 && tile(v[0]) && Number.isInteger(v[1]) && v[1] >= 0 && v[1] <= max);
+      if (!data || !Array.isArray(data.fires) || data.fires.length > N_TILES || !data.fires.every((f: { tile: unknown; age: number }) => f && tile(f.tile) && Number.isInteger(f.age) && f.age >= 0 && f.age < 120) || !pairs(data.crime, 100) || !pairs(data.patrol, 180)) return null;
+      incidents = { fires: data.fires, crime: data.crime, patrol: data.patrol }; p += length;
+    }
+    if (p !== bytes.length) return null;
+    const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
+    const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
+    if (cityLevel >= MILESTONES.length) return null;
+    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
   } catch {
     return null;
   }

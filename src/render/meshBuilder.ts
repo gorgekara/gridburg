@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 /** Accumulates flat, vertex-colored triangles (ribbons, discs, arrows) into one geometry. */
 export class MeshBuilder {
+  heightAt: ((x: number, z: number) => number) | null = null;
   private pos: number[] = [];
   private col: number[] = [];
   private idx: number[] = [];
@@ -12,7 +13,7 @@ export class MeshBuilder {
   }
 
   private vert(x: number, y: number, z: number): number {
-    this.pos.push(x, y, z);
+    this.pos.push(x, y + (this.heightAt?.(x, z) ?? 0), z);
     this.col.push(this.c.r, this.c.g, this.c.b);
     return this.pos.length / 3 - 1;
   }

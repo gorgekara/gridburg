@@ -1,4 +1,6 @@
-import { GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
+import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
+import { footprint, siteOwners } from './sites';
+import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
 import { Network, KIND_AVENUE, KIND_ROAD } from './roads/network';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
@@ -11,7 +13,7 @@ const DEMO_SEED = 3;
  * A prebuilt town laid out relative to the highway entry, so it works on any seed:
  * a main avenue, a street grid, a curved ring road, a riverside drive, zoning and utilities.
  */
-export function demoCity(): SaveData {
+export function demoCity(expanded = false): SaveData {
   const d = newCity(DEMO_SEED);
   const terrain = generateTerrain(DEMO_SEED);
   const net = Network.fromPlain(d.net);
@@ -28,6 +30,9 @@ export function demoCity(): SaveData {
   net.insertPath([P(7, 0), P(40, 0)], KIND_AVENUE);
   for (const side of [-12, -6, 6, 12]) net.insertPath([clampP(P(10, side)), clampP(P(40, side))], KIND_ROAD);
   for (const along of [10, 16, 22, 28, 34, 40]) net.insertPath([clampP(P(along, -12)), clampP(P(along, 12))], KIND_ROAD);
+  // Suburbs: a curved crescent beyond the grid, reached by extended side streets.
+  net.insertPath([P(10, -12), P(12, -17), P(18, -21), P(26, -21), P(32, -17), P(34, -12)].map(clampP), KIND_ROAD);
+  for (const along of [16, 22, 28]) net.insertPath([clampP(P(along, -12)), clampP(P(along, -20.5))], KIND_ROAD);
   // A curved ring road around the far end.
   net.insertPath([P(40, 12), P(46, 9), P(49, 0), P(46, -9), P(40, -12)].map(clampP), KIND_ROAD);
 
@@ -60,6 +65,14 @@ export function demoCity(): SaveData {
     }
   }
 
+  // A bridge from the far corner of the grid over the river.
+  const deck = [P(47, -20), P(68, -20)].map(clampP);
+  if (!terrain.water[idx(Math.floor(deck[0].x), Math.floor(deck[0].z))] && !terrain.water[idx(Math.floor(deck[1].x), Math.floor(deck[1].z))]) {
+    net.insertPath([clampP(P(40, -12)), clampP(P(44, -16)), deck[0]], KIND_ROAD);
+    net.insertPath(deck, KIND_ROAD, false, 1);
+    net.insertPath([deck[1], clampP(P(76, -20))], KIND_ROAD);
+  }
+
   // Traffic control on the avenue.
   const rb = P(22, 0);
   net.addRoundabout(rb.x, rb.z, 2.3, KIND_AVENUE);
@@ -78,11 +91,20 @@ export function demoCity(): SaveData {
     const px = (i % GRID) + 0.5 - e.x, pz = ((i / GRID) | 0) + 0.5 - e.z;
     const along = px * e.dx + pz * e.dz;
     const side = Math.abs(-px * e.dz + pz * e.dx);
-    if (along > 43 || side > 14) continue;
-    if (along >= 35.5) kind[i] = T_IND;
-    else if (along >= 31.5) continue; // buffer between industry and homes
-    else if (side < 4 && along > 11) kind[i] = T_COM;
+    const signed = -px * e.dz + pz * e.dx;
+    if (along > 43 || signed > 14 || signed < -23) continue;
+    if (along >= 36.5) kind[i] = T_IND;
+    else if (along >= 32.5) kind[i] = (i + ((i / GRID) | 0)) % 3 ? T_PARK : 0; // green belt between industry and homes
+    else if (side < 3.5 && along > 11) kind[i] = T_COM;
     else kind[i] = T_RES;
+  }
+
+  // Pocket parks break up the residential blocks.
+  for (const [along, side] of [[13, 8.5], [19, -9], [25, 9], [30, -15], [14, -15], [24, -18]]) {
+    for (let dz = 0; dz < 2; dz++) for (let dx = 0; dx < 2; dx++) {
+      const p = P(along + dx, side + dz), x = Math.floor(p.x), z = Math.floor(p.z);
+      if (inBounds(x, z) && kind[idx(x, z)] === T_RES) kind[idx(x, z)] = T_PARK;
+    }
   }
 
   // Utilities.
@@ -129,7 +151,39 @@ export function demoCity(): SaveData {
     place({ x: down % GRID, z: (down / GRID) | 0 }, T_OUTLET, (_i, x, z) => touchesWater(terrain, x, z) && adjacentFlow(terrain, x, z) > upFlow + 20);
   }
 
+  // Neighborhood centers demonstrate service coverage on both sides of the avenue.
+  for (const side of [-8, 8]) {
+    place(P(19, side), T_PARK, any);
+    place(P(21, side), T_CLINIC, any);
+    place(P(23, side), T_SCHOOL, any);
+    place(P(25, side), T_FIRE, any);
+    place(P(27, side), T_POLICE, any);
+  }
+  place(P(32, 10), T_RECYCLING, any);
+  place(P(28, -10), T_UNIVERSITY, any);
+  place(P(40, 6), T_SOLAR, any);
+
+  if (expanded) {
+    place(P(12, -5), T_BUS, any); place(P(28, -5), T_BUS, any);
+    place(P(18, 8), T_BUS, any); place(P(40, 8), T_BUS, any);
+    for (let i = 0; i < N_TILES; i++) if (kind[i] === T_COM && i % 3 === 0) kind[i] = T_OFFICE;
+    if (down >= 0) kind[down] = T_TREATMENT;
+    const placeLarge = (near: { x: number; z: number }, k: number): void => {
+      const owners = siteOwners(kind);
+      const choices = Array.from({ length: N_TILES }, (_, i) => i).sort((a, b) => Math.hypot(a % GRID - near.x, Math.floor(a / GRID) - near.z) - Math.hypot(b % GRID - near.x, Math.floor(b / GRID) - near.z));
+      for (const i of choices) {
+        const cells = footprint(i, k);
+        if (!cells.length || ras.accSeg[i] < 0 || cells.some(t => terrain.water[t] || ras.cover[t] || SERVICES[kind[t]] || owners[t] >= 0)) continue;
+        for (const t of cells) kind[t] = 0;
+        kind[i] = k; return;
+      }
+    };
+    placeLarge(P(14, -10), T_STATION); placeLarge(P(36, 10), T_STATION);
+    place(P(17, 2), T_SUBWAY, any); place(P(29, -2), T_SUBWAY, any); place(P(24, -14), T_SUBWAY, any);
+    placeLarge(P(48, 14), T_AIRPORT);
+  }
+
   const level = new Uint8Array(N_TILES);
   for (let i = 0; i < N_TILES; i++) if (kind[i] >= T_COAL) level[i] = 1;
-  return { seed: DEMO_SEED, kind, level, net: net.toPlain(), money: 12000, tick: 0, tax: 10 };
+  return { seed: DEMO_SEED, kind, level, net: net.toPlain(), money: expanded ? 40000 : 12000, cityLevel: expanded ? 5 : 0, tick: 0, tax: 10 };
 }

@@ -66,7 +66,7 @@ export function generateTerrain(seed: number): Terrain {
   // Highway entry on an edge the river does not cross, on the roomier side of it.
   const mid = GRID / 2;
   const lowSide = base > mid; // more land on the low-coordinate side
-  let along = Math.round(mid + (rnd() - 0.5) * GRID * 0.4) + 0.5;
+  let along = Math.round(mid + (rnd() - 0.5) * GRID * 0.4);
   const stub = 7;
   const clear = (a: number): boolean => {
     for (let s = 0; s <= stub + 2; s++) {
@@ -81,7 +81,7 @@ export function generateTerrain(seed: number): Terrain {
   };
   for (let tries = 0; tries < GRID && !clear(along); tries++) {
     along = ((along + 7) % (GRID - 16)) + 8;
-    along = Math.floor(along) + 0.5;
+    along = Math.round(along);
   }
   const edge = lowSide ? 0 : GRID;
   const dir = lowSide ? 1 : -1;

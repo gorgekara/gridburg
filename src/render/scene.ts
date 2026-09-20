@@ -1,21 +1,24 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GRID } from '../constants';
+import { daylight } from './daylight';
 
 export interface SceneBundle {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
+  /** Construction grid, shown only while a build tool is active. */
+  grid: THREE.GridHelper;
   /** Call once per frame with seconds elapsed. */
-  update(dt: number): void;
+  update(dt: number, seconds: number): void;
 }
 
 export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
 
@@ -53,28 +56,13 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const sc = sun.shadow.camera;
   sc.left = -58; sc.right = 58; sc.top = 58; sc.bottom = -58;
   sc.near = 10; sc.far = 200;
+  // The sun crawls across the sky, so refreshing the shadow map every frame is wasted work.
+  sun.shadow.autoUpdate = false;
+  sun.shadow.needsUpdate = true;
   sun.shadow.bias = -0.0008;
   sun.shadow.normalBias = 0.02;
   scene.add(sun);
   scene.add(sun.target);
-
-  // Ground
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(GRID, GRID),
-    new THREE.MeshStandardMaterial({ color: 0x8cbf68, roughness: 1 }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
-
-  const outer = new THREE.Mesh(
-    new THREE.PlaneGeometry(GRID * 6, GRID * 6),
-    new THREE.MeshStandardMaterial({ color: 0x74a655, roughness: 1 }),
-  );
-  outer.rotation.x = -Math.PI / 2;
-  outer.position.y = -0.03;
-  outer.receiveShadow = true;
-  scene.add(outer);
 
   const grid = new THREE.GridHelper(GRID, GRID, 0x5f8a45, 0x5f8a45);
   const gm = grid.material as THREE.LineBasicMaterial;
@@ -108,7 +96,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const move = new THREE.Vector3();
   const half = GRID / 2;
 
-  function update(dt: number): void {
+  let frame = 0;
+  function update(dt: number, seconds: number): void {
+    if (++frame % 3 === 0) sun.shadow.needsUpdate = true;
     let mx = 0;
     let mz = 0;
     if (keys.has('KeyW') || keys.has('ArrowUp') || keys.has('w')) mz += 1;
@@ -151,8 +141,19 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
     t.y = 0;
     controls.update();
     sun.target.position.copy(t);
-    sun.position.set(t.x + 45, 70, t.z + 25);
+    const light = daylight(seconds);
+    const angle = (light.hour - 6) / 24 * Math.PI * 2;
+    sun.position.set(t.x + Math.cos(angle) * 65, 15 + Math.abs(light.sun) * 70, t.z + 25);
+    sun.intensity = 0.45 + light.day * (1.5 + Math.max(0, light.sun) * 0.7);
+    sun.color.set(0x9bbdff).lerp(new THREE.Color(0xffd6ac), light.day).lerp(new THREE.Color(0xfff1dc), Math.max(0, light.sun));
+    hemi.intensity = 0.6 + light.day * 0.25;
+    hemi.color.set(0xa1b4de).lerp(new THREE.Color(0xdcefff), light.day);
+    const sky = scene.background as THREE.Color;
+    sky.set(0x101c38).lerp(new THREE.Color(0xc6e4f5), light.day);
+    sky.lerp(new THREE.Color(0xe6aa89), (1 - Math.abs(light.day * 2 - 1)) * 0.35);
+    (scene.fog as THREE.Fog).color.copy(sky);
+    renderer.toneMappingExposure = 1.12 - light.day * 0.07;
   }
 
-  return { renderer, scene, camera, controls, update };
+  return { renderer, scene, camera, controls, grid, update };
 }

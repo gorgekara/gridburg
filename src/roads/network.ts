@@ -17,6 +17,7 @@ export interface RNode {
 }
 
 export interface RSeg {
+  structure: 0 | 1 | 2;
   id: number;
   a: number;
   b: number;
@@ -133,21 +134,21 @@ export class Network {
     return n;
   }
 
-  private resample(s: RSeg): void {
+  resample(s: RSeg): void {
     const a = this.nodes.get(s.a)!;
     const b = this.nodes.get(s.b)!;
     const sm = sampleCurve({ ax: a.x, az: a.z, cx: s.cx, cz: s.cz, bx: b.x, bz: b.z });
     Object.assign(s, sm);
   }
 
-  addSeg(a: number, b: number, cx: number, cz: number, kind: number, oneway = false, fixed = false, minLen = 0.4): RSeg | null {
+  addSeg(a: number, b: number, cx: number, cz: number, kind: number, oneway = false, fixed = false, minLen = 0.4, structure: 0 | 1 | 2 = 0): RSeg | null {
     if (a === b || !this.nodes.has(a) || !this.nodes.has(b)) return null;
     for (const id of this.adj.get(a)!) {
       const o = this.segs.get(id)!;
       if ((o.a === b || o.b === b) && Math.hypot(o.cx - cx, o.cz - cz) < 0.6) return null;
     }
     const s = {
-      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed,
+      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed, structure,
       n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
     } as RSeg;
     this.resample(s);
@@ -261,6 +262,7 @@ export class Network {
   /** Split a segment at parameter t. Returns the new node and the two child segments. */
   splitSeg(segId: number, t: number): { node: RNode; left: RSeg | null; right: RSeg | null } {
     const s = this.segs.get(segId)!;
+    if (s.structure) throw new Error('Bridges and tunnels connect only at their ends');
     const a = this.nodes.get(s.a)!;
     const b = this.nodes.get(s.b)!;
     const [l, r] = splitCurve({ ax: a.x, az: a.z, cx: s.cx, cz: s.cz, bx: b.x, bz: b.z }, t);
@@ -298,7 +300,7 @@ export class Network {
     const n = this.nearestNode(x, z, 0.9);
     if (n) return n.id;
     const hit = this.nearestSeg(x, z, 0.8);
-    if (hit) return this.splitOrSnap(hit.seg.id, hit.t);
+    if (hit && !hit.seg.structure) return this.splitOrSnap(hit.seg.id, hit.t);
     return this.addNode(x, z).id;
   }
 
@@ -306,6 +308,7 @@ export class Network {
   private firstCrossing(c: Curve, sm: Sampled): { t: number; segId: number; tSeg: number } | null {
     let best: { t: number; segId: number; tSeg: number } | null = null;
     for (const seg of this.segs.values()) {
+      if (seg.structure) continue;
       if (sm.maxX < seg.minX || sm.minX > seg.maxX || sm.maxZ < seg.minZ || sm.minZ > seg.maxZ) continue;
       for (let i = 0; i < sm.n; i++) {
         const ax = sm.pts[i * 2], az = sm.pts[i * 2 + 1], bx = sm.pts[i * 2 + 2], bz = sm.pts[i * 2 + 3];
@@ -327,7 +330,7 @@ export class Network {
    * Insert a road along guide points. Endpoints snap to existing nodes and segments,
    * and every crossing with an existing road becomes a junction. Returns new segment ids.
    */
-  insertPath(points: { x: number; z: number }[], kind: number, oneway = false): number[] {
+  insertPath(points: { x: number; z: number }[], kind: number, oneway = false, structure: 0 | 1 | 2 = 0): number[] {
     const added: number[] = [];
     if (points.length < 2) return added;
     const pts = points.map((p) => ({ x: Math.max(0.3, Math.min(GRID - 0.3, p.x)), z: Math.max(0.3, Math.min(GRID - 0.3, p.z)) }));
@@ -349,9 +352,9 @@ export class Network {
       c = { ...c, ax: fn.x, az: fn.z, bx: tn.x, bz: tn.z };
       for (let guard = 0; guard < 40; guard++) {
         const sm = sampleCurve(c);
-        const hit = this.firstCrossing(c, sm);
+        const hit = structure ? null : this.firstCrossing(c, sm);
         if (!hit || !this.segs.has(hit.segId)) {
-          const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway);
+          const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway, false, 0.4, structure);
           if (s) added.push(s.id);
           break;
         }
@@ -408,7 +411,7 @@ export class Network {
       if (n.ring && d < 2 * r + 1.5) return false;
     }
     for (const s of this.segs.values()) {
-      if (!s.fixed) continue;
+      if (!s.fixed && !s.structure) continue;
       if (Network.nearestOn(s, cx, cz).dist < r + 0.8) return false;
     }
 
@@ -516,7 +519,7 @@ export class Network {
     }
     const segs: number[][] = [];
     for (const s of this.segs.values()) {
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0)]);
+      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3)]);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -530,7 +533,7 @@ export class Network {
     for (const [id, a, b, cx, cz, f] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, kind: f & 1, oneway: !!(f & 2), fixed: !!(f & 4),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: f & 1, oneway: !!(f & 2), fixed: !!(f & 4),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       net.resample(s);
@@ -570,10 +573,15 @@ export class Network {
   }
 }
 
+export function signalPhase(simTime: number, nodeId: number, group: number): 'red' | 'amber' | 'green' {
+  const t = ((simTime + nodeId * 3.7) % LIGHT_CYCLE + LIGHT_CYCLE) % LIGHT_CYCLE;
+  if (group === 0) return t < 8 ? 'green' : t < 9 ? 'amber' : 'red';
+  return t >= 9 && t < 17 ? 'green' : t >= 17 && t < 18 ? 'amber' : 'red';
+}
+
 /** Is the signal green for this phase group at this node and time? */
 export function isGreen(simTime: number, nodeId: number, group: number): boolean {
-  const t = (simTime + nodeId * 3.7) % LIGHT_CYCLE;
-  return group === 0 ? t < 8 : t >= 9 && t < 17;
+  return signalPhase(simTime, nodeId, group) === 'green';
 }
 
 /** Total length of a guide path once smoothed, plus the part of it that is over water. */

@@ -1,0 +1,60 @@
+import { GRID, N_TILES, isZone } from '../constants';
+export interface Fire { tile: number; age: number }
+export interface Crash { id: number; x: number; z: number; y?: number; remaining: number; slots: number[]; tile: number }
+export interface IncidentSnapshot { fires: Fire[]; crime: [number, number][]; patrol: [number, number][] }
+export interface IncidentView { fires: Fire[]; crashes: { id: number; x: number; z: number; y?: number; remaining: number }[]; crime: number[]; patrol: number[] }
+
+export class Incidents {
+  readonly fires = new Map<number, Fire>();
+  readonly crashes = new Map<number, Crash>();
+  readonly crime = new Float32Array(N_TILES);
+  readonly patrol = new Float32Array(N_TILES);
+  prevented = 0; extinguished = 0; damaged = 0;
+  private nextCrash = 1;
+  clear(): void {
+    this.fires.clear(); this.crashes.clear(); this.crime.fill(0); this.patrol.fill(0);
+    this.prevented = 0; this.extinguished = 0; this.damaged = 0;
+  }
+  ignite(tile: number): void { if (!this.fires.has(tile)) this.fires.set(tile, { tile, age: 0 }); }
+  visit(tile: number): void {
+    for (let i = 0; i < N_TILES; i++) if (Math.hypot(i % GRID - tile % GRID, Math.floor(i / GRID) - Math.floor(tile / GRID)) <= 7) {
+      this.patrol[i] = 180; this.crime[i] = Math.max(0, this.crime[i] - 65);
+    }
+  }
+  extinguish(tile: number): void { if (this.fires.delete(tile)) this.extinguished++; }
+  crash(x: number, z: number, slots: number[], tile: number, y = 0): number {
+    const id = this.nextCrash++; this.crashes.set(id, { id, x, z, y, slots, tile, remaining: 35 }); return id;
+  }
+  step(kind: Uint8Array, level: Uint8Array, population: number, cityLevel: number, rng: () => number, damage: (tile: number) => void): void {
+    const buildings: number[] = [];
+    for (let i = 0; i < N_TILES; i++) {
+      this.patrol[i] = Math.max(0, this.patrol[i] - 1);
+      this.crime[i] = Math.max(0, this.crime[i] - 0.35);
+      if (isZone(kind[i]) && level[i]) buildings.push(i);
+      else { this.crime[i] = 0; this.fires.delete(i); }
+    }
+    for (const [id, c] of this.crashes) if (--c.remaining <= 0) this.crashes.delete(id);
+    for (const [tile, f] of this.fires) {
+      if (++f.age >= 120) { damage(tile); this.damaged++; this.fires.delete(tile); }
+    }
+    if (!buildings.length || cityLevel < 2) return;
+    if (this.fires.size < 3 && rng() < Math.min(0.045, 0.01 + population / 180000)) this.ignite(buildings[Math.floor(rng() * buildings.length)]);
+    if (rng() < Math.min(0.09, 0.02 + population / 100000)) {
+      const tile = buildings[Math.floor(rng() * buildings.length)];
+      if (this.patrol[tile] > 0 && rng() < 0.85) this.prevented++;
+      else this.crime[tile] = Math.min(100, this.crime[tile] + 50);
+    }
+  }
+  view(): IncidentView {
+    return { fires: [...this.fires.values()], crashes: [...this.crashes.values()].map(({ id, x, z, y, remaining }) => ({ id, x, z, y, remaining })), crime: Array.from(this.crime, (v, i) => v > 20 ? i : -1).filter(i => i >= 0), patrol: Array.from(this.patrol, (v, i) => v > 165 ? i : -1).filter(i => i >= 0) };
+  }
+  snapshot(): IncidentSnapshot {
+    return { fires: [...this.fires.values()].map(f => ({ ...f })), crime: Array.from(this.crime, (v, i) => [i, Math.round(v)] as [number, number]).filter(([, v]) => v > 0), patrol: Array.from(this.patrol, (v, i) => [i, Math.round(v)] as [number, number]).filter(([, v]) => v > 0) };
+  }
+  load(snapshot?: IncidentSnapshot): void {
+    this.clear(); if (!snapshot) return;
+    for (const f of snapshot.fires) this.fires.set(f.tile, { ...f });
+    for (const [i, v] of snapshot.crime) this.crime[i] = v;
+    for (const [i, v] of snapshot.patrol) this.patrol[i] = v;
+  }
+}

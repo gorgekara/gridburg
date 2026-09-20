@@ -1,3 +1,10 @@
+import { StructureLayer } from './render/structures';
+import { LandscapeLayer } from './render/landscape';
+import { StreetlightLayer } from './render/streetlights';
+import { daylight, DAY_SECONDS } from './render/daylight';
+import { IncidentLayer } from './render/incidents';
+import { TransportLayer } from './render/transport';
+import { SubwayLayer } from './render/subway';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -14,33 +21,48 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
 
-const { renderer, scene, camera, controls, update: updateScene } = createScene(canvas);
+const { renderer, scene, camera, controls, grid, update: updateScene } = createScene(canvas);
+const landscape = new LandscapeLayer();
+const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
+const structures = new StructureLayer();
 const roads = new RoadLayer();
 const buildings = new BuildingLayer();
 const overlay = new OverlayLayer();
 const cars = new CarLayer();
-scene.add(river.group, overlay.group, roads.group, buildings.group, cars.mesh);
+const transport = new TransportLayer();
+const subway = new SubwayLayer();
+const incidents = new IncidentLayer();
+let showTraffic = false;
+scene.add(structures.group, landscape.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
+input.inspectionTarget = buildings.group;
+input.roadTarget = roads.mesh;
 
 const hud = new Hud(uiRoot, {
   setTool: (t) => input.setTool(t),
   setMode: (m) => input.setMode(m),
   setSpeed: (v) => { game.setSpeed(v); hud.setSpeed(v); },
   setTax: (v) => game.setTax(v),
+  setFunding: (key, value) => game.setFunding(key, value),
+  loan: (action) => game.loan(action),
+  closeInspection: () => game.inspect(-1),
   newCity: () => {
     clearLocal();
     history.replaceState(null, '', location.pathname);
     game.load(newCity(randomSeed()));
+    focusCity(false);
     hud.setTax(10);
     hud.toast('New map. Build out from the highway.');
   },
   demoCity: () => {
     history.replaceState(null, '', location.pathname);
-    game.load(demoCity());
+    game.load(demoCity(true));
     game.warm(110);
+    focusCity(true);
+    input.setTool('none');
     hud.setTax(10);
     hud.toast('Demo city loaded');
   },
@@ -54,6 +76,17 @@ const hud = new Hud(uiRoot, {
     }
     history.replaceState(null, '', url);
   },
+  toggleTraffic: () => {
+    showTraffic = !showTraffic;
+    roads.tint(game.segOrder, showTraffic ? game.segCong : new Uint8Array(game.segCong.length));
+    return showTraffic;
+  },
+  toggleInfiniteMoney: () => {
+    game.setInfiniteMoney(!game.infiniteMoney);
+    try { localStorage.setItem('gridburg.cheat.money', game.infiniteMoney ? '1' : ''); } catch { /* storage may be blocked */ }
+    hud.toast(game.infiniteMoney ? 'Infinite money on' : 'Infinite money off');
+    return game.infiniteMoney;
+  },
   togglePollution: () => {
     overlay.strong = !overlay.strong;
     overlay.setPollution(game.pollution);
@@ -61,26 +94,41 @@ const hud = new Hud(uiRoot, {
   },
 });
 
-input.onToolChange = (t) => hud.setTool(t);
+input.onInspect = (tile) => game.inspect(tile);
+game.onInspection = (report) => hud.showInspection(report);
+game.onNotice = (message) => hud.toast(message);
+
+const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].includes(t); };
+input.onToolChange = (t) => { showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerrain = () => river.rebuild(game.terrain);
+game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   roads.rebuild(game.net, game.terrain);
+  structures.rebuild(game.net);
+  landscape.develop(game.kind, game.raster, game.net);
+  streetlights.rebuild(game.net);
   buildings.rebuild(game.kind, game.level, game.raster);
-  overlay.setFlags(game.kind, game.level, game.flags);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net);
+  subway.rebuild(game.kind, game.flags, game.raster);
+  incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
+  overlay.setFlags(game.kind, game.level, game.flags, game.raster);
 };
 game.onState = () => {
   buildings.rebuild(game.kind, game.level, game.raster);
-  overlay.setFlags(game.kind, game.level, game.flags);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net);
+  subway.rebuild(game.kind, game.flags, game.raster);
+  incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
+  overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
   hud.update(game.stats);
 };
 game.onFrame = () => {
-  roads.tint(game.segOrder, game.segCong);
+  if (showTraffic) roads.tint(game.segOrder, game.segCong);
   roads.updateLights(game.simTime);
 };
 
@@ -105,36 +153,58 @@ if (fromHash) {
 } else {
   if (location.hash.startsWith('#c=')) hud.toast('That link is from an older version and cannot be loaded');
   game.load(newCity(randomSeed()));
-  hud.showHelp();
+
 }
 hud.setTax(game.tax);
 game.setTax(game.tax);
+try { if (localStorage.getItem('gridburg.cheat.money')) { game.setInfiniteMoney(true); hud.setCheatLabel(true); } } catch { /* storage may be blocked */ }
 game.setSpeed(1);
+try { if (!localStorage.getItem('gridburg.welcome.v1')) hud.showWelcome(); } catch { hud.showWelcome(); }
 
-// Start looking at the highway entry, since that is where every city begins.
-{
+// Frame newly loaded maps and the demo around their own highway, even after changing seeds.
+function focusCity(center: boolean): void {
   const e = game.terrain.entry;
-  // Aim a little nearer the camera than the road end so it sits above the build menu.
-  const tx = e.x + e.dx * 12 - 40 + 4, tz = e.z + e.dz * 12 - 40 + 9;
+  const along = center ? 27 : 12;
+  const tx = e.x + e.dx * along - 40 + (center ? 0 : 4);
+  const tz = e.z + e.dz * along - 40 + (center ? 0 : 9);
   controls.target.set(tx, 0, tz);
-  camera.position.set(tx + 14, 30, tz + 30);
+  camera.position.set(tx + 14, center ? 42 : 30, tz + (center ? 38 : 30));
 }
+focusCity(false);
 
 setInterval(() => saveLocal(game.snapshot()), 5000);
 window.addEventListener('beforeunload', () => saveLocal(game.snapshot()));
 
-const dbg = { game, camera, controls, input, renderer, frames: 0 };
+const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
+const clock = document.createElement('div');
+clock.className = 'city-clock';
+clock.title = 'One day lasts 8 simulation minutes. Pausing and speed controls also affect daylight.';
+clock.setAttribute('aria-label', 'City time');
+uiRoot.append(clock);
+let lastClock = '';
 let last = performance.now();
 renderer.setAnimationLoop((now: number) => {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   dbg.frames++;
-  updateScene(dt);
+  updateScene(dt, game.cityTime);
+  landscape.update(camera.position);
+  const light = daylight(game.cityTime);
+  buildings.setNight(light.night);
+  streetlights.update(light.night);
+  cars.setNight(light.night);
+  river.update(now / 1000);
+  const hour = Math.floor(light.hour), minute = Math.floor(light.hour % 1 * 60);
+  const label = `${light.night > 0.5 ? '☾' : '☀'} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} · Day ${Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1}`;
+  if (label !== lastClock) { clock.textContent = label; lastClock = label; }
   const span = Math.max(1, game.nextTime - game.prevTime);
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
-  cars.update(game.carsPrev, game.carsNext, alpha);
+  incidents.update(game.simTime);
+  transport.update(game.simTime);
+  subway.update(game.simTime);
+  cars.update(game.carsPrev, game.carsNext, alpha, game.carIdsPrev, game.carIdsNext, game.carHeights, game.prevCarHeights, game.carPitch);
   buildings.update(now / 1000);
   overlay.update(now / 1000);
   renderer.render(scene, camera);

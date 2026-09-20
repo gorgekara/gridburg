@@ -1,13 +1,14 @@
+import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, mulberry32 } from '../constants';
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
 const GLASS = 0x7fb6d6;
 
 /** Accumulates colored parts and merges them into one vertex-colored geometry. */
-class Builder {
+export class Builder {
   private parts: THREE.BufferGeometry[] = [];
   rnd: () => number;
 
@@ -112,6 +113,7 @@ class Builder {
   }
 
   build(): THREE.BufferGeometry {
+    if (!this.parts.length) return new THREE.BufferGeometry();
     const g = mergeGeometries(this.parts, false)!;
     for (const p of this.parts) p.dispose();
     g.computeBoundingSphere();
@@ -130,6 +132,36 @@ const GLASS_TOWERS = [0x5f93cf, 0x3e6fae, 0x6aa8c9, 0x4b7fb3];
 const IND_WALLS = [0xc2bb9f, 0xa89f82, 0xb0aa93, 0x9c9a90];
 
 export const VARIANTS = 4;
+const heights = new Map<string, number>();
+
+export function buildingHeight(kind: number, level: number, variant: number): number {
+  const key = `${kind}:${level}:${variant}`;
+  if (!heights.has(key)) buildingGeometry(kind, level, variant).dispose();
+  return heights.get(key)!;
+}
+
+/** Distinct roof silhouettes, all contained inside the building footprint. */
+function roofDetail(b: Builder, y: number, variant: number): void {
+  if (variant === 0) {
+    b.box(0.2, 0.12, 0.22, 0.12, y, -0.12, 0x8c9397); // HVAC
+    for (const x of [0.06, 0.12, 0.18]) b.box(0.014, 0.012, 0.17, x, y + 0.12, -0.12, 0x4d5960);
+  } else if (variant === 1) {
+    b.box(0.34, 0.26, 0.3, 0, y, -0.08, 0xd8d2c6); // rooftop room
+    b.box(0.37, 0.035, 0.33, 0, y + 0.26, -0.08, 0x5f6a73);
+    b.box(0.18, 0.1, 0.02, 0, y + 0.08, 0.08, GLASS);
+  } else if (variant === 2) {
+    for (const x of [-0.17, 0.17]) { // solar panels and planters
+      b.box(0.23, 0.05, 0.28, x, y + 0.04, -0.08, 0x245683);
+      b.box(0.2, 0.08, 0.12, x, y, 0.2, 0xa78058);
+      b.box(0.18, 0.07, 0.1, x, y + 0.08, 0.2, 0x548454);
+    }
+  } else {
+    b.cyl(0.09, 0.22, -0.14, y + 0.08, -0.12, 0x8f8a80, 8); // tank and antenna
+    b.box(0.2, 0.08, 0.2, -0.14, y, -0.12, 0x59636b);
+    b.cyl(0.012, 0.4, 0.19, y, -0.18, 0xb9c7d1, 6);
+    b.box(0.18, 0.012, 0.012, 0.19, y + 0.31, -0.18, 0xb9c7d1);
+  }
+}
 
 /** Build the geometry for a (kind, level, variant) triple. Front of the building faces +z. */
 export function buildingGeometry(kind: number, level: number, variant: number): THREE.BufferGeometry {
@@ -137,9 +169,13 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
   const v = variant % VARIANTS;
   if (kind === T_RES) {
     if (level === 1) {
-      const w = 0.5, h = 0.4, d = 0.56;
+      const w = [0.5, 0.62, 0.54, 0.6][v], h = [0.4, 0.65, 0.48, 0.72][v], d = [0.56, 0.6, 0.68, 0.58][v];
       b.box(w, h, d, 0, 0, 0, RES_WALLS[v]);
-      b.gable(w, d, h, 0.2, RES_WALLS[v], RES_ROOFS[v]);
+      if (v === 2) {
+        b.box(w + 0.06, 0.05, d + 0.06, 0, h, 0, RES_ROOFS[v]);
+        roofDetail(b, h + 0.05, v);
+      } else b.gable(w, d, h, v === 1 ? 0.28 : 0.2, RES_WALLS[v], RES_ROOFS[v]);
+      if (v === 1 || v === 3) b.windows(w, h, d, 0.34, 1, 2, 0.1);
       b.box(0.12, 0.2, 0.02, 0.1, 0, d / 2 + 0.005, 0x5a3b2a);
       b.box(0.1, 0.1, 0.02, -0.13, 0.18, d / 2 + 0.005, WINDOW_DARK);
       b.box(0.1, 0.1, 0.02, 0.13, 0.18, -d / 2 - 0.005, WINDOW_DARK);
@@ -147,83 +183,105 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.07, 0.24, 0.07, -0.15, h + 0.05, -0.12, 0x6b6560);
       b.box(0.62, 0.02, 0.68, 0, -0.005, 0, 0x8a9a6a);
     } else if (level === 2) {
-      const w = 0.68, h = 1.15, d = 0.68;
+      const floors = [3, 4, 5, 4][v];
+      const w = [0.68, 0.76, 0.64, 0.72][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7][v];
       b.box(w, h, d, 0, 0, 0, APT_WALLS[v]);
       b.box(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x8c8578);
       b.box(w + 0.04, 0.05, d + 0.04, 0, h, 0, 0x6f6a62);
-      b.windows(w, h, d, 0.22, 3, 3, 0.15);
+      b.windows(w, h, d, 0.22, floors, v === 2 ? 2 : 3, 0.15);
+      if (v === 1 || v === 3) for (let f = 1; f < floors; f++) {
+        b.box(0.25, 0.035, 0.12, -0.18, 0.22 + f * 0.31, d / 2 + 0.045, 0x8f8a80);
+        b.box(0.25, 0.07, 0.02, -0.18, 0.25 + f * 0.31, d / 2 + 0.095, 0xc9d4db);
+      }
       b.box(0.16, 0.24, 0.03, 0, 0, d / 2 + 0.005, 0x3d2c22);
       b.box(0.3, 0.03, 0.12, 0, 0.26, d / 2 + 0.06, 0x6f6a62);
-      b.box(0.2, 0.1, 0.2, 0.18, h + 0.05, -0.15, 0x8c8578);
+      roofDetail(b, h + 0.05, v);
     } else {
-      const w = 0.7, h = 2.7, d = 0.7;
+      const floors = [7, 9, 6, 11][v];
+      const w = [0.7, 0.65, 0.8, 0.68][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7][v];
       b.box(w, h, d, 0, 0, 0, TOWER_WALLS[v]);
       b.box(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469);
       b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53);
-      b.windows(w, h, d, 0.28, 7, 3, 0.25, 0.12);
-      b.box(0.22, 0.14, 0.22, 0.18, h + 0.05, 0.14, 0x8f8a80);
-      b.cyl(0.08, 0.22, -0.2, h + 0.05, -0.18, 0x6b6560, 8);
+      b.windows(w, h, d, 0.28, floors, 3, 0.25, 0.12);
+      roofDetail(b, h + 0.05, v);
       b.box(0.16, 0.26, 0.03, 0, 0, d / 2 + 0.005, 0x3d2c22);
     }
   } else if (kind === T_COM) {
     if (level === 1) {
-      const w = 0.82, h = 0.55, d = 0.7;
+      const w = 0.82, h = [0.55, 0.7, 0.48, 0.85][v], d = [0.7, 0.62, 0.76, 0.66][v];
       b.box(w, h, d, 0, 0, 0, SHOP_WALLS[v]);
       b.box(0.5, 0.28, 0.03, -0.1, 0.12, d / 2 + 0.005, GLASS);
       b.box(0.14, 0.38, 0.03, 0.3, 0, d / 2 + 0.005, 0x3d2c22);
       b.box(0.8, 0.04, 0.24, 0, 0.44, d / 2 + 0.1, AWNINGS[v]);
       b.box(0.5, 0.12, 0.05, -0.1, h, d / 2 - 0.03, 0xfff4dc);
-      b.box(0.25, 0.14, 0.25, 0.2, h, -0.15, 0x8f8a80);
+      roofDetail(b, h + 0.12, v);
       b.box(0.02, 0.18, 0.3, w / 2 + 0.005, 0.15, 0, WINDOW_DARK);
     } else if (level === 2) {
-      const w = 0.8, h = 1.85, d = 0.8;
+      const floors = [5, 4, 6, 7][v];
+      const w = [0.8, 0.72, 0.76, 0.68][v], h = 0.3 + floors * 0.31, d = 0.76;
       b.box(w, h, d, 0, 0, 0, OFFICE_WALLS[v]);
       b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x5c6a75);
-      b.bands(w, h, d, 0.3, 5, 0x3d6a85, 0.1);
+      b.bands(w, h, d, 0.3, floors, 0x3d6a85, 0.1);
       b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x46525c);
-      b.box(0.3, 0.16, 0.3, -0.15, h + 0.05, 0.12, 0x6f7a84);
+      roofDetail(b, h + 0.05, v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
     } else {
-      const w = 0.8, h = 4.3, d = 0.8;
+      const floors = [12, 9, 15, 11][v];
+      const w = [0.8, 0.7, 0.66, 0.76][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78][v];
       b.box(w, h, d, 0, 0, 0, GLASS_TOWERS[v]);
       b.box(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a);
-      for (let f = 1; f < 12; f++) {
-        b.box(w + 0.02, 0.035, d + 0.02, 0, (h / 12) * f, 0, 0x2a3a4a);
+      for (let f = 1; f < floors; f++) {
+        b.box(w + 0.02, 0.035, d + 0.02, 0, (h / floors) * f, 0, 0x2a3a4a);
       }
       b.box(0.55, 0.5, 0.55, 0, h, 0, GLASS_TOWERS[v]);
       b.box(0.58, 0.04, 0.58, 0, h + 0.5, 0, 0x2a3a4a);
-      b.cyl(0.015, 0.6, 0.1, h + 0.54, 0.1, 0xcfd6dc, 6);
+      roofDetail(b, h + 0.54, v);
       b.box(0.5, 0.3, 0.03, 0, 0, d / 2 + 0.005, 0xbfe3f5);
     }
+  } else if (kind === T_OFFICE) {
+    const floors = level === 1 ? [2, 3, 2, 4][v] : level === 2 ? [5, 7, 6, 8][v] : [11, 14, 12, 16][v];
+    const w = [0.76, 0.65, 0.8, 0.7][v], d = [0.68, 0.8, 0.62, 0.74][v], h = floors * 0.3;
+    b.box(w, h, d, 0, 0, 0, [0x759eab, 0x91a5b5, 0x6d98a2, 0x92a6bf][v]);
+    b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16);
+    for (const x of [-w * 0.3, w * 0.3]) b.box(0.035, h, d + 0.035, x, 0, 0, 0xc9d2d9);
+    b.box(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270);
+    b.box(0.3, 0.23, 0.03, 0, 0, d / 2 + 0.02, GLASS);
+    roofDetail(b, h + 0.08, v);
   } else if (kind === T_IND) {
-    if (level === 1) {
-      const w = 0.86, h = 0.42, d = 0.86;
-      b.box(w, h, d, 0, 0, 0, IND_WALLS[v]);
-      for (const z of [-0.29, 0, 0.29]) b.box(w + 0.02, 0.08, 0.26, 0, h, z, 0x7d7a70);
-      b.box(0.4, 0.3, 0.03, 0, 0, d / 2 + 0.005, 0x4a4a4a);
-      b.box(0.1, 0.08, 0.1, 0.3, h + 0.08, -0.29, 0x5f5a53);
-      b.box(0.1, 0.08, 0.1, -0.3, h + 0.08, 0.29, 0x5f5a53);
-    } else if (level === 2) {
-      const w = 0.86, h = 0.7, d = 0.86;
-      b.box(w, h, d, 0, 0, 0, IND_WALLS[v]);
-      b.box(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x6b665e);
-      b.cyl(0.07, 0.75, 0.3, h, -0.3, 0x5a5650, 10);
-      b.cyl(0.078, 0.06, 0.3, h + 0.69, -0.3, 0xb8433a, 10);
-      for (const x of [-0.25, 0.05]) b.box(0.22, 0.1, 0.5, x, h, 0.05, 0x9fb7c6);
-      b.box(0.36, 0.34, 0.03, -0.1, 0, d / 2 + 0.005, 0x4a4a4a);
-      b.box(0.02, 0.14, 0.5, -w / 2 - 0.005, 0.3, 0, WINDOW_DARK);
-    } else {
-      const w = 0.9, h = 1.2, d = 0.9;
-      b.box(w, h, d, 0, 0, 0, IND_WALLS[v]);
-      b.box(w + 0.04, 0.08, d + 0.04, 0, 0, 0, 0x6b665e);
-      b.cyl(0.07, 0.9, 0.3, h, -0.3, 0x5a5650, 10);
-      b.cyl(0.07, 0.75, 0.12, h, -0.32, 0x5a5650, 10);
-      b.cyl(0.078, 0.06, 0.3, h + 0.84, -0.3, 0xb8433a, 10);
-      b.cyl(0.16, 0.42, -0.25, h, 0.2, 0xb9b5a8, 12);
-      b.cyl(0.16, 0.04, -0.25, h + 0.42, 0.2, 0x8f8a80, 12);
-      b.box(0.05, 0.05, 0.5, 0.05, h + 0.2, 0.2, 0x8f8a80);
-      b.windows(w, h, d, 0.25, 2, 3, 0.1, 0.14);
-      b.box(0.4, 0.36, 0.03, 0.15, 0, d / 2 + 0.005, 0x4a4a4a);
+    const h = [0.42, 0.62, 0.52, 0.7][v] + (level - 1) * 0.32;
+    const wall = IND_WALLS[v];
+    b.box(0.96, 0.025, 0.96, 0, 0, 0, 0x92928b);
+    if (v === 0) { // sawtooth workshop, roof lights and loading bays
+      b.box(0.86, h, 0.8, 0, 0.025, 0, wall);
+      for (const z of [-0.27, 0, 0.27]) {
+        b.box(0.88, 0.12, 0.2, 0, h, z, 0x717873);
+        b.box(0.64, 0.035, 0.12, 0, h + 0.12, z, 0xabc8d0);
+      }
+      for (const x of [-0.24, 0.24]) b.box(0.24, 0.3, 0.03, x, 0.025, 0.41, 0x475058);
+    } else if (v === 1) { // brick plant with twin striped stacks
+      b.box(0.7, h, 0.76, -0.06, 0.025, 0, 0xa87d63);
+      for (const z of [-0.25, 0.19]) {
+        b.cyl(0.065, 0.5 + level * 0.18, 0.34, 0.025, z, 0x686960, 10);
+        b.cyl(0.07, 0.07, 0.34, 0.38 + level * 0.18, z, 0xc65343, 10);
+      }
+      b.windows(0.7, h, 0.76, 0.15, level, 3, 0.05);
+      b.box(0.3, 0.1, 0.34, -0.13, h + 0.025, 0, 0x738791);
+    } else if (v === 2) { // tank farm and a low processing hall
+      b.box(0.42, h * 0.7, 0.86, -0.22, 0.025, 0, wall);
+      for (const z of [-0.23, 0.23]) {
+        b.cyl(0.17, h, 0.23, 0.025, z, 0xc2c5bc, 14);
+        b.taper(0.02, 0.17, 0.13, 0.23, h + 0.025, z, 0x919f9b);
+      }
+      b.pipe(0.04, 0.7, 0.22, 0.2, 0, 0xd2ab58);
+      b.box(0.3, 0.26, 0.03, -0.22, 0.025, 0.435, 0x465058);
+    } else { // distribution warehouse with solar and container yard
+      b.box(0.88, h * 0.72, 0.58, 0, 0.025, -0.13, wall);
+      b.box(0.92, 0.05, 0.62, 0, h * 0.72 + 0.025, -0.13, 0x626e76);
+      for (const x of [-0.25, 0, 0.25]) {
+        b.box(0.19, 0.045, 0.35, x, h * 0.72 + 0.08, -0.13, 0x305a7a);
+        b.box(0.2, 0.17, 0.25, x, 0.025, 0.32, x === 0 ? 0xc58f49 : 0x577c83);
+        for (let n = 0; n < 4; n++) b.box(0.01, 0.16, 0.255, x - 0.075 + n * 0.05, 0.025, 0.32, 0x8eaaa7);
+      }
     }
   }
   else if (kind === T_COAL) {
@@ -263,6 +321,166 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     b.cyl(0.13, 0.22, 0.2, 0.04, -0.27, 0x7c705a, 12);
     b.box(0.14, 0.2, 0.02, 0.1, 0.04, 0.255, 0x2f2a22);
   }
+  if (kind === T_PARK) {
+    b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x72a765);
+    b.box(0.17, 0.02, 0.96, 0, 0.04, 0, 0xdcc9a0);
+    for (const x of [-0.3, 0.3]) for (const z of [-0.28, 0.28]) {
+      b.cyl(0.035, 0.25, x, 0.04, z, 0x7d6245, 6);
+      b.taper(0.04, 0.2, 0.45, x, 0.22, z, 0x43815b, 8);
+    }
+    b.box(0.26, 0.08, 0.1, 0.25, 0.08, 0, 0xa78058);
+  } else if (kind === T_SOLAR) {
+    b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x8d9a82);
+    for (const z of [-0.3, 0, 0.3]) {
+      b.box(0.78, 0.08, 0.24, 0, 0.15, z, 0x245683);
+      for (const x of [-0.25, 0, 0.25]) b.box(0.012, 0.01, 0.24, x, 0.23, z, 0xa9c9db);
+    }
+  } else if (kind === T_RECYCLING) {
+    b.box(0.94, 0.04, 0.94, 0, 0, 0, 0x949c96);
+    b.box(0.85, 0.48, 0.5, 0, 0.04, -0.15, 0x8eb1a3);
+    b.box(0.89, 0.06, 0.55, 0, 0.52, -0.15, 0x397565);
+    for (const x of [-0.3, 0, 0.3]) b.box(0.2, 0.2, 0.25, x, 0.04, 0.3, x === 0 ? 0x528abc : 0xdbc268);
+  } else if ([T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_UNIVERSITY].includes(kind)) {
+    const accent = kind === T_CLINIC ? 0xcb5656 : kind === T_FIRE ? 0xba483b : kind === T_POLICE ? 0x426b9d : kind === T_SCHOOL ? 0xd49d4e : 0x8a70ad;
+    const height = kind === T_UNIVERSITY ? 1.55 : kind === T_POLICE ? 0.95 : 0.65;
+    b.box(0.96, 0.04, 0.96, 0, 0, 0, 0xa3aaad);
+    b.box(0.82, height, 0.68, 0, 0.04, -0.05, kind === T_SCHOOL ? 0xd7b996 : 0xdce0df);
+    b.box(0.86, 0.07, 0.72, 0, height + 0.04, -0.05, accent);
+    b.windows(0.82, height, 0.68, 0.22, kind === T_UNIVERSITY ? 3 : 1, 3, 0.13, 0.14);
+    b.box(0.26, 0.3, 0.035, 0, 0.04, 0.3, 0x345166);
+    if (kind === T_CLINIC) {
+      b.box(0.3, 0.08, 0.03, 0, height - 0.05, 0.315, accent);
+      b.box(0.08, 0.3, 0.03, 0, height - 0.16, 0.318, accent);
+    } else if (kind === T_FIRE) {
+      for (const x of [-0.25, 0.25]) b.box(0.22, 0.35, 0.035, x, 0.04, 0.31, 0x984b40);
+      b.box(0.17, 0.2, 0.16, 0.25, 0.04, 0.39, 0xdc4b3e);
+    } else if (kind === T_UNIVERSITY) {
+      for (const x of [-0.25, 0, 0.25]) b.cyl(0.035, 0.5, x, 0.04, 0.4, 0xf1e4cb, 8);
+      b.box(0.7, 0.06, 0.2, 0, 0.54, 0.4, accent);
+      b.cyl(0.18, 0.3, 0, height + 0.11, -0.05, accent, 12);
+    } else {
+      b.cyl(0.015, 0.5, 0.32, height + 0.11, 0, 0xb6bdc4, 6);
+      b.box(0.2, 0.12, 0.02, 0.37, height + 0.46, 0, accent);
+    }
+  }
+  if (kind === T_BUS) {
+    b.box(0.92, 0.03, 0.7, 0, 0, 0, 0xb9b6ad);
+    for (const x of [-0.35, 0.35]) b.box(0.035, 0.55, 0.035, x, 0.03, -0.16, 0x405566);
+    b.box(0.75, 0.36, 0.025, 0, 0.13, -0.17, GLASS);
+    b.box(0.82, 0.045, 0.48, 0, 0.58, -0.02, 0xeab75c);
+    b.box(0.56, 0.08, 0.12, 0, 0.16, -0.05, 0x8a7458);
+    b.box(0.025, 0.72, 0.025, 0.41, 0.03, 0.2, 0x56606b);
+    b.box(0.17, 0.2, 0.03, 0.41, 0.55, 0.2, 0x2f86af);
+  } else if (kind === T_STATION) {
+    // Two-level station hall: street-level ticket hall, then an upper concourse whose floor sits at
+    // viaduct height (1.12) so the footbridge from the elevated platforms (TransportLayer) lands on it
+    // from whichever side the line runs. The concourse face is inset 0.25 from the 3x2 footprint.
+    b.box(2.96, 0.05, 1.96, 1, 0, 0.5, 0xb9b6ad);
+    b.box(2.5, 0.91, 1.5, 1, 0.05, 0.5, 0xd9d4c8);
+    b.box(2.2, 0.4, 1.52, 1, 0.26, 0.5, GLASS);
+    b.box(2.52, 0.4, 1.2, 1, 0.26, 0.5, GLASS);
+    for (const z of [-0.26, 1.26]) b.box(0.36, 0.5, 0.02, 1, 0.05, z, 0x2f4658);
+    for (const x of [-0.26, 2.26]) b.box(0.02, 0.5, 0.36, x, 0.05, 0.5, 0x2f4658);
+    b.box(0.6, 0.04, 0.16, 1, 0.58, 1.33, 0x426c85);
+    b.box(0.6, 0.04, 0.16, 1, 0.58, -0.33, 0x426c85);
+    b.box(2.64, 0.16, 1.64, 1, 0.96, 0.5, 0xb9b4a8);
+    b.box(2.5, 0.38, 1.5, 1, 1.12, 0.5, 0x9cc3d6);
+    for (let x = -0.25; x <= 2.26; x += 0.3125) for (const z of [-0.26, 1.26]) b.box(0.03, 0.38, 0.03, x, 1.12, z, 0x536470);
+    for (let z = -0.25; z <= 1.26; z += 0.375) for (const x of [-0.26, 2.26]) b.box(0.03, 0.38, 0.03, x, 1.12, z, 0x536470);
+    b.box(2.8, 0.07, 1.8, 1, 1.5, 0.5, 0x426c85);
+    for (const [d, y] of [[1.5, 1.57], [1.1, 1.63], [0.6, 1.68]]) b.box(2.6, 0.06, d, 1, y, 0.5, 0x6e9cb6);
+    b.box(0.3, 2.05, 0.3, 2.15, 0.05, 1.2, 0xcfc9bc);
+    b.box(0.34, 0.06, 0.34, 2.15, 2.1, 1.2, 0x426c85);
+    for (const [dx, dz, w, d] of [[0, 0.155, 0.18, 0.02], [0, -0.155, 0.18, 0.02], [0.155, 0, 0.02, 0.18], [-0.155, 0, 0.02, 0.18]]) {
+      b.box(w, 0.18, d, 2.15 + dx, 1.8, 1.2 + dz, 0xf2efe6);
+    }
+    b.box(0.5, 0.14, 0.03, 0.2, 1.52, -0.42, 0xc44536);
+  } else if (kind === T_AIRPORT) {
+    b.box(7.96, 0.035, 2.96, 3.5, 0, 1, 0x80946c);
+    b.box(7.6, 0.025, 0.85, 3.5, 0.035, 0, 0x515860);
+    for (let x = 0.2; x < 7; x += 0.65) b.box(0.32, 0.008, 0.045, x, 0.063, 0, 0xf0eee1);
+    for (const x of [0, 7]) for (const z of [-0.25, -0.1, 0.1, 0.25]) b.box(0.2, 0.008, 0.06, x, 0.063, z, 0xffffff);
+    b.box(4.8, 0.025, 0.85, 3.5, 0.035, 0.9, 0xa7aba4);
+    b.box(2.5, 0.5, 0.75, 3, 0.04, 1.9, 0xdce0db);
+    b.box(2.6, 0.08, 0.8, 3, 0.54, 1.9, 0x658698);
+    b.box(2.3, 0.24, 0.02, 3, 0.2, 1.515, GLASS);
+    b.box(0.24, 1.25, 0.24, 5, 0.04, 1.9, 0xc3ccc8);
+    b.box(0.55, 0.28, 0.5, 5, 1.29, 1.9, 0x4d7892);
+    b.box(0.6, 0.07, 0.55, 5, 1.57, 1.9, 0xe1e2d9);
+  } else if (kind === T_SUBWAY) { // metro entrance: stairwell under a glass canopy and an M pylon
+    b.box(0.96, 0.03, 0.96, 0, 0, 0, 0xb3b0a8);
+    b.box(0.34, 0.012, 0.52, -0.1, 0.03, 0.02, 0x1d2226);
+    for (let n = 0; n < 5; n++) b.box(0.32, 0.01, 0.03, -0.1, 0.034, 0.24 - n * 0.1, 0x3a4046);
+    for (const x of [-0.285, 0.085]) b.box(0.03, 0.13, 0.54, x, 0.03, 0.02, 0x8f959a);
+    b.box(0.4, 0.13, 0.03, -0.1, 0.03, -0.26, 0x8f959a);
+    for (const x of [-0.29, 0.09]) for (const z of [-0.24, 0.26]) b.box(0.025, 0.4, 0.025, x, 0.03, z, 0x5a6570);
+    b.box(0.46, 0.03, 0.62, -0.1, 0.43, 0.02, 0x5a6570);
+    b.box(0.42, 0.012, 0.58, -0.1, 0.46, 0.02, GLASS);
+    b.box(0.045, 0.62, 0.045, 0.32, 0.03, 0.3, 0x56606b);
+    b.box(0.17, 0.17, 0.06, 0.32, 0.6, 0.3, 0x2e6fd8);
+    b.box(0.03, 0.1, 0.01, 0.28, 0.635, 0.335, 0xf2f2f2);
+    b.box(0.03, 0.1, 0.01, 0.36, 0.635, 0.335, 0xf2f2f2);
+    b.box(0.07, 0.03, 0.01, 0.32, 0.69, 0.335, 0xf2f2f2);
+    b.box(0.2, 0.08, 0.14, 0.27, 0.03, -0.26, 0x8a7458);
+    b.box(0.17, 0.08, 0.11, 0.27, 0.11, -0.26, 0x5d8a45);
+  } else if (kind === T_TREATMENT) {
+    b.box(0.96, 0.05, 0.96, 0, 0, 0, 0x99aaa2);
+    for (const x of [-0.23, 0.23]) {
+      b.cyl(0.2, 0.2, x, 0.05, -0.05, 0xcbd1c8, 16);
+      b.cyl(0.17, 0.015, x, 0.24, -0.05, x < 0 ? 0x638e7e : 0x62a9bd, 16);
+      b.box(0.35, 0.035, 0.035, x, 0.26, -0.05, 0x657c80);
+    }
+    b.box(0.7, 0.32, 0.2, 0, 0.05, -0.34, 0xd4dfd8);
+    b.pipe(0.05, 0.35, 0.23, 0.12, 0.3, 0x577d8c);
+  }
+  const geometry = b.build();
+  // The frontmost building detail meets the lot's +z boundary; rotation then faces it
+  // toward the road. Keep the tile center fixed so zoning, picking and saves agree.
+  geometry.computeBoundingBox();
+  if (kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
+    geometry.translate(0, 0, 0.5 - geometry.boundingBox.max.z);
+    geometry.computeBoundingBox();
+  }
+  heights.set(`${kind}:${level}:${variant}`, geometry.boundingBox!.max.y);
+  // The lot is added after the facade shift so it always fills the tile.
+  const lot = lotGeometry(kind, level, v);
+  if (!lot) return geometry;
+  const merged = mergeGeometries([geometry, lot], false)!;
+  geometry.dispose(); lot.dispose();
+  merged.computeBoundingBox(); merged.computeBoundingSphere();
+  return merged;
+}
+
+/** Ground of a zoned lot in tile space (front edge at +z): fenced gardens for houses, paving for everything bigger. */
+function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeometry | null {
+  if (kind !== T_RES && kind !== T_COM && kind !== T_OFFICE) return null;
+  const b = new Builder(kind * 31 + level * 7 + v), e = 0.47;
+  if (kind === T_RES && level === 1) {
+    b.box(0.96, 0.012, 0.96, 0, 0, 0, [0x7fa35f, 0x86a864, 0x7a9d5c, 0x8aab68][v]);
+    const fence = [0xefebe0, 0x9a7650, 0xefebe0, 0x6f5a45][v], top = 0.1;
+    // Back and side fences; the house itself closes the front of the lot.
+    for (const side of [-1, 1]) {
+      b.box(0.018, 0.018, 2 * e, side * e, top - 0.03, 0, fence);
+      b.box(0.018, 0.018, 2 * e, side * e, top - 0.075, 0, fence);
+    }
+    b.box(2 * e, 0.018, 0.018, 0, top - 0.03, -e, fence);
+    b.box(2 * e, 0.018, 0.018, 0, top - 0.075, -e, fence);
+    for (let t = -e; t <= e + 0.001; t += 0.094) {
+      b.box(0.022, top, 0.022, -e, 0, t, fence);
+      b.box(0.022, top, 0.022, e, 0, t, fence);
+      b.box(0.022, top, 0.022, t, 0, -e, fence);
+    }
+    // A garden shrub in the back corner.
+    const sx = v % 2 ? 0.3 : -0.3;
+    b.cyl(0.075, 0.11, sx, 0.01, -0.33, 0x4f7a3c, 7);
+    b.cyl(0.05, 0.07, sx, 0.1, -0.33, 0x5d8a45, 7);
+    return b.build();
+  }
+  // Concrete plaza with a kerb and a tree pit.
+  b.box(0.96, 0.014, 0.96, 0, 0, 0, [0xb4b2aa, 0xaaa9a3, 0xbcb8ae, 0xa7a8a4][v]);
+  b.box(0.96, 0.024, 0.03, 0, 0, -0.465, 0x8f8e88);
+  for (const side of [-1, 1]) b.box(0.03, 0.024, 0.96, side * 0.465, 0, 0, 0x8f8e88);
+  for (const x of [-0.25, 0, 0.25]) b.box(0.004, 0.0165, 0.96, x, 0, 0, 0x97968f);
   return b.build();
 }
 

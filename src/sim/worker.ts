@@ -1,13 +1,27 @@
+import { roadHeight, STRUCTURE_COST } from '../roads/structures';
+import { Incidents } from './incidents';
+import { T_FIRE, T_POLICE } from '../constants';
+import { TrafficSpace, vehicleLength } from './trafficSpace';
+import type { VehiclePose } from './trafficSpace';
+import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TREATMENT } from '../constants';
+import { transitNetwork, transitLineForTrip, distance } from './transit';
+import type { TransitNetwork } from './transit';
 import {
   GRID, N_TILES, MAX_CARS, SIM_HZ, T_RES, T_COM, T_IND, T_PUMP, T_TOWER, T_OUTLET,
   RES_POP, COM_JOBS, IND_JOBS, POWER_DEMAND, WATER_DEMAND, IND_POLLUTION, SERVICES, START_MONEY, ROAD_UPKEEP,
   F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, isZone, isService, neighbor, tileHash,
 } from '../constants';
+import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
+import { civicShortfalls } from './growth';
+import { F_DECLINING, CIVIC_LABELS } from '../constants';
+import type { CivicNeed } from '../constants';
+import { advanceCity } from '../progression';
+import { civicCoverage } from './civic';
 import { Network, SPEED, KIND_AVENUE, isGreen } from '../roads/network';
-import type { RSeg, Pose } from '../roads/network';
+import type { RSeg } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
-import type { EditPayload, MainToWorker, Stats } from './messages';
+import type { EditPayload, MainToWorker, Stats, TileReport } from './messages';
 
 const post = (self as unknown as { postMessage: (m: unknown, t?: Transferable[]) => void }).postMessage.bind(self);
 
@@ -15,6 +29,7 @@ const post = (self as unknown as { postMessage: (m: unknown, t?: Transferable[])
 const kind = new Uint8Array(N_TILES);
 const level = new Uint8Array(N_TILES);
 const age = new Uint16Array(N_TILES);
+const neglect = new Uint8Array(N_TILES);
 const flags = new Uint8Array(N_TILES);
 let cover: Uint8Array = new Uint8Array(N_TILES);
 let accSeg = new Int32Array(N_TILES).fill(-1); // segment *index* after remapping, -1 if none
@@ -24,17 +39,29 @@ let pollutionTmp = new Float32Array(N_TILES);
 let terrain: Terrain = generateTerrain(1);
 let riverPollution = new Float32Array(terrain.river.length);
 
+let funding = defaultFunding();
+let debt = 0;
+let taxIncome = 0, serviceExpense = 0, loanExpense = 0;
+let inspected = -1;
+let cityLevel = 0;
+let happiness = 65;
+let civicState = civicCoverage(kind, level, () => false);
 let money = START_MONEY;
 let tick = 0;
 let tax = 10;
 let speed = 1;
 let simTime = 0;
-let pop = 0, comJobs = 0, indJobs = 0, buildings = 0;
+let pop = 0, comJobs = 0, indJobs = 0, officeJobs = 0, buildings = 0;
 let commuteAvg = 0;
 let noPath = 0, gaveUp = 0;
 let subCount = 0;
 let netIncome = 0;
-const demand: [number, number, number] = [0, 0, 0];
+const demand: [number, number, number, number] = [0, 0, 0, 0];
+let transit: TransitNetwork = { lines: [], airports: [] };
+let transitSignature = '';
+let transitTokens: number[] = [], transitDepartures: number[] = [];
+let riders = 0, airPassengers = 0, fareIncome = 0, treatedSewage = 0;
+let riderWindow = 0, airWindow = 0, airTokens = 0;
 let power: [number, number] = [0, 0];
 let water: [number, number] = [0, 0];
 let sewage: [number, number] = [0, 0];
@@ -58,17 +85,25 @@ let nodeEdges: Edge[][] = [];
 let nodeGroups: Map<number, number>[] = []; // seg index -> signal group, for light nodes
 let lockCount = new Int8Array(0);
 let lockCap = new Int8Array(0);
+let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
+let ringIn: number[][] = []; // per node: lane keys of the ring arcs that feed it
 let reach = new Uint8Array(0);
-let entryNode = -1;
-let entrySeg = -1;
-let entryS = 0;
+let component = new Int32Array(0);
+let entryNodes: number[] = [];
+let entries: { seg: number; s: number }[] = [];
 let segCong = new Float32Array(0);
 let roadUpkeep = 0;
 let roadLength = 0;
 
 // ---- cars ---------------------------------------------------------------------------------------
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
-interface Car { legs: Leg[]; li: number; p: number; time: number; stuck: number; lock: number; lockLi: number }
+interface Mission { kind: 'fire' | 'patrol' | 'crash'; origin: number; tile: number; crash?: number; work: number }
+interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; lock: number; lockLi: number; vehicle: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
+const trafficSpace = new TrafficSpace();
+const spawnSpace = new TrafficSpace();
+let carSequence = 0;
+const incidents = new Incidents();
+const dispatchCooldown = new Map<number, number>();
 const slots: (Car | null)[] = new Array(MAX_CARS).fill(null);
 const freeList: number[] = [];
 for (let i = MAX_CARS - 1; i >= 0; i--) freeList.push(i);
@@ -83,8 +118,10 @@ let extRate = 0;
 let resTiles: number[] = [], resW: number[] = [];
 let jobTiles: number[] = [], jobW: number[] = [];
 
-const GAP = [0.62, 0.36];
-const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
+const GAP = [0.42, 0.42];
+const RING_PATIENCE = 6; // seconds an entering car gives way before merging into continuous ring traffic
+const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
+
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -109,7 +146,7 @@ function applyNetwork(p: EditPayload): void {
   serial = p.serial;
   const nodeIndex = new Map<number, number>();
   nodeX = []; nodeZ = []; nodeIds = []; nodeType = []; nodeEdges = []; nodeGroups = [];
-  entryNode = -1;
+  entryNodes = [];
   for (const n of net.nodes.values()) {
     nodeIndex.set(n.id, nodeIds.length);
     nodeIds.push(n.id);
@@ -119,7 +156,7 @@ function applyNetwork(p: EditPayload): void {
     nodeGroups.push(new Map());
     const deg = net.degree(n.id);
     nodeType.push(n.ring ? J_RING : deg >= 3 ? (n.light ? J_LIGHT : J_YIELD) : J_PLAIN);
-    if (n.entry) entryNode = nodeIds.length - 1;
+    if (n.entry) entryNodes.push(nodeIds.length - 1);
   }
   // Keep surviving segments at stable indices where possible is not needed: cars are remapped by id below.
   const newSegs: RSeg[] = [];
@@ -137,10 +174,16 @@ function applyNetwork(p: EditPayload): void {
   newSegs.forEach((s, i) => {
     nodeEdges[segA[i]].push({ seg: i, to: segB[i], fwd: true });
     if (!s.oneway) nodeEdges[segB[i]].push({ seg: i, to: segA[i], fwd: false });
-    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * (s.kind === KIND_AVENUE ? 2 : 1);
+    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (s.kind === KIND_AVENUE ? 2 : 1);
     roadLength += s.len;
   });
   lockCount = new Int8Array(nodeIds.length);
+  ringArc = new Uint8Array(newSegs.length);
+  ringIn = nodeIds.map(() => []);
+  newSegs.forEach((s, i) => {
+    if (!s.oneway || nodeType[segA[i]] !== J_RING || nodeType[segB[i]] !== J_RING) return;
+    ringArc[i] = 1; ringIn[segB[i]].push(i * 2);
+  });
   lockCap = new Int8Array(nodeIds.length).fill(1);
   nodeIds.forEach((id, ni) => {
     if (nodeType[ni] === J_LIGHT) {
@@ -149,23 +192,31 @@ function applyNetwork(p: EditPayload): void {
     if (net.segsAt(id).some((s) => s.kind === KIND_AVENUE)) lockCap[ni] = 2;
   });
 
-  // Reachability from the highway entry (ignoring one-way direction).
+  // Any purchased highway entry can serve its own connected neighborhoods.
   reach = new Uint8Array(nodeIds.length);
-  entrySeg = -1;
-  if (entryNode >= 0) {
-    const und: number[][] = nodeIds.map(() => []);
-    newSegs.forEach((_, i) => { und[segA[i]].push(segB[i]); und[segB[i]].push(segA[i]); });
-    const stack = [entryNode];
-    reach[entryNode] = 1;
-    while (stack.length) {
-      const n = stack.pop()!;
-      for (const m of und[n]) if (!reach[m]) { reach[m] = 1; stack.push(m); }
+  entries = [];
+  const und: number[][] = nodeIds.map(() => []);
+  newSegs.forEach((_, i) => { und[segA[i]].push(segB[i]); und[segB[i]].push(segA[i]); });
+  component = new Int32Array(nodeIds.length).fill(-1);
+  for (let root = 0; root < nodeIds.length; root++) {
+    if (component[root] >= 0) continue;
+    const pending = [root]; component[root] = root;
+    while (pending.length) {
+      const node = pending.pop()!;
+      for (const next of und[node]) if (component[next] < 0) { component[next] = root; pending.push(next); }
     }
-    newSegs.forEach((s, i) => {
-      if (segA[i] === entryNode) { entrySeg = i; entryS = 0; }
-      else if (segB[i] === entryNode && entrySeg < 0) { entrySeg = i; entryS = s.len; }
-    });
   }
+  const stack = [...entryNodes];
+  for (const n of entryNodes) reach[n] = 1;
+  while (stack.length) {
+    const n = stack.pop()!;
+    for (const m of und[n]) if (!reach[m]) { reach[m] = 1; stack.push(m); }
+  }
+  for (const n of entryNodes) newSegs.forEach((s, i) => {
+    if (segA[i] === n) entries.push({ seg: i, s: 0 });
+    else if (segB[i] === n) entries.push({ seg: i, s: s.len });
+  });
+  transitSignature = '';
 
   // Carry congestion over for surviving segments; drop cars whose route touched a changed segment.
   const newCong = new Float32Array(newSegs.length);
@@ -174,7 +225,7 @@ function applyNetwork(p: EditPayload): void {
     const ni = segIndex.get(s.id);
     if (ni === undefined) return;
     const ns = newSegs[ni];
-    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i]) return;
+    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i] || ns.kind !== s.kind || ns.oneway !== s.oneway || ns.structure !== s.structure || ns.cx !== s.cx || ns.cz !== s.cz) return;
     remap[i] = ni;
     newCong[ni] = segCong[i];
   });
@@ -334,6 +385,7 @@ function freeCar(slot: number): void {
   const c = slots[slot];
   if (!c) return;
   if (c.lock >= 0 && c.lock < lockCount.length && lockCount[c.lock] > 0) lockCount[c.lock]--;
+  trafficSpace.remove(slot);
   slots[slot] = null;
   freeList.push(slot);
   activeCars--;
@@ -341,50 +393,109 @@ function freeCar(slot: number): void {
 
 function clearCars(): void {
   for (let s = 0; s < MAX_CARS; s++) if (slots[s]) freeCar(s);
-  lockCount.fill(0);
+  lockCount.fill(0); spawnSpace.clear();
 }
 
-function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number): boolean {
+function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission): boolean {
   if (!freeList.length || sSeg < 0 || gSeg < 0) return false;
   const legs = route(sSeg, sS, gSeg, gS);
   if (!legs || legs.length === 0) { noPath++; return false; }
-  const slot = freeList.pop()!;
-  slots[slot] = { legs, li: 0, p: legs[0].p0, time: 0, stuck: 0, lock: -1, lockLi: -1 };
+  if (line !== undefined) {
+    const back = route(gSeg, gS, sSeg, sS);
+    if (!back) return false;
+    legs.push(...back);
+  }
+  const slot = freeList.at(-1)!;
+  const placement = carPose(legs[0], legs[0].p0, slot, vehicle);
+  if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
+  freeList.pop(); trafficSpace.set(slot, placement);
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, stuck: 0, lock: -1, lockLi: -1, vehicle, line, mission };
   activeCars++;
   return true;
 }
 
+function externalTrip(tile: number, inbound: boolean, vehicle = 1): boolean {
+  // Try the closest entrance first, then fall back when one-way roads prevent the route.
+  const candidates = [...entries].sort((a, b) => {
+    const pa = segs[a.seg], pb = segs[b.seg];
+    return Math.hypot(pa.pts[0] - tile % GRID, pa.pts[1] - Math.floor(tile / GRID)) - Math.hypot(pb.pts[0] - tile % GRID, pb.pts[1] - Math.floor(tile / GRID));
+  });
+  for (const e of candidates) {
+    const legs = inbound ? route(e.seg, e.s, accSeg[tile], accS[tile]) : route(accSeg[tile], accS[tile], e.seg, e.s);
+    if (!legs) continue;
+    return inbound ? spawnTrip(e.seg, e.s, accSeg[tile], accS[tile], vehicle) : spawnTrip(accSeg[tile], accS[tile], e.seg, e.s, vehicle);
+  }
+  noPath++; return false;
+}
+
 function spawn(dt: number): void {
+  airTokens = Math.min(transit.airports.length * 240, airTokens + transit.airports.length * 4 * dt);
+  riderWindow *= Math.exp(-dt / 60); airWindow *= Math.exp(-dt / 60);
+  transit.lines.forEach((line, i) => {
+    const congestion = line.mode === 'bus' ? Math.max(segCong[accSeg[line.a]] ?? 0, segCong[accSeg[line.b]] ?? 0) : 0;
+    transitTokens[i] = Math.min(line.capacity, (transitTokens[i] ?? 0) + line.capacity / 20 * dt * (1 - congestion * 0.8));
+    transitDepartures[i] = (transitDepartures[i] ?? 0) + dt;
+    if (line.mode === 'bus' && transitDepartures[i] >= 12 && !slots.some(c => c?.line === i)) {
+      if (spawnTrip(accSeg[line.a], accS[line.a], accSeg[line.b], accS[line.b], 4, i)) transitDepartures[i] = 0;
+    }
+  });
   spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
   extBudget = Math.min(4, extBudget + extRate * dt);
   let n = 0;
-  while (spawnBudget >= 1 && n < 4 && freeList.length && resTiles.length && jobTiles.length) {
+  while (spawnBudget >= 1 && n < 4 && resTiles.length && jobTiles.length) {
     spawnBudget -= 1;
     n++;
     const o = pickWeighted(resTiles, resW);
     const d = pickWeighted(jobTiles, jobW);
-    spawnTrip(accSeg[o], accS[o], accSeg[d], accS[d]);
+    const line = transitLineForTrip(transit, o, d);
+    if (line >= 0 && transitTokens[line] >= 1 && Math.random() < (transit.lines[line].mode !== 'bus' ? 0.9 : 0.65)) {
+      transitTokens[line]--; riderWindow++; money += 0.08;
+    } else spawnTrip(accSeg[o], accS[o], accSeg[d], accS[d], tileHash(o) < 0.2 ? 2 : 1);
   }
-  if (entrySeg < 0) return;
+  if (!entries.length) return;
   while (extBudget >= 1 && n < 6 && freeList.length) {
     extBudget -= 1;
     n++;
     // Outside workers drive in when there are spare jobs; residents drive out when there are not enough.
-    const inbound = comJobs + indJobs > pop * 0.5 ? Math.random() < 0.7 : Math.random() < 0.3;
+    const inbound = comJobs + indJobs + officeJobs > pop * 0.5 ? Math.random() < 0.7 : Math.random() < 0.3;
     if (inbound && jobTiles.length) {
       const d = pickWeighted(jobTiles, jobW);
-      spawnTrip(entrySeg, entryS, accSeg[d], accS[d]);
+      if (airTokens >= 1 && transit.airports.some(a => distance(a, d) < 24) && Math.random() < 0.45) { airTokens--; airWindow++; money += 0.2; }
+      else externalTrip(d, true, kind[d] === T_IND ? 3 : 2);
     } else if (resTiles.length) {
       const o = pickWeighted(resTiles, resW);
-      spawnTrip(accSeg[o], accS[o], entrySeg, entryS);
+      externalTrip(o, false);
     }
   }
   // New residents arrive by road.
   while (pendingMoveIns.length && n < 8 && freeList.length) {
     const t = pendingMoveIns.pop()!;
     n++;
-    if (accSeg[t] >= 0) spawnTrip(entrySeg, entryS, accSeg[t], accS[t]);
+    if (accSeg[t] >= 0) externalTrip(t, true, 2);
   }
+}
+
+function carPose(leg: Leg, progress: number, slot: number, type: number): VehiclePose {
+  const seg = segs[leg.seg];
+  const p = { x: 0, z: 0, tx: 0, tz: 0 };
+  Network.poseAt(seg, leg.fwd ? progress : seg.len - progress, p);
+  const dir = leg.fwd ? 1 : -1, tx = p.tx * dir, tz = p.tz * dir;
+  const lane = seg.oneway ? (seg.kind === KIND_AVENUE ? (slot & 1 ? 0.3 : -0.3) : (slot & 1 ? 0.17 : -0.17)) : seg.kind === KIND_AVENUE ? (slot & 1 ? 0.2 : 0.47) : 0.2;
+  return { y: roadHeight(seg, leg.fwd ? progress : seg.len - progress), x: p.x - tz * lane, z: p.z + tx * lane, angle: Math.atan2(tx, tz), type };
+}
+
+/** A circulating vehicle is about to reach this roundabout node, so an entering car must give way. */
+function ringApproaching(node: number): boolean {
+  for (const key of ringIn[node]) {
+    const len = segs[key >> 1].len;
+    for (const slot of laneCars[key]) {
+      const c = slots[slot];
+      if (c && c.legs[c.li].seg === key >> 1 && c.p > len - RING_GAP) return true;
+    }
+    // Cars that crossed into the arc during this step are only visible through the lane tail.
+    if (laneTail[key] < 1e8 && laneTail[key] > len - RING_GAP) return true;
+  }
+  return false;
 }
 
 function stepCars(dt: number): void {
@@ -405,14 +516,28 @@ function stepCars(dt: number): void {
     const lane = laneCars[key];
     if (!lane.length) continue;
     lane.sort((a, b) => slots[b]!.p - slots[a]!.p);
-    let leaderP = Infinity;
+    let leaderP = Infinity, leaderLength = 0.34;
     for (const slot of lane) {
       const c = slots[slot]!;
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
       const v = SPEED[seg.kind];
-      const gap = GAP[seg.kind];
+      const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
+      if (c.crash !== undefined && incidents.crashes.has(c.crash)) {
+        leaderP = c.p; leaderLength = vehicleLength(c.vehicle); speedN[leg.seg]++; continue;
+      }
+      c.crash = undefined;
+      if (c.working && c.mission) {
+        c.mission.work -= dt;
+        if (c.mission.work <= 0) {
+          if (c.mission.kind === 'fire') incidents.extinguish(c.mission.tile);
+          else if (c.mission.kind === 'patrol') incidents.visit(c.mission.tile);
+          else if (c.mission.crash !== undefined) incidents.crashes.delete(c.mission.crash);
+          freeCar(slot);
+        } else { leaderP = c.p; leaderLength = vehicleLength(c.vehicle); }
+        continue;
+      }
 
       // Release a junction lock once clear of the box.
       if (c.lock >= 0 && c.li > c.lockLi && c.p > Math.min(0.8, seg.len * 0.5)) {
@@ -423,20 +548,39 @@ function stepCars(dt: number): void {
       let maxP = leaderP - gap;
       const final = c.li === c.legs.length - 1;
       if (final) {
-        maxP = Math.min(maxP + gap, leg.p1); // arriving cars pull off the road, so ignore the gap
+        maxP = Math.min(maxP, leg.p1); // arriving cars pull off the road, so ignore the gap
       } else {
         const node = leg.fwd ? segB[leg.seg] : segA[leg.seg];
         const stopP = seg.len > 1.8 ? seg.len - 0.85 : seg.len * 0.5;
         const pastStop = c.p > stopP + 1e-3;
         const next = c.legs[c.li + 1];
         const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
-        let canGo = laneTail[nextKey] > GAP[segs[next.seg].kind] + 0.15;
+        let canGo = laneTail[nextKey] > 0.95;
         const type = nodeType[node];
         if (type === J_LIGHT && !pastStop) {
           const g = nodeGroups[node].get(leg.seg) ?? 0;
           if (!isGreen(simTime, nodeIds[node], g)) canGo = false;
-        } else if (type === J_YIELD && c.lock !== node) {
-          if (canGo && c.p >= stopP - 0.3 && lockCount[node] < lockCap[node]) {
+        }
+        // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
+        // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
+        // A driver kept waiting by a saturated ring eventually forces its way in; the lock still keeps it safe.
+        if (type === J_RING && c.lock !== node && !ringArc[leg.seg] && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
+        if (type !== J_PLAIN && c.lock !== node) {
+          // Only the front car of a lane may claim the box. A follower holding it (a car spawned or merged
+          // in ahead of it after it claimed) would wait on its own leader forever, so the front car takes it over.
+          const front = leaderP === Infinity;
+          if (front && lockCount[node] >= 1) {
+            for (const other of lane) {
+              const o = slots[other];
+              if (other !== slot && o && o.lock === node && o.legs[o.li].seg === leg.seg && o.legs[o.li].fwd === leg.fwd && o.p < c.p) {
+                o.lock = -1; lockCount[node]--; break;
+              }
+            }
+          }
+          if (canGo && front && c.p >= stopP - 0.3 && lockCount[node] < 1) {
+            // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
+            // before the previous one is released, and overwriting leaked that lock forever.
+            if (c.lock >= 0 && lockCount[c.lock] > 0) lockCount[c.lock]--;
             c.lock = node;
             c.lockLi = c.li;
             lockCount[node]++;
@@ -447,29 +591,45 @@ function stepCars(dt: number): void {
         if (!canGo) maxP = Math.min(maxP, pastStop ? seg.len - 0.02 : stopP);
       }
 
-      let newP = Math.min(c.p + v * dt, maxP);
+      const travel = c.p + v * dt;
+      let newP = Math.min(travel, maxP, final ? leg.p1 : seg.len);
       if (newP < c.p) newP = c.p;
+      const target = carPose(leg, newP, slot, c.vehicle);
+      if (!trafficSpace.canMove(slot, target)) newP = c.p;
+      else trafficSpace.set(slot, target);
       const moved = newP - c.p;
       speedSum[leg.seg] += moved / (v * dt);
       speedN[leg.seg]++;
       if (moved < 1e-4) c.stuck += dt; else c.stuck = 0;
       c.p = newP;
-      leaderP = newP;
+      leaderP = newP; leaderLength = vehicleLength(c.vehicle);
 
       if (final) {
         if (c.p >= leg.p1 - 1e-3) {
-          commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
-          freeCar(slot);
-          leaderP = Infinity;
+          if (c.mission) { c.working = true; c.mission.work = c.mission.kind === 'fire' ? 8 : 4; }
+          else { commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03; freeCar(slot); leaderP = Infinity; }
         }
       } else if (c.p >= seg.len - 1e-4) {
-        const carry = c.p - seg.len;
-        c.li++;
-        const next = c.legs[c.li];
-        c.p = next.p0 + Math.max(0, carry);
+        // Carry the unused travel into the next link. Polyline links meet with a small kink, so the exact
+        // start of the next link can sit a hair behind and to the side of where this one ended; on a
+        // roundabout the follower is close enough that this one pose was blocked, and the leader then
+        // waited on the car waiting behind it forever.
+        const next = c.legs[c.li + 1];
         const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
-        if (c.p < laneTail[nextKey]) laneTail[nextKey] = c.p;
-        leaderP = Infinity;
+        const nextSeg = segs[next.seg];
+        const nextEnd = c.li + 1 === c.legs.length - 1 ? next.p1 : nextSeg.len;
+        const carry = Math.max(0, Math.min(travel - seg.len, laneTail[nextKey] - next.p0 - GAP[nextSeg.kind], nextEnd - next.p0));
+        for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
+          const target = carPose(next, nextP, slot, c.vehicle);
+          if (!trafficSpace.canMove(slot, target)) continue;
+          c.li++;
+          c.p = nextP;
+          c.stuck = 0;
+          trafficSpace.set(slot, target);
+          if (c.p < laneTail[nextKey]) laneTail[nextKey] = c.p;
+          leaderP = Infinity;
+          break;
+        }
       }
       if (slots[slot] && c.stuck > 30) {
         gaveUp++;
@@ -486,59 +646,63 @@ function stepCars(dt: number): void {
 
 function writeFrame(): void {
   const out = new Float32Array(MAX_CARS * 4);
+  const carHeights = new Float32Array(MAX_CARS);
+  const carPitch = new Float32Array(MAX_CARS);
+  const carIds = new Uint32Array(MAX_CARS);
+  spawnSpace.clear();
   const half = GRID / 2;
   for (let s = 0; s < MAX_CARS; s++) {
     const c = slots[s];
     const o = s * 4;
     if (!c) continue;
-    const leg = c.legs[c.li];
-    const seg = segs[leg.seg];
-    Network.poseAt(seg, leg.fwd ? c.p : seg.len - c.p, pose);
-    const dir = leg.fwd ? 1 : -1;
-    const tx = pose.tx * dir;
-    const tz = pose.tz * dir;
-    let lane: number;
-    if (seg.oneway) lane = seg.kind === KIND_AVENUE ? (s & 1 ? 0.3 : -0.3) : (s & 1 ? 0.17 : -0.17);
-    else lane = seg.kind === KIND_AVENUE ? (s & 1 ? 0.2 : 0.47) : 0.2;
-    out[o] = pose.x - tz * lane - half;
-    out[o + 1] = pose.z + tx * lane - half;
-    out[o + 2] = Math.atan2(tx, tz);
-    out[o + 3] = 1;
+    const world = trafficSpace.poses.get(s) ?? carPose(c.legs[c.li], c.p, s, c.vehicle);
+    out[o] = world.x - half;
+    out[o + 1] = world.z - half;
+    out[o + 2] = world.angle;
+    out[o + 3] = c.vehicle;
+    carHeights[s] = world.y ?? 0;
+    const leg = c.legs[c.li], seg = segs[leg.seg], d = leg.fwd ? c.p : seg.len - c.p;
+    carPitch[s] = Math.atan((roadHeight(seg, Math.min(seg.len, d + 0.1)) - roadHeight(seg, Math.max(0, d - 0.1))) / 0.2) * (leg.fwd ? -1 : 1);
+    carIds[s] = c.uid; spawnSpace.set(s, world);
   }
   const cong = new Uint8Array(segs.length);
   for (let i = 0; i < segs.length; i++) cong[i] = Math.min(255, (segCong[i] * 255) | 0);
-  post({ type: 'frame', cars: out, segCong: cong, serial, simTime }, [out.buffer, cong.buffer]);
+  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, serial, simTime, cityTime: tick + subCount / SIM_HZ }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer]);
 }
 
 // ---- census, utilities, pollution, growth --------------------------------------------------------
 function census(): void {
-  pop = 0; comJobs = 0; indJobs = 0; buildings = 0;
+  pop = 0; comJobs = 0; indJobs = 0; officeJobs = 0; buildings = 0;
   resTiles = []; resW = []; jobTiles = []; jobW = [];
   let rw = 0, jw = 0;
   let capP = 0, capW = 0, capS = 0, needP = 0, needW = 0, upkeep = 0;
   let dirtyCap = 0;
-  const outlets: { flow: number; cap: number }[] = [];
+  const outlets: { flow: number; cap: number; treatment: number }[] = [];
+  treatedSewage = 0;
 
   // Services first: capacity only counts when the building is on the road network and sited correctly.
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
     if (!isService(k)) continue;
     const spec = SERVICES[k];
-    upkeep += spec.upkeep;
+    const budget = serviceFunding(spec, funding);
+    const output = fundingOutput(budget);
+    upkeep += spec.upkeep * budget;
     flags[i] = 0;
     const x = i % GRID, z = (i / GRID) | 0;
     const sited = !spec.needsWater || touchesWater(terrain, x, z);
     if (!tileConnected(i) || !sited) { flags[i] = F_NO_ROAD; continue; }
-    capP += spec.power;
-    capW += spec.water;
-    capS += spec.sewage;
+    capP += spec.power * output;
+    capW += spec.water * output;
+    capS += spec.sewage * output;
+    if (spec.civic || spec.transport || spec.treatment) { needP += spec.transport === 'air' ? 30 : 3; needW += 2; }
     if (k === T_PUMP) {
       const f = adjacentFlow(terrain, x, z);
-      if (f >= 0 && riverPollution[f] > 0.25) dirtyCap += spec.water;
+      if (f >= 0 && riverPollution[f] > 0.25) dirtyCap += spec.water * output;
     } else if (k === T_TOWER) {
-      if (pollution[i] > 5) dirtyCap += spec.water;
-    } else if (k === T_OUTLET) {
-      outlets.push({ flow: adjacentFlow(terrain, x, z), cap: spec.sewage });
+      if (pollution[i] > 5) dirtyCap += spec.water * output;
+    } else if (k === T_OUTLET || k === T_TREATMENT) {
+      outlets.push({ flow: adjacentFlow(terrain, x, z), cap: spec.sewage * output, treatment: spec.treatment ?? 0 });
     }
   }
 
@@ -559,6 +723,9 @@ function census(): void {
     } else if (k === T_COM) {
       comJobs += COM_JOBS[l];
       if (l > 0 && ok) { jw += l * 1.4; jobTiles.push(i); jobW.push(jw); }
+    } else if (k === T_OFFICE) {
+      officeJobs += OFFICE_JOBS[l];
+      if (l > 0 && ok) { jw += l * 1.2; jobTiles.push(i); jobW.push(jw); }
     } else {
       indJobs += IND_JOBS[l];
       if (l > 0 && ok) { jw += l; jobTiles.push(i); jobW.push(jw); }
@@ -576,7 +743,7 @@ function census(): void {
   let resN = 0, resUnserved = 0, polSum = 0;
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
-    if (!isZone(k)) continue;
+    if (!isZone(k) && !SERVICES[k]?.civic && !SERVICES[k]?.transport && !SERVICES[k]?.treatment) continue;
     let f = 0;
     if (!tileConnected(i)) f |= F_NO_ROAD;
     else if (level[i] > 0) {
@@ -597,26 +764,59 @@ function census(): void {
 
   // Sewage dumped in the river drifts downstream and fades.
   riverPollution.fill(0);
-  const load = Math.min(1, needW / 600);
+  const load = capS > 0 ? Math.min(1, needW / capS) : 0;
   for (const o of outlets) {
     if (o.flow < 0) continue;
+    const filtered = o.treatment * fP;
+    treatedSewage += o.cap * load * filtered;
     for (let j = o.flow; j < riverPollution.length; j++) {
-      riverPollution[j] = Math.min(1, riverPollution[j] + (0.35 + 0.65 * load) * Math.exp(-(j - o.flow) / 70));
+      riverPollution[j] = Math.min(1, riverPollution[j] + (o.cap * load / 1500) * (1 - filtered) * Math.exp(-(j - o.flow) / 70));
     }
   }
 
-  const jobs = comJobs + indJobs;
+  civicState = civicCoverage(kind, level, tileConnected, civicEfficiency);
+  const civic = civicState.average;
+  const needs = cityLevel >= 2 ? ['health', 'education', 'fire', 'safety', 'waste'] as const : cityLevel >= 1 ? ['health', 'education'] as const : [];
+  const serviceScore = needs.length ? needs.reduce((sum, k) => sum + civic[k], 0) / needs.length : 70;
+  const crimePenalty = buildings ? incidents.crime.reduce((sum, v) => sum + v, 0) / buildings * 0.4 : 0;
+  happiness = Math.round(clamp(55 - crimePenalty + serviceScore * 0.3 + civic.leisure * 0.15 - unservedRes * 25 - dirtyShare * 25 - resPollution * 3 - Math.max(0, tax - 10) * 1.5 - Math.max(0, commuteAvg - 25) * 0.3, 0, 100));
+  const jobs = comJobs + indJobs + officeJobs;
   const taxPenalty = (tax - 10) / 40;
   const commutePenalty = clamp((commuteAvg - 25) / 50, 0, 1);
   const balance = (jobs - pop) / Math.max(60, pop + jobs);
-  demand[0] = clamp(0.3 + 0.7 * balance - taxPenalty - 0.6 * commutePenalty - 0.4 * unservedRes - 0.5 * dirtyShare - resPollution / 12, -1, 1);
+  demand[0] = clamp((happiness - 65) / 160 + 0.3 + 0.7 * balance - taxPenalty - 0.6 * commutePenalty - 0.4 * unservedRes - 0.5 * dirtyShare - resPollution / 12, -1, 1);
   demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - taxPenalty, -1, 1);
   demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - taxPenalty, -1, 1);
+  demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - taxPenalty, -1, 1) : -1;
+  const signature = `${serial}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
+  if (signature !== transitSignature) {
+    transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]));
+    transitSignature = signature; transitTokens = transit.lines.map(() => 0); transitDepartures = transit.lines.map(() => 12);
+    for (let i = 0; i < slots.length; i++) if (slots[i]?.line !== undefined) freeCar(i);
+  }
+  riders = Math.round(riderWindow); airPassengers = Math.round(airWindow);
+  fareIncome = riderWindow / 60 * 0.08 + airWindow / 60 * 0.2;
   tripRate = rw * 0.022;
-  extRate = entrySeg >= 0 ? (rw + jw) * 0.005 : 0;
+  extRate = entries.length ? (rw + jw) * 0.005 : 0;
 
-  const income = (pop * 0.012 + jobs * 0.015) * tax / 10;
-  netIncome = income - roadUpkeep - upkeep;
+  // Disconnected buildings do not pay taxes; utility failures reduce economic output.
+  taxIncome = 0;
+  for (let i = 0; i < N_TILES; i++) {
+    if (!isZone(kind[i]) || !level[i] || (flags[i] & F_NO_ROAD)) continue;
+    const amount = kind[i] === T_RES ? RES_POP[level[i]] * 0.012 : (kind[i] === T_COM ? COM_JOBS[level[i]] : kind[i] === T_OFFICE ? OFFICE_JOBS[level[i]] : IND_JOBS[level[i]]) * 0.015;
+    const operating = (flags[i] & (F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) ? 0.5 : 1;
+    taxIncome += amount * operating * tax / 10 * (1 - incidents.crime[i] / 200) * (incidents.fires.has(i) ? 0 : 1);
+  }
+  serviceExpense = upkeep;
+  loanExpense = Math.min(LOAN_PAYMENT, debt);
+  netIncome = taxIncome - roadUpkeep - serviceExpense - loanExpense;
+}
+
+function civicEfficiency(i: number): number {
+  const spec = SERVICES[kind[i]];
+  if (!spec?.civic || flags[i] & (F_NO_ROAD | F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) return 0;
+  const congestion = accSeg[i] >= 0 ? segCong[accSeg[i]] ?? 0 : 1;
+  return fundingOutput(serviceFunding(spec, funding)) * (1 - 0.5 * Math.min(1, congestion));
 }
 
 function spreadPollution(): void {
@@ -640,11 +840,31 @@ function spreadPollution(): void {
   pollutionTmp = t;
 }
 
+/** City-block distance from each tile to the nearest shop or office, capped at 15. */
+const shopDistance = new Uint8Array(N_TILES);
+function measureShopDistance(): void {
+  for (let i = 0; i < N_TILES; i++) shopDistance[i] = kind[i] === T_COM || kind[i] === T_OFFICE ? 0 : 15;
+  for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
+    const i = z * GRID + x;
+    if (x > 0) shopDistance[i] = Math.min(shopDistance[i], shopDistance[i - 1] + 1);
+    if (z > 0) shopDistance[i] = Math.min(shopDistance[i], shopDistance[i - GRID] + 1);
+  }
+  for (let z = GRID - 1; z >= 0; z--) for (let x = GRID - 1; x >= 0; x--) {
+    const i = z * GRID + x;
+    if (x < GRID - 1) shopDistance[i] = Math.min(shopDistance[i], shopDistance[i + 1] + 1);
+    if (z < GRID - 1) shopDistance[i] = Math.min(shopDistance[i], shopDistance[i + GRID] + 1);
+  }
+}
+/** Homes densify near commerce: towers within 3 cells, apartments within 6, houses beyond. */
+const residentialCap = (i: number): number => shopDistance[i] <= 3 ? 3 : shopDistance[i] <= 6 ? 2 : 1;
+
 function grow(): void {
+  measureShopDistance();
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
     if (!isZone(k)) continue;
     const l = level[i];
+    if (incidents.fires.has(i)) continue;
     const f = flags[i];
     if (f & F_NO_ROAD) {
       if (l > 0 && Math.random() < 0.08) { level[i] = l - 1; age[i] = 0; }
@@ -655,19 +875,27 @@ function grow(): void {
     const isRes = k === T_RES;
     if (l === 0) {
       const appeal = isRes ? Math.max(0, 1 - p / 6) : 1;
-      if (money > 0 && Math.random() < Math.max(0, d) * 0.12 * appeal) {
+      if (Math.random() < Math.max(0, d) * 0.12 * appeal) {
         level[i] = 1;
         age[i] = 0;
         if (isRes && pendingMoveIns.length < 40) pendingMoveIns.push(i);
       }
       continue;
     }
-    age[i]++;
-    const served = f === 0;
+    age[i] = Math.min(65535, age[i] + 1);
+    const underserved = isRes && l > 1 && civicShortfalls(i, l, cityLevel, civicState.coverage, true).length > 0;
+    neglect[i] = underserved ? neglect[i] + 1 : 0;
+    if (neglect[i] >= NEGLECT_LIMIT) {
+      level[i] = l - 1; age[i] = 0; neglect[i] = 0;
+      continue;
+    }
+    const served = (f & (F_NO_ROAD | F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) === 0;
     const minAge = l === 1 ? 10 : 22;
     const rate = l === 1 ? 0.06 : 0.03;
-    const canUp = served && (!isRes || p < 3);
-    if (l < 3 && age[i] > minAge && money > 0 && canUp && Math.random() < Math.max(0, d) * rate) {
+    const officeReady = k !== T_OFFICE || civicState.average.education >= (l === 1 ? 25 : 50);
+    const civicReady = !isRes || civicShortfalls(i, l + 1, cityLevel, civicState.coverage).length === 0;
+    const canUp = served && officeReady && civicReady && (l < 2 || cityLevel >= 3) && (!isRes || (p < 3 && l < residentialCap(i)));
+    if (l < 3 && age[i] > minAge && canUp && Math.random() < Math.max(0, d) * rate) {
       level[i] = l + 1; age[i] = 0;
       if (isRes && pendingMoveIns.length < 40) pendingMoveIns.push(i);
     } else if (d < -0.15 && Math.random() < -d * 0.05) {
@@ -678,15 +906,22 @@ function grow(): void {
       level[i] = l - 1; age[i] = 0;
     }
   }
-  money += netIncome;
+  const progress = advanceCity(cityLevel, pop);
+  cityLevel = progress.level;
+  money += netIncome + progress.reward;
+  debt = Math.max(0, debt - loanExpense);
   tick++;
 }
 
 function stats(): Stats {
   return {
-    money: Math.round(money), pop, jobs: comJobs + indJobs, cars: activeCars, commute: commuteAvg,
-    demand: [demand[0], demand[1], demand[2]], tick, roadLength: Math.round(roadLength), buildings,
-    noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome,
+    incidents: { fires: incidents.fires.size, crashes: incidents.crashes.size, crime: incidents.view().crime.length, patrols: slots.filter(c => c?.vehicle === 5).length, fireEngines: slots.filter(c => c?.vehicle === 6).length, prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged },
+    transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
+    funding: { ...funding }, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
+    cityLevel, happiness, civic: civicState.average,
+    money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
+    demand: [...demand], tick, roadLength: Math.round(roadLength), buildings,
+    noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome + fareIncome,
   };
 }
 
@@ -695,7 +930,57 @@ function postState(): void {
   for (let i = 0; i < N_TILES; i++) pol[i] = Math.min(255, (pollution[i] * 14) | 0);
   const riv = new Uint8Array(riverPollution.length);
   for (let i = 0; i < riv.length; i++) riv[i] = Math.min(255, (riverPollution[i] * 255) | 0);
-  post({ type: 'state', level: level.slice(), flags: flags.slice(), pollution: pol, riverPollution: riv, stats: stats() });
+  for (let i = 0; i < N_TILES; i++) {
+    flags[i] &= ~F_DECLINING;
+    if (neglect[i]) flags[i] |= F_DECLINING;
+  }
+  post({ type: 'state', incidents: incidents.view(), incidentSave: incidents.snapshot(), neglect: neglect.slice(), level: level.slice(), flags: flags.slice(), pollution: pol, riverPollution: riv, stats: stats() });
+  postInspection();
+}
+
+/** Dispatch from working stations; cars must reach the destination before helping. */
+function stepIncidents(): void {
+  incidents.step(kind, level, pop, cityLevel, Math.random, tile => { level[tile] = Math.max(0, level[tile] - 1); age[tile] = 0; });
+  for (const [tile, delay] of dispatchCooldown) if (delay <= 1) dispatchCooldown.delete(tile); else dispatchCooldown.set(tile, delay - 1);
+  // An occasional two-vehicle collision blocks the occupied lane until police or recovery clear it.
+  if (cityLevel >= 2 && activeCars > 12 && incidents.crashes.size < 2 && Math.random() < 0.018) {
+    const candidates = [...trafficSpace.poses.keys()].filter(id => slots[id] && !slots[id]!.mission && slots[id]!.crash === undefined);
+    const pairs: [number, number][] = [];
+    for (let n = 0; n < candidates.length; n++) {
+      const a = candidates[n], first = trafficSpace.poses.get(a)!;
+      const b = candidates.slice(n + 1).find(id => Math.abs((trafficSpace.poses.get(id)!.y ?? 0) - (first.y ?? 0)) < 0.6 && Math.hypot(trafficSpace.poses.get(id)!.x - first.x, trafficSpace.poses.get(id)!.z - first.z) < 0.95);
+      if (b !== undefined) pairs.push([a, b]);
+    }
+    const pair = pairs[Math.floor(Math.random() * pairs.length)];
+    if (pair) {
+      const [a, second] = pair, first = trafficSpace.poses.get(a)!;
+      const tile = Math.max(0, Math.min(N_TILES - 1, Math.floor(first.z) * GRID + Math.floor(first.x)));
+      const crash = incidents.crash(first.x, first.z, [a, second], tile, first.y ?? 0);
+      slots[a]!.crash = crash; slots[second]!.crash = crash;
+    }
+  }
+
+  for (let i = 0; i < N_TILES; i++) {
+    const k = kind[i];
+    if ((k !== T_FIRE && k !== T_POLICE) || flags[i] || !tileConnected(i) || dispatchCooldown.has(i) || slots.some(c => c?.mission?.origin === i)) continue;
+    let mission: Mission | undefined;
+    if (k === T_FIRE) {
+      const targets = [...incidents.fires.keys()].filter(tile => !slots.some(c => c?.mission?.kind === 'fire' && c.mission.tile === tile)).sort((a, b) => distance(a, i) - distance(b, i));
+      for (const tile of targets) if (tileConnected(tile) && route(accSeg[i], accS[i], accSeg[tile], accS[tile])) { mission = { kind: 'fire', origin: i, tile, work: 8 }; break; }
+    } else {
+      const crash = [...incidents.crashes.values()].find(c => !slots.some(car => car?.mission?.crash === c.id));
+      if (crash) {
+        const near = [...resTiles, ...jobTiles].filter(t => tileConnected(t)).sort((a, b) => distance(a, crash.tile) - distance(b, crash.tile))[0];
+        if (near !== undefined && distance(near, crash.tile) < 6) mission = { kind: 'crash', origin: i, tile: near, crash: crash.id, work: 4 };
+      }
+      if (!mission) {
+        const targets = [...resTiles, ...jobTiles].filter(t => distance(t, i) < SERVICES[T_POLICE].radius!);
+        const tile = targets[Math.floor(Math.random() * targets.length)];
+        if (tile !== undefined) mission = { kind: 'patrol', origin: i, tile, work: 4 };
+      }
+    }
+    if (mission && spawnTrip(accSeg[i], accS[i], accSeg[mission.tile], accS[mission.tile], k === T_FIRE ? 6 : 5, undefined, mission)) dispatchCooldown.set(i, k === T_FIRE ? 8 : 18);
+  }
 }
 
 // ---- main loop -----------------------------------------------------------------------------------
@@ -707,9 +992,11 @@ function substep(): void {
   subCount++;
   if (subCount >= SIM_HZ) {
     subCount = 0;
+    stepIncidents();
     spreadPollution();
     census();
     grow();
+    census();
     postState();
     noPath = 0;
     gaveUp = 0;
@@ -728,6 +1015,7 @@ function applyKind(nk: Uint8Array): void {
       kind[i] = nk[i];
       level[i] = isService(nk[i]) ? 1 : 0;
       age[i] = 0;
+      neglect[i] = 0;
     }
   }
 }
@@ -744,9 +1032,18 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       kind.set(m.kind);
       level.set(m.level);
       age.fill(0);
+      neglect.set(m.neglect ?? new Uint8Array(N_TILES));
+      funding = { ...defaultFunding(), ...m.funding };
+      debt = m.debt ?? 0;
+      incidents.load(m.incidents); dispatchCooldown.clear();
+      inspected = -1;
+      post({ type: 'inspection', report: null });
       pollution.fill(0);
       pendingMoveIns = [];
+      riderWindow = 0; airWindow = 0; airTokens = 0; transitSignature = '';
+      cityLevel = m.cityLevel;
       money = m.money;
+      subCount = 0;
       tick = m.tick;
       tax = m.tax;
       commuteAvg = 0;
@@ -771,7 +1068,27 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       speed = m.value;
       break;
     case 'tax':
-      tax = m.value;
+      tax = clamp(Math.round(m.value), 0, 30);
+      census(); postState();
+      break;
+    case 'funding':
+      if (!FUNDING_KEYS.includes(m.key) || !validFunding(m.value)) break;
+      funding[m.key] = m.value;
+      census(); postState();
+      break;
+    case 'loan':
+      if (m.action === 'take' && debt === 0) {
+        money += LOAN_AMOUNT; debt = LOAN_TOTAL;
+        post({ type: 'notice', message: '$6,000 received. Repayment: $6/s for 1,100 simulation seconds.' });
+      } else if (m.action === 'repay' && debt > 0 && money >= debt) {
+        money -= debt; debt = 0;
+        post({ type: 'notice', message: 'City loan repaid.' });
+      } else post({ type: 'notice', message: debt > 0 ? 'Repay the existing loan before borrowing again. Early repayment needs enough cash.' : 'No outstanding loan.' });
+      census(); postState();
+      break;
+    case 'inspect':
+      inspected = Number.isInteger(m.tile) && m.tile >= 0 && m.tile < N_TILES ? m.tile : -1;
+      postInspection();
       break;
     case 'warm': {
       commuteAvg = 0;
@@ -783,3 +1100,59 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     }
   }
 };
+
+
+/** Explain the same local requirements used by growth, without duplicating the simulation in the UI. */
+function postInspection(): void {
+  if (inspected < 0) { post({ type: 'inspection', report: null }); return; }
+  const i = inspected, k = kind[i], l = level[i], spec = SERVICES[k];
+  const report: TileReport = {
+    tile: i, name: spec?.name ?? (k === T_RES ? 'Residential' : k === T_COM ? 'Commercial' : k === T_IND ? 'Industrial' : k === T_OFFICE ? 'Offices' : terrain.water[i] ? 'River' : cover[i] ? 'Road' : 'Unzoned land'),
+    level: l, occupants: k === T_RES ? RES_POP[l] : k === T_COM ? COM_JOBS[l] : k === T_IND ? IND_JOBS[l] : k === T_OFFICE ? OFFICE_JOBS[l] : 0,
+    status: 'Ready to zone or build', details: [], blockers: [], coverage: {}, neglect: neglect[i],
+  };
+  const f = flags[i];
+  if (isZone(k) || spec) {
+    for (const [flag, message] of [[F_NO_ROAD, 'Connect this building to the highway'], [F_NO_POWER, 'Restore electricity'], [F_NO_WATER, 'Restore water supply'], [F_NO_SEWAGE, 'Restore sewage capacity']] as const) if (f & flag) report.blockers.push(message);
+    if (incidents.fires.has(i)) report.blockers.push(`Building on fire: ${120 - incidents.fires.get(i)!.age}s before damage. Needs a responding fire engine.`);
+    report.details.push(`Crime pressure: ${Math.round(incidents.crime[i])}% · patrol protection: ${Math.ceil(incidents.patrol[i])}s`);
+    report.details.push(`Ground pollution: ${pollution[i].toFixed(1)}`);
+  }
+  if (isZone(k)) {
+    report.status = l === 0 ? 'Waiting for construction' : l === 3 ? 'Maximum building level' : `Level ${l} → ${l + 1}`;
+    if (demand[k - T_RES] <= 0 && l < 3) report.blockers.push('Demand is too low: balance homes, jobs and taxes');
+    if (k === T_RES) {
+      for (const key of Object.keys(CIVIC_LABELS) as CivicNeed[]) report.coverage[key] = Math.round(civicState.coverage[key][i] * 100);
+      if (l > 0 && l < 3) report.blockers.push(...civicShortfalls(i, l + 1, cityLevel, civicState.coverage));
+      if (pollution[i] >= (l ? 3 : 6)) report.blockers.push('Move polluting industry away from homes');
+      if (neglect[i]) {
+        report.status = `Service decline: ${NEGLECT_LIMIT - neglect[i]}s to downgrade`;
+        report.blockers.push(...civicShortfalls(i, l, cityLevel, civicState.coverage, true));
+      }
+    }
+    if (k === T_OFFICE && l > 0 && l < 3 && civicState.average.education < (l === 1 ? 25 : 50)) report.blockers.push(`Offices need ${l === 1 ? 25 : 50}% city education coverage to upgrade`);
+    if (l === 2 && cityLevel < 3) report.blockers.push('High-rises unlock at Thriving town (900 residents)');
+    if (l > 0 && l < 3 && age[i] <= (l === 1 ? 10 : 22)) report.blockers.push(`Maturing: ${(l === 1 ? 11 : 23) - age[i]}s remaining`);
+    if (l < 3 && report.blockers.length === 0) report.details.push('Eligible for growth; construction occurs gradually.');
+    report.details.push(`Zone demand: ${Math.round(demand[k - T_RES] * 100)}%`);
+  } else if (spec) {
+    const budget = serviceFunding(spec, funding);
+    const efficiency = spec.civic ? civicEfficiency(i) : f ? 0 : fundingOutput(budget);
+    report.status = efficiency > 0 ? 'Operating' : 'Not operating';
+    report.details.push(`Funding: ${Math.round(budget * 100)}% · upkeep $${(spec.upkeep * budget).toFixed(2)}/s`);
+    if (spec.civic) report.details.push(`Effective capacity: ${Math.round(spec.capacity! * efficiency)} residents · range ${spec.radius} cells`, 'Needs 3 power and 2 water; congestion can reduce capacity by up to 50%.');
+    else if (spec.transport) {
+      const lines = transit.lines.filter(line => line.a === i || line.b === i);
+      report.details.push(spec.transport === 'air' ? 'Regional flights replace some incoming road trips within 24 cells. Needs power, water and sewage.' : `${lines.length} active automatic connections · ${spec.radius}-cell walking catchment`);
+      if (spec.transport !== 'air' && !lines.length) report.blockers.push('Add a second operating stop or station; bus stops need a road route in both directions');
+      if (spec.transport === 'bus') report.details.push('30 passenger capacity per connection; traffic slows service. Buses depart automatically.');
+      if (spec.transport === 'subway') report.details.push('100 passenger capacity per connection; underground tunnels link metro stations automatically, unaffected by traffic.');
+      if (spec.transport === 'rail') report.details.push('120 passenger capacity per connection; elevated tracks connect stations automatically.');
+    } else report.details.push(`Capacity: ${Math.round((spec.power || spec.water || spec.sewage) * efficiency)} ${spec.power ? 'power' : spec.water ? 'water' : 'sewage'}`);
+  }
+  if (k === T_POLICE) report.details.push('Dispatches patrol cars to nearby buildings. Completed visits deter crime for three minutes; cars also respond to collisions.');
+  if (k === T_FIRE) report.details.push('Dispatches one fire engine at a time to reachable fires. After arrival, firefighting takes eight seconds.');
+  if (spec?.treatment) report.details.push('Filters 95% of effluent with full electricity. Power shortages reduce filtration.');
+  report.blockers = [...new Set(report.blockers)];
+  post({ type: 'inspection', report });
+}

@@ -1,6 +1,8 @@
+import type { Raster } from '../roads/raster';
+import { buildingHeight, VARIANTS } from './buildingGeo';
 import * as THREE from 'three';
 import {
-  GRID, N_TILES, T_RES, T_COM, T_IND, F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, isService, isZone,
+  GRID, N_TILES, SERVICES, F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, F_DECLINING, isService, isZone, tileHash,
 } from '../constants';
 
 const m4 = new THREE.Matrix4();
@@ -14,11 +16,7 @@ const C_POWER = 0xffd23f;
 const C_WATER = 0x4fb3ff;
 const C_SEWAGE = 0x9a6b3a;
 // Rough roof heights so markers float just above buildings.
-const HEIGHT: Record<number, number[]> = {
-  [T_RES]: [0.4, 0.9, 1.5, 3.1],
-  [T_COM]: [0.4, 0.95, 2.2, 5.6],
-  [T_IND]: [0.4, 0.8, 1.7, 2.4],
-};
+
 
 /** Ground pollution as a smooth texture over the map, plus floating markers on buildings with a problem. */
 export class OverlayLayer {
@@ -70,7 +68,7 @@ export class OverlayLayer {
     this.tex.needsUpdate = true;
   }
 
-  setFlags(kind: Uint8Array, level: Uint8Array, flags: Uint8Array): void {
+  setFlags(kind: Uint8Array, level: Uint8Array, flags: Uint8Array, raster: Raster): void {
     const half = GRID / 2;
     let n = 0;
     q.identity();
@@ -81,10 +79,11 @@ export class OverlayLayer {
       const zone = isZone(k);
       if (zone && level[i] === 0) continue;
       if (!zone && !isService(k)) continue;
-      const c = f & F_NO_ROAD ? C_ROAD : f & F_NO_POWER ? C_POWER : f & F_NO_WATER ? C_WATER : f & F_NO_SEWAGE ? C_SEWAGE : 0;
+      const c = f & F_NO_ROAD ? C_ROAD : f & F_NO_POWER ? C_POWER : f & F_NO_WATER ? C_WATER : f & F_NO_SEWAGE ? C_SEWAGE : f & F_DECLINING ? 0xffa43b : 0;
       if (!c) continue;
-      const h = zone ? HEIGHT[k][level[i]] : 2.0;
-      pos.set((i % GRID) - half + 0.5, h + 0.35, ((i / GRID) | 0) - half + 0.5);
+      const h = buildingHeight(k, zone ? level[i] : 1, zone ? Math.floor(tileHash(i) * VARIANTS) % VARIANTS : 0);
+      const footprint = SERVICES[k]?.footprint;
+      pos.set(footprint ? i % GRID + footprint[0] / 2 - half : raster.lotX[i] - half, h + 0.35, footprint ? Math.floor(i / GRID) + footprint[1] / 2 - half : raster.lotZ[i] - half);
       m4.compose(pos, q, scl);
       this.markers.setMatrixAt(n, m4);
       this.markers.setColorAt(n, col.setHex(c));

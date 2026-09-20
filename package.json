@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node tests/run.mjs",
+    "test:soak": "node tests/soak.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
