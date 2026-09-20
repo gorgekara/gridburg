@@ -39,7 +39,7 @@ const TOOL_COLOR: Record<Tool, number> = {
 };
 export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, clinic: T_CLINIC, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE };
-const ROUNDABOUT_R = 2.3;
+const ROUNDABOUT_R = 2.3, ROUNDABOUT_R_AVENUE = 3.4;
 const BAD = 0xe04b3a;
 const GUIDE = 0xffffff;
 
@@ -603,11 +603,8 @@ export class Input {
     } else if (this.tool === 'roundabout') {
       const c = this.roundaboutCenter(p);
       if (!g.canAfford(COST_ROUNDABOUT)) { this.onToast?.('Not enough money'); return; }
-      let kind = KIND_ROAD;
-      for (const s of net.segs.values()) {
-        if (s.kind === KIND_AVENUE && Network.nearestOn(s, c.x, c.z).dist < ROUNDABOUT_R + 0.5) kind = KIND_AVENUE;
-      }
-      if (!net.addRoundabout(c.x, c.z, ROUNDABOUT_R, kind)) { this.onToast?.('No room for a roundabout here'); return; }
+      const r = this.roundaboutRadius(c), kind = r === ROUNDABOUT_R_AVENUE ? KIND_AVENUE : KIND_ROAD;
+      if (!net.addRoundabout(c.x, c.z, r, kind)) { this.onToast?.('No room for a roundabout here'); return; }
       g.spend(COST_ROUNDABOUT);
       g.flush();
     } else {
@@ -619,6 +616,12 @@ export class Input {
       g.setKind(t, k, SERVICES[k].cost);
       g.flush();
     }
+  }
+
+  /** Avenue rings need a wider island to fit the four-lane corridor. */
+  private roundaboutRadius(c: P): number {
+    const avenue = [...this.game.net.segs.values()].some(s => s.kind === KIND_AVENUE && Network.nearestOn(s, c.x, c.z).dist < ROUNDABOUT_R + 0.5);
+    return avenue ? ROUNDABOUT_R_AVENUE : ROUNDABOUT_R;
   }
 
   private roundaboutCenter(p: P): P {
@@ -649,7 +652,8 @@ export class Input {
       const c = this.roundaboutCenter(p);
       const b = new MeshBuilder();
       const ok = this.game.canAfford(COST_ROUNDABOUT);
-      b.ring(c.x - half, c.z - half, ROUNDABOUT_R - 0.45, ROUNDABOUT_R + 0.45, 0.09, ok ? TOOL_COLOR.roundabout : BAD);
+      const r = this.roundaboutRadius(c);
+      b.ring(c.x - half, c.z - half, r - 0.45, r + 0.45, 0.09, ok ? TOOL_COLOR.roundabout : BAD);
       this.shape.geometry.dispose();
       this.shape.geometry = b.build();
       this.shape.visible = true;

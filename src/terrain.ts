@@ -85,9 +85,11 @@ export function generateTerrain(seed: number): Terrain {
   }
   const edge = lowSide ? 0 : GRID;
   const dir = lowSide ? 1 : -1;
+  // The highway runs down the middle of a tile column, like every other road.
+  const lane = Math.floor(along) + 0.5;
   const entry = northSouth
-    ? { x: edge, z: along, dx: dir, dz: 0 }
-    : { x: along, z: edge, dx: 0, dz: dir };
+    ? { x: edge, z: lane, dx: dir, dz: 0 }
+    : { x: lane, z: edge, dx: 0, dz: dir };
 
   return { seed, water, flow, river, entry };
 }

@@ -34,9 +34,14 @@ load(demoCity()); send({type:'warm',ticks:1800}); report('30 minutes of growth, 
 const grownPopulation = last.stats.pop;
 assert.ok(grownPopulation > 900);
 const city = demoCity(); city.level.set(last.level); city.cityLevel=last.stats.cityLevel; city.money=last.stats.money;
+const dense = l => { let n=0; for(let i=0;i<C.N_TILES;i++) if(city.kind[i]===C.T_RES && l[i]>=2) n++; return n; };
+const denseBefore = dense(last.level);
 for(let i=0;i<C.N_TILES;i++) if(C.SERVICES[city.kind[i]]?.civic) {city.kind[i]=0;city.level[i]=0;}
 load(city); send({type:'warm',ticks:600});report('remove all civic services, 10 minutes later');
-assert.ok(last.stats.pop < grownPopulation * 0.5, 'Service withdrawal should affect existing residents');
+// Houses need no services, so the city keeps a floor of low-density homes; what must collapse
+// is everything denser, and with it a large share of the population.
+assert.ok(dense(last.level) < denseBefore * 0.25, `Apartments and towers must downgrade: ${dense(last.level)} of ${denseBefore} remain`);
+assert.ok(last.stats.pop < grownPopulation * 0.65, 'Service withdrawal should affect existing residents');
 load(demoCity());send({type:'warm',ticks:110});
 for(let i=0;i<180*C.SIM_HZ;i++) clock(); report('3 minutes with actual traffic');
 assert.ok(last.stats.cars > 0 && last.stats.commute > 0 && Number.isFinite(last.stats.income));

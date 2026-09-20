@@ -17,7 +17,7 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_AVENUE, isGreen } from '../roads/network';
+import { Network, SPEED, KIND_AVENUE, HALF_WIDTH, isGreen } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
@@ -83,10 +83,11 @@ let nodeIds: number[] = [];
 let nodeType: number[] = [];
 let nodeEdges: Edge[][] = [];
 let nodeGroups: Map<number, number>[] = []; // seg index -> signal group, for light nodes
-let lockCount = new Int8Array(0);
-let lockCap = new Int8Array(0);
+let lockOwner = new Int32Array(0); // per node: the slot holding the junction box, or -1
+let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
 let ringIn: number[][] = []; // per node: lane keys of the ring arcs that feed it
+let nodeHalf = new Float32Array(0); // half width of the widest road meeting the node
 let reach = new Uint8Array(0);
 let component = new Int32Array(0);
 let entryNodes: number[] = [];
@@ -98,7 +99,7 @@ let roadLength = 0;
 // ---- cars ---------------------------------------------------------------------------------------
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
 interface Mission { kind: 'fire' | 'patrol' | 'crash'; origin: number; tile: number; crash?: number; work: number }
-interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; lock: number; lockLi: number; vehicle: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
+interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; lock: number; lockLi: number; lockStop: number; vehicle: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
 let carSequence = 0;
@@ -110,6 +111,7 @@ for (let i = MAX_CARS - 1; i >= 0; i--) freeList.push(i);
 let activeCars = 0;
 let laneCars: number[][] = [];
 let laneTail = new Float32Array(0);
+let laneFresh = new Float32Array(0); // lowest p of a car that crossed into the lane during this step
 let spawnBudget = 0;
 let extBudget = 0;
 let tripRate = 0;
@@ -119,7 +121,8 @@ let resTiles: number[] = [], resW: number[] = [];
 let jobTiles: number[] = [], jobW: number[] = [];
 
 const GAP = [0.42, 0.42];
-const RING_PATIENCE = 6; // seconds an entering car gives way before merging into continuous ring traffic
+const STOP_SETBACK = 0.85; // how far before a junction a car holds, for a plain one-tile road
+const RING_PATIENCE = 6; // seconds an entering car gives way before it books its turn on the ring
 const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
 
 
@@ -177,19 +180,20 @@ function applyNetwork(p: EditPayload): void {
     if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (s.kind === KIND_AVENUE ? 2 : 1);
     roadLength += s.len;
   });
-  lockCount = new Int8Array(nodeIds.length);
+  lockOwner = new Int32Array(nodeIds.length).fill(-1);
+  ringClaim = new Int32Array(nodeIds.length).fill(-1);
   ringArc = new Uint8Array(newSegs.length);
   ringIn = nodeIds.map(() => []);
   newSegs.forEach((s, i) => {
     if (!s.oneway || nodeType[segA[i]] !== J_RING || nodeType[segB[i]] !== J_RING) return;
     ringArc[i] = 1; ringIn[segB[i]].push(i * 2);
   });
-  lockCap = new Int8Array(nodeIds.length).fill(1);
+  nodeHalf = new Float32Array(nodeIds.length);
   nodeIds.forEach((id, ni) => {
     if (nodeType[ni] === J_LIGHT) {
       for (const [sid, g] of net.lightGroups(id)) nodeGroups[ni].set(segIndex.get(sid)!, g);
     }
-    if (net.segsAt(id).some((s) => s.kind === KIND_AVENUE)) lockCap[ni] = 2;
+    for (const s of net.segsAt(id)) nodeHalf[ni] = Math.max(nodeHalf[ni], HALF_WIDTH[s.kind]);
   });
 
   // Any purchased highway entry can serve its own connected neighborhoods.
@@ -246,6 +250,7 @@ function applyNetwork(p: EditPayload): void {
   laneCars = new Array(segs.length * 2);
   for (let i = 0; i < laneCars.length; i++) laneCars[i] = [];
   laneTail = new Float32Array(segs.length * 2);
+  laneFresh = new Float32Array(segs.length * 2);
 
   // Tile access arrives keyed by segment id; store indices.
   cover = p.cover;
@@ -384,7 +389,7 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null
 function freeCar(slot: number): void {
   const c = slots[slot];
   if (!c) return;
-  if (c.lock >= 0 && c.lock < lockCount.length && lockCount[c.lock] > 0) lockCount[c.lock]--;
+  if (c.lock >= 0 && c.lock < lockOwner.length && lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
   trafficSpace.remove(slot);
   slots[slot] = null;
   freeList.push(slot);
@@ -393,7 +398,36 @@ function freeCar(slot: number): void {
 
 function clearCars(): void {
   for (let s = 0; s < MAX_CARS; s++) if (slots[s]) freeCar(s);
-  lockCount.fill(0); spawnSpace.clear();
+  lockOwner.fill(-1); ringClaim.fill(-1); spawnSpace.clear();
+}
+
+const legStart = (l: Leg): number => (l.fwd ? segA[l.seg] : segB[l.seg]);
+const legEndNode = (l: Leg): number => (l.fwd ? segB[l.seg] : segA[l.seg]);
+
+/**
+ * An arm meets a roundabout at a single point, but the arm's lanes lie to the side of that point —
+ * sideways on the arm is *along* the ring. An avenue's outer lane is a full 1.05 off, so a car joining
+ * or leaving the ring at the node itself would have to jump that far sideways across the circulating
+ * lane, and on the way out backwards into the queue behind it, which gridlocks the whole circle.
+ * Slide each transition along the arc to the point where the arm's own lane reaches it: the merge stays
+ * continuous whatever the road width, and on a one-tile road the shift is the old ~0.2 and barely moves.
+ */
+function alignRingLegs(legs: Leg[], slot: number, vehicle: number): void {
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    if (!ringArc[leg.seg]) continue;
+    const arc = segs[leg.seg];
+    const next = legs[i + 1];
+    if (next && !ringArc[next.seg] && legEndNode(leg) === legStart(next)) {
+      const to = carPose(next, next.p0, slot, vehicle);
+      leg.p1 = clamp(Network.nearestOn(arc, to.x, to.z).s, leg.p0 + 0.05, leg.p1);
+    }
+    const prev = legs[i - 1];
+    if (prev && !ringArc[prev.seg] && legEndNode(prev) === legStart(leg)) {
+      const from = carPose(prev, prev.p1, slot, vehicle);
+      leg.p0 = clamp(Network.nearestOn(arc, from.x, from.z).s, leg.p0, leg.p1 - 0.05);
+    }
+  }
 }
 
 function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission): boolean {
@@ -406,10 +440,11 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
     legs.push(...back);
   }
   const slot = freeList.at(-1)!;
+  alignRingLegs(legs, slot, vehicle);
   const placement = carPose(legs[0], legs[0].p0, slot, vehicle);
   if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
   freeList.pop(); trafficSpace.set(slot, placement);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, stuck: 0, lock: -1, lockLi: -1, vehicle, line, mission };
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission };
   activeCars++;
   return true;
 }
@@ -475,25 +510,43 @@ function spawn(dt: number): void {
   }
 }
 
+/**
+ * Sideways offset of a car from its segment's centreline, positive to the driver's right.
+ * A roundabout ring circulates in a single lane on the arc centreline: side by side lanes on a tight
+ * circle put the inner one on a measurably shorter path than the arc length the car-following gap is
+ * measured in, so inner-lane cars close up until their bodies overlap, and an outer lane wide enough
+ * for an avenue reaches out across the mouth of every entry arm.
+ */
+function laneOffset(segIndex: number, seg: RSeg, slot: number): number {
+  if (ringArc[segIndex]) return 0;
+  if (seg.oneway) return seg.kind === KIND_AVENUE ? (slot & 1 ? 0.7 : -0.7) : (slot & 1 ? 0.17 : -0.17);
+  return seg.kind === KIND_AVENUE ? (slot & 1 ? 0.35 : 1.05) : 0.2;
+}
+
 function carPose(leg: Leg, progress: number, slot: number, type: number): VehiclePose {
   const seg = segs[leg.seg];
   const p = { x: 0, z: 0, tx: 0, tz: 0 };
   Network.poseAt(seg, leg.fwd ? progress : seg.len - progress, p);
   const dir = leg.fwd ? 1 : -1, tx = p.tx * dir, tz = p.tz * dir;
-  const lane = seg.oneway ? (seg.kind === KIND_AVENUE ? (slot & 1 ? 0.3 : -0.3) : (slot & 1 ? 0.17 : -0.17)) : seg.kind === KIND_AVENUE ? (slot & 1 ? 0.2 : 0.47) : 0.2;
+  const lane = laneOffset(leg.seg, seg, slot);
   return { y: roadHeight(seg, leg.fwd ? progress : seg.len - progress), x: p.x - tz * lane, z: p.z + tx * lane, angle: Math.atan2(tx, tz), type };
 }
 
-/** A circulating vehicle is about to reach this roundabout node, so an entering car must give way. */
+/**
+ * A circulating vehicle is about to reach this roundabout node, so an entering car must give way.
+ * A car that has stopped on the arc is not about to arrive: it is queued for the box itself, and the
+ * box is handed to circulating traffic first anyway. Treating it as oncoming made every arm wait out
+ * RING_PATIENCE before it could ever enter, because a queued arc always has someone parked near a node.
+ */
 function ringApproaching(node: number): boolean {
   for (const key of ringIn[node]) {
     const len = segs[key >> 1].len;
     for (const slot of laneCars[key]) {
       const c = slots[slot];
-      if (c && c.legs[c.li].seg === key >> 1 && c.p > len - RING_GAP) return true;
+      if (c && c.stuck < 0.5 && c.legs[c.li].seg === key >> 1 && c.p > len - RING_GAP) return true;
     }
-    // Cars that crossed into the arc during this step are only visible through the lane tail.
-    if (laneTail[key] < 1e8 && laneTail[key] > len - RING_GAP) return true;
+    // Cars that crossed into the arc during this step are not in its lane list yet.
+    if (laneFresh[key] < 1e8 && laneFresh[key] > len - RING_GAP) return true;
   }
   return false;
 }
@@ -501,6 +554,7 @@ function ringApproaching(node: number): boolean {
 function stepCars(dt: number): void {
   for (const lane of laneCars) lane.length = 0;
   laneTail.fill(1e9);
+  laneFresh.fill(1e9);
   for (let s = 0; s < MAX_CARS; s++) {
     const c = slots[s];
     if (!c) continue;
@@ -541,21 +595,33 @@ function stepCars(dt: number): void {
 
       // Release a junction lock once clear of the box.
       if (c.lock >= 0 && c.li > c.lockLi && c.p > Math.min(0.8, seg.len * 0.5)) {
-        if (lockCount[c.lock] > 0) lockCount[c.lock]--;
+        if (lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
         c.lock = -1;
       }
 
       let maxP = leaderP - gap;
       const final = c.li === c.legs.length - 1;
+      // A leg normally runs the whole link, but a roundabout arc is entered and left where the arm's
+      // lane meets it rather than at the node, so the leg's own bounds are what count.
+      const legEnd = leg.p1;
       if (final) {
         maxP = Math.min(maxP, leg.p1); // arriving cars pull off the road, so ignore the gap
       } else {
         const node = leg.fwd ? segB[leg.seg] : segA[leg.seg];
-        const stopP = seg.len > 1.8 ? seg.len - 0.85 : seg.len * 0.5;
+        // A car waiting at a junction must stand clear of the corridor it is about to cross, so the
+        // setback scales with the widest road at the node. On a roundabout arc the car is already inside
+        // the ring corridor and only has to keep its own distance, so it keeps the plain setback.
+        const setback = ringArc[leg.seg] ? STOP_SETBACK : Math.max(STOP_SETBACK, nodeHalf[node] + 0.45);
+        const span = legEnd - leg.p0;
+        const stopP = span > Math.max(1.8, setback * 2) ? legEnd - setback : leg.p0 + span * 0.5;
         const pastStop = c.p > stopP + 1e-3;
         const next = c.legs[c.li + 1];
         const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
-        let canGo = laneTail[nextKey] > 0.95;
+        // Room on the far side, measured from where this car will actually land: enough to stand behind
+        // the longest vehicle that could already be there. A fixed clearance measured from the link start
+        // is wrong once a leg starts partway along a roundabout arc, and too coarse on short links.
+        const clear = Math.max(GAP[segs[next.seg].kind], (vehicleLength(c.vehicle) + vehicleLength(3)) / 2 + 0.06);
+        let canGo = laneTail[nextKey] - next.p0 > Math.min(clear, (next.p1 - next.p0) * 0.6);
         const type = nodeType[node];
         if (type === J_LIGHT && !pastStop) {
           const g = nodeGroups[node].get(leg.seg) ?? 0;
@@ -563,36 +629,52 @@ function stepCars(dt: number): void {
         }
         // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
         // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
-        // A driver kept waiting by a saturated ring eventually forces its way in; the lock still keeps it safe.
-        if (type === J_RING && c.lock !== node && !ringArc[leg.seg] && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
+        const entering = type === J_RING && !ringArc[leg.seg];
+        if (type === J_RING) {
+          // A busy circle never leaves the box free, so give-way alone starved the arms completely. Once a
+          // driver has waited out its patience it books the box: circulating traffic queues behind that
+          // booking until the car is in, which keeps the merge serialised instead of forcing it.
+          const booked = ringClaim[node] >= 0 ? slots[ringClaim[node]] : null;
+          const bl = booked?.legs[booked.li];
+          if (ringClaim[node] >= 0 && (!bl || ringArc[bl.seg] || legEndNode(bl) !== node)) ringClaim[node] = -1;
+          if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
+        }
+        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
         if (type !== J_PLAIN && c.lock !== node) {
-          // Only the front car of a lane may claim the box. A follower holding it (a car spawned or merged
-          // in ahead of it after it claimed) would wait on its own leader forever, so the front car takes it over.
           const front = leaderP === Infinity;
-          if (front && lockCount[node] >= 1) {
-            for (const other of lane) {
-              const o = slots[other];
-              if (other !== slot && o && o.lock === node && o.legs[o.li].seg === leg.seg && o.legs[o.li].fwd === leg.fwd && o.p < c.p) {
-                o.lock = -1; lockCount[node]--; break;
-              }
-            }
+          const owner = lockOwner[node];
+          const holder = owner >= 0 && owner !== slot ? slots[owner] : null;
+          if (owner >= 0 && (!holder || holder.lock !== node)) lockOwner[node] = -1;
+          else if (holder) {
+            const hLeg = holder.legs[holder.li];
+            // Only the front car of a lane may claim the box. A follower holding it (a car spawned or merged
+            // in ahead of it after it claimed) would wait on its own leader forever, so the front car takes it over.
+            const stale = front && hLeg.seg === leg.seg && hLeg.fwd === leg.fwd && holder.p < c.p;
+            // Circulating traffic owns the circle. A car queued on an arm may claim the box before it can
+            // actually merge, and then it holds up the very ring traffic it is waiting for a gap in, so a
+            // car already on the ring takes the box back off anyone still waiting outside it.
+            const yielding = ringArc[leg.seg] && !ringArc[hLeg.seg] && owner !== ringClaim[node] && holder.p <= holder.lockStop + 1e-3;
+            if (stale || yielding) { holder.lock = -1; lockOwner[node] = -1; }
           }
-          if (canGo && front && c.p >= stopP - 0.3 && lockCount[node] < 1) {
+          const booked = type === J_RING && ringClaim[node] >= 0 && ringClaim[node] !== slot;
+          if (canGo && front && !booked && c.p >= stopP - 0.3 && lockOwner[node] < 0) {
             // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
             // before the previous one is released, and overwriting leaked that lock forever.
-            if (c.lock >= 0 && lockCount[c.lock] > 0) lockCount[c.lock]--;
+            if (c.lock >= 0 && lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
             c.lock = node;
             c.lockLi = c.li;
-            lockCount[node]++;
+            c.lockStop = stopP;
+            lockOwner[node] = slot;
+            if (type === J_RING && ringClaim[node] === slot) ringClaim[node] = -1;
           } else {
             canGo = false;
           }
         }
-        if (!canGo) maxP = Math.min(maxP, pastStop ? seg.len - 0.02 : stopP);
+        if (!canGo) maxP = Math.min(maxP, pastStop ? legEnd - 0.02 : stopP);
       }
 
       const travel = c.p + v * dt;
-      let newP = Math.min(travel, maxP, final ? leg.p1 : seg.len);
+      let newP = Math.min(travel, maxP, legEnd);
       if (newP < c.p) newP = c.p;
       const target = carPose(leg, newP, slot, c.vehicle);
       if (!trafficSpace.canMove(slot, target)) newP = c.p;
@@ -609,7 +691,7 @@ function stepCars(dt: number): void {
           if (c.mission) { c.working = true; c.mission.work = c.mission.kind === 'fire' ? 8 : 4; }
           else { commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03; freeCar(slot); leaderP = Infinity; }
         }
-      } else if (c.p >= seg.len - 1e-4) {
+      } else if (c.p >= legEnd - 1e-4) {
         // Carry the unused travel into the next link. Polyline links meet with a small kink, so the exact
         // start of the next link can sit a hair behind and to the side of where this one ended; on a
         // roundabout the follower is close enough that this one pose was blocked, and the leader then
@@ -617,8 +699,7 @@ function stepCars(dt: number): void {
         const next = c.legs[c.li + 1];
         const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
         const nextSeg = segs[next.seg];
-        const nextEnd = c.li + 1 === c.legs.length - 1 ? next.p1 : nextSeg.len;
-        const carry = Math.max(0, Math.min(travel - seg.len, laneTail[nextKey] - next.p0 - GAP[nextSeg.kind], nextEnd - next.p0));
+        const carry = Math.max(0, Math.min(travel - legEnd, laneTail[nextKey] - next.p0 - GAP[nextSeg.kind], next.p1 - next.p0));
         for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
           const target = carPose(next, nextP, slot, c.vehicle);
           if (!trafficSpace.canMove(slot, target)) continue;
@@ -627,6 +708,7 @@ function stepCars(dt: number): void {
           c.stuck = 0;
           trafficSpace.set(slot, target);
           if (c.p < laneTail[nextKey]) laneTail[nextKey] = c.p;
+          if (c.p < laneFresh[nextKey]) laneFresh[nextKey] = c.p;
           leaderP = Infinity;
           break;
         }

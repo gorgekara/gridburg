@@ -2,7 +2,8 @@ import { GRID } from '../constants';
 
 export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
-export const HALF_WIDTH = [0.41, 0.66];
+/** A road fills one tile, an avenue a three-tile corridor; both leave a 0.09 curb strip. */
+export const HALF_WIDTH = [0.41, 1.41];
 export const SPEED = [3, 4.5]; // units per second
 export const LIGHT_CYCLE = 18;
 
@@ -403,7 +404,9 @@ export class Network {
    * Replace whatever is inside a circle with a one-way roundabout and hook crossing roads onto it.
    * Traffic circulates with the island on the driver's left.
    */
-  addRoundabout(cx: number, cz: number, r: number, kind: number): boolean {
+  addRoundabout(cx: number, cz: number, radius: number, kind: number): boolean {
+    // The ring has to be wide enough for its own lanes, or traffic locks on the circle.
+    const r = Math.max(radius, HALF_WIDTH[kind] * 2 + 0.6);
     if (cx < r + 1 || cz < r + 1 || cx > GRID - r - 1 || cz > GRID - r - 1) return false;
     for (const n of this.nodes.values()) {
       const d = Math.hypot(n.x - cx, n.z - cz);

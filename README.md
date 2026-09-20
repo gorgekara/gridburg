@@ -95,7 +95,8 @@ Restoring coverage clears the countdown. Saving and reloading preserves it.
 
 Narrow curbs meet compatible straight roadside lots. Lot strips move together toward the curb; conflicting shifts are rejected at junctions. Building fronts reach their road-facing lot boundary.
 
-Road endpoints and curve guide points snap to the visible grid intersections. Tile buildings
+Road endpoints and curve guide points snap to tile centers, so a two-lane road fills one
+square and an avenue a three-square corridor, matching the squares zoning uses. Tile buildings
 stay aligned inside their cells, facing the nearest cardinal direction. Connections to existing
 roads take priority, so curved roads and older saves retain their original geometry.
 

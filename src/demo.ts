@@ -19,8 +19,8 @@ export function demoCity(expanded = false): SaveData {
   const net = Network.fromPlain(d.net);
   const e = terrain.entry;
   const P = (along: number, side: number): { x: number; z: number } => ({
-    x: e.x + e.dx * along - e.dz * side,
-    z: e.z + e.dz * along + e.dx * side,
+    x: e.x + e.dx * (along + 0.5) - e.dz * side,
+    z: e.z + e.dz * (along + 0.5) + e.dx * side,
   });
   const clampP = (p: { x: number; z: number }): { x: number; z: number } => ({
     x: Math.max(1.5, Math.min(GRID - 1.5, p.x)), z: Math.max(1.5, Math.min(GRID - 1.5, p.z)),
@@ -32,7 +32,7 @@ export function demoCity(expanded = false): SaveData {
   for (const along of [10, 16, 22, 28, 34, 40]) net.insertPath([clampP(P(along, -12)), clampP(P(along, 12))], KIND_ROAD);
   // Suburbs: a curved crescent beyond the grid, reached by extended side streets.
   net.insertPath([P(10, -12), P(12, -17), P(18, -21), P(26, -21), P(32, -17), P(34, -12)].map(clampP), KIND_ROAD);
-  for (const along of [16, 22, 28]) net.insertPath([clampP(P(along, -12)), clampP(P(along, -20.5))], KIND_ROAD);
+  for (const along of [16, 22, 28]) net.insertPath([clampP(P(along, -12)), clampP(P(along, -20))], KIND_ROAD);
   // A curved ring road around the far end.
   net.insertPath([P(40, 12), P(46, 9), P(49, 0), P(46, -9), P(40, -12)].map(clampP), KIND_ROAD);
 
@@ -75,7 +75,7 @@ export function demoCity(expanded = false): SaveData {
 
   // Traffic control on the avenue.
   const rb = P(22, 0);
-  net.addRoundabout(rb.x, rb.z, 2.3, KIND_AVENUE);
+  net.addRoundabout(rb.x, rb.z, 3.4, KIND_AVENUE);
   for (const along of [16, 28, 34]) {
     const p = P(along, 0);
     const n = net.nearestNode(p.x, p.z, 1.0);

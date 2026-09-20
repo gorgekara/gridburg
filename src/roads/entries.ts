@@ -6,8 +6,8 @@ import { siteOwners } from '../sites';
 
 export function entrySite(x: number, z: number): { x: number; z: number; dx: number; dz: number } {
   const side = [x, GRID - x, z, GRID - z].indexOf(Math.min(x, GRID - x, z, GRID - z));
-  const along = (v: number): number => Math.max(4, Math.min(GRID - 4, Math.round(v)));
-  return side === 0 ? { x: 1, z: along(z), dx: 1, dz: 0 } : side === 1 ? { x: GRID - 1, z: along(z), dx: -1, dz: 0 } : side === 2 ? { x: along(x), z: 1, dx: 0, dz: 1 } : { x: along(x), z: GRID - 1, dx: 0, dz: -1 };
+  const along = (v: number): number => Math.max(4.5, Math.min(GRID - 4.5, Math.floor(v) + 0.5));
+  return side === 0 ? { x: 0.5, z: along(z), dx: 1, dz: 0 } : side === 1 ? { x: GRID - 0.5, z: along(z), dx: -1, dz: 0 } : side === 2 ? { x: along(x), z: 0.5, dx: 0, dz: 1 } : { x: along(x), z: GRID - 0.5, dx: 0, dz: -1 };
 }
 
 /** Validate on a copy so a rejected entrance never alters the player's roads. */

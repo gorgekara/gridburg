@@ -14,7 +14,7 @@ const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
-const { Network } = await import('../src/roads/network.ts');
+const { Network, HALF_WIDTH } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
@@ -130,19 +130,22 @@ test('demo civic services work in the real simulation and improve coverage', () 
   console.log(`  Service demo: ${state.stats.pop} residents, ${state.stats.happiness}% happiness, ${state.stats.civic.health}% health coverage`);
 });
 
-test('road previews and committed endpoints land on visible grid intersections', () => {
+test('road previews and committed endpoints land on tile centers', () => {
+  const onCell = (v) => Number.isInteger(v - 0.5);
   const net = new Network();
   const a = roadPoint(net, { x: 20.2, z: 20.4 });
   const b = roadPoint(net, { x: 30.1, z: 20.2 });
-  assert.deepEqual(a, { x: 20, z: 20 });
-  assert.deepEqual(b, { x: 30, z: 20 });
+  assert.deepEqual(a, { x: 20.5, z: 20.5 });
+  assert.deepEqual(b, { x: 30.5, z: 20.5 });
   net.insertPath([a, b], 0);
-  assert.ok([...net.nodes.values()].every(n => Number.isInteger(n.x) && Number.isInteger(n.z)));
-  assert.deepEqual(roadPoint(net, { x: 25.3, z: 20.4 }), { x: 25, z: 20 });
-  assert.deepEqual(gridPoint({ x: 0.01, z: 79.99 }), { x: 1, z: 79 });
+  assert.ok([...net.nodes.values()].every(n => onCell(n.x) && onCell(n.z)));
+  assert.deepEqual(roadPoint(net, { x: 25.3, z: 20.4 }), { x: 25.5, z: 20.5 });
+  assert.deepEqual(gridPoint({ x: 0.01, z: 79.99 }), { x: 0.5, z: 79.5 });
   for (let seed = 1; seed <= 30; seed++) {
     const { entry } = generateTerrain(seed);
-    assert.ok(Number.isInteger(entry.x) && Number.isInteger(entry.z));
+    // The entry sits on the map edge, running down the middle of a tile column.
+    assert.ok(onCell(entry.dx ? entry.z : entry.x), JSON.stringify(entry));
+    assert.ok(Number.isInteger(entry.dx ? entry.x : entry.z), JSON.stringify(entry));
   }
   for (let a = -Math.PI; a < Math.PI; a += 0.1) {
     const rotation = buildingRotation(Math.sin(a), Math.cos(a));
@@ -184,7 +187,7 @@ test('narrow sidewalks meet roadside building fronts without broad paving', () =
     const geometry = buildingGeometry(C.T_RES, 1, 0);
     geometry.computeBoundingBox();
     const front = raster.lotZ[home] + geometry.boundingBox.max.z;
-    const curb = center - (roadKind === 0 ? 0.41 : 0.66) - 0.09;
+    const curb = center - HALF_WIDTH[roadKind] - 0.09;
     assert.ok(Math.abs(front - curb) < 1e-5, `Building frontage ${front} must meet narrow curb ${curb}`);
     assert.equal(raster.lotZ[home] - raster.lotZ[home - C.GRID], 1, 'Rows retain their spacing');
     const positions = roads.group.children[0].geometry.attributes.position;
@@ -720,13 +723,15 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
     net.insertPath([{ x: 8, z: cz }, { x: 72, z: cz }], kind);
     net.insertPath([{ x: cx, z: 8 }, { x: cx, z: 72 }], kind);
     assert.ok(net.addRoundabout(cx, cz, 2.3, kind));
+    // An avenue ring is wider than a road one, so judge each by its own circle.
+    const ring = net.roundabouts()[0].r;
     [...net.nodes.values()].find(n => n.x === 8).entry = true;
     const r = rasterize(net);
     // Homes on two arms and jobs on the other two, so most commutes cross the ring.
     for (let i = 0; i < C.N_TILES; i++) {
       if (r.cover[i] || r.accSeg[i] < 0) continue;
       const x = i % C.GRID, z = (i / C.GRID) | 0;
-      if (Math.hypot(x - cx, z - cz) < 5) continue;
+      if (Math.hypot(x - cx, z - cz) < ring + 2.7) continue;
       city.kind[i] = x < cx - 3 || z < cz - 3 ? C.T_RES : (x + z) % 2 ? C.T_COM : C.T_IND; city.level[i] = 2;
     }
     city.net = net.toPlain();
@@ -742,11 +747,11 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
         for (let n = 0; n < C.MAX_CARS; n++) {
           if (!f.cars[n * 4 + 3]) continue;
           const id = f.carIds[n], x = f.cars[n * 4] + C.GRID / 2, z = f.cars[n * 4 + 1] + C.GRID / 2, prev = still.get(id);
-          const near = Math.hypot(x - cx, z - cz) < 3;
+          const near = Math.hypot(x - cx, z - cz) < ring + 0.8;
           if (near) { onRing++; passed.add(id); if (tick > 180 * C.SIM_HZ) late.add(id); }
           // A random collision legitimately blocks a lane for a while; only judge the junction outside those windows.
           if (!prev || tick < crashUntil || Math.hypot(prev.x - x, prev.z - z) > 0.01) still.set(id, { x, z, tick });
-          else if (Math.hypot(x - cx, z - cz) < 6) maxStill = Math.max(maxStill, (tick - prev.tick) / C.SIM_HZ);
+          else if (Math.hypot(x - cx, z - cz) < ring + 3.7) maxStill = Math.max(maxStill, (tick - prev.tick) / C.SIM_HZ);
         }
         peak = Math.max(peak, onRing);
       }

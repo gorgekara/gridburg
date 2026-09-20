@@ -247,9 +247,10 @@ export function newCity(seed: number): SaveData {
   const a = net.addNode(e.x, e.z);
   a.entry = true;
   a.fixed = true;
-  const len = 7;
-  const bx = Math.max(1, Math.min(GRID - 1, e.x + e.dx * len));
-  const bz = Math.max(1, Math.min(GRID - 1, e.z + e.dz * len));
+  // The stub ends on a tile centre so roads drawn from it stay on the grid of squares.
+  const len = 7.5;
+  const bx = Math.max(0.5, Math.min(GRID - 0.5, e.x + e.dx * len));
+  const bz = Math.max(0.5, Math.min(GRID - 0.5, e.z + e.dz * len));
   const b = net.addNode(bx, bz);
   b.fixed = true;
   net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_AVENUE, false, true);

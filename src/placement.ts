@@ -2,9 +2,10 @@ import { GRID } from './constants';
 import type { Network } from './roads/network';
 export type Point = { x: number; z: number };
 
-/** Road centerlines use the integer intersections drawn by GridHelper. */
+/** Road centerlines run down the middle of a tile, so roads occupy squares like everything else. */
 export function gridPoint(p: Point): Point {
-  return { x: Math.max(1, Math.min(GRID - 1, Math.round(p.x))), z: Math.max(1, Math.min(GRID - 1, Math.round(p.z))) };
+  const cell = (v: number): number => Math.max(0.5, Math.min(GRID - 0.5, Math.floor(v) + 0.5));
+  return { x: cell(p.x), z: cell(p.z) };
 }
 
 /** Resolve connections from the snapped point, so hovering and committing agree. */

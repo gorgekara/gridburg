@@ -179,13 +179,13 @@ export class RoadLayer {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);
         }
-        if (avenue) for (let d = from; d + 0.4 < to; d += 0.95) strip(d, d + 0.4, 0.02, 0, WHITE);
+        if (avenue) for (let d = from; d + 0.5 < to; d += 1.1) { strip(d, d + 0.5, 0.02, 0.47, WHITE); strip(d, d + 0.5, 0.02, -0.47, WHITE); }
       } else if (avenue) {
-        strip(from, to, 0.02, -0.045, LINE);
-        strip(from, to, 0.02, 0.045, LINE);
-        for (let d = from; d + 0.4 < to; d += 0.95) {
-          strip(d, d + 0.4, 0.018, 0.34, WHITE);
-          strip(d, d + 0.4, 0.018, -0.34, WHITE);
+        strip(from, to, 0.025, -0.075, LINE);
+        strip(from, to, 0.025, 0.075, LINE);
+        for (let d = from; d + 0.5 < to; d += 1.1) {
+          strip(d, d + 0.5, 0.02, 0.7, WHITE);
+          strip(d, d + 0.5, 0.02, -0.7, WHITE);
         }
       } else {
         for (let d = from; d + 0.3 < to; d += 0.8) strip(d, d + 0.3, 0.022, 0, DASH);
