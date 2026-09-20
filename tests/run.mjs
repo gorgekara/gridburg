@@ -809,7 +809,7 @@ test('forests clear roads, occupied lots and full service footprints, then resto
   assert.equal(trunks.count, count); assert.deepEqual(trunks.instanceMatrix.array.slice(0, count * 16), before.slice(0, count * 16));
 });
 
-const { structurePlan, roadHeight } = await import('../src/roads/structures.ts');
+const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/structures.ts');
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const legacy = Buffer.from(encode(demoCity()), 'base64url'); legacy[0] = 6;
@@ -827,7 +827,7 @@ test('bridge and tunnel spans cross surface roads without junctions and survive 
   assert.deepEqual([...saved.segs.values()].map(s => [s.kind, s.oneway, s.structure]), [...net.segs.values()].map(s => [s.kind, s.oneway, s.structure]));
   const bridge = [...net.segs.values()].find(s => s.structure === 1);
   assert.throws(() => net.splitSeg(bridge.id, 0.5), /ends/);
-  assert.equal(roadHeight(bridge, 0), 0); assert.equal(roadHeight(bridge, bridge.len), 0); assert.equal(roadHeight(bridge, 20), 2.4);
+  assert.equal(roadHeight(bridge, 0), 0); assert.equal(roadHeight(bridge, bridge.len), 0); assert.equal(roadHeight(bridge, 20), BRIDGE_RISE);
   assert.equal(roadHeight({ structure: 2, len: 30 }, 15), -2.4);
 });
 test('structure planning rejects short spans, occupied approaches and ramp-level road collisions', () => {
@@ -856,17 +856,17 @@ test('bridges reserve their corridor while tunnel interiors leave buildable surf
   assert.equal(raster.accSeg[C.idx(30, 41)], -1);
   const structures = new StructureLayer(), roads = new RoadLayer();
   structures.rebuild(net); roads.rebuild(net, generateTerrain(1));
-  assert.ok(roads.mesh.geometry.getAttribute('position').array.some((v, i) => i % 3 === 1 && v > 2.3));
+  assert.ok(roads.mesh.geometry.getAttribute('position').array.some((v, i) => i % 3 === 1 && v > BRIDGE_RISE - 0.1));
   structures.group.traverse(mesh => { if (mesh.geometry?.getAttribute('position')) for (const v of mesh.geometry.getAttribute('position').array) assert.ok(Number.isFinite(v)); });
 });
 test('vehicle reservations separate overpasses and tunnels but still block traffic on the same deck', () => {
   const space = new TrafficSpace();
   space.set(1, { x: 10, z: 10, y: 0, angle: 0, type: 1 });
-  assert.equal(space.free({ x: 10, z: 10, y: 2.4, angle: 0, type: 1 }), true);
+  assert.equal(space.free({ x: 10, z: 10, y: BRIDGE_RISE, angle: 0, type: 1 }), true);
   assert.equal(space.free({ x: 10, z: 10, y: -2.4, angle: 0, type: 1 }), true);
   assert.equal(space.free({ x: 10, z: 10, y: 0.1, angle: 0, type: 1 }), false);
-  space.set(2, { x: 10, z: 10, y: 2.4, angle: 0, type: 1 });
-  assert.equal(space.free({ x: 10, z: 10, y: 2.4, angle: 0, type: 1 }), false);
+  space.set(2, { x: 10, z: 10, y: BRIDGE_RISE, angle: 0, type: 1 });
+  assert.equal(space.free({ x: 10, z: 10, y: BRIDGE_RISE, angle: 0, type: 1 }), false);
 });
 test('worker routes traffic across bridges and through tunnels and publishes its actual height', () => {
   const city = demoCity(); city.kind.fill(0); city.level.fill(0); city.cityLevel = 0;
@@ -883,7 +883,7 @@ test('worker routes traffic across bridges and through tunnels and publishes its
     simulateFrame(); const frame = messages.at(-1);
     if (frame.type === 'frame') for (let n = 0; n < C.MAX_CARS; n++) if (frame.cars[n * 4 + 3]) {
       assert.ok(Number.isFinite(frame.carHeights[n]));
-      bridgeSeen ||= frame.carHeights[n] > 2; tunnelSeen ||= frame.carHeights[n] < -2;
+      bridgeSeen ||= frame.carHeights[n] > BRIDGE_RISE - 0.2; tunnelSeen ||= frame.carHeights[n] < -2;
     }
     if (messages.length > 100) messages.splice(0, messages.length - 20);
   }

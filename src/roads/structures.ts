@@ -6,13 +6,18 @@ import { siteOwners } from '../sites';
 
 export type Structure = 0 | 1 | 2; // surface, bridge, tunnel
 export const STRUCTURE_COST = [1, 3, 4];
+/** Deck height at the middle of a span: enough to clear traffic underneath without towering over it. */
+export const BRIDGE_RISE = 1.5;
+export const TUNNEL_DROP = 2.4;
 /** Both portals/abutments meet the ground. The central span crosses without a junction. */
 export function roadHeight(seg: Pick<RSeg, 'structure' | 'len'>, distance: number): number {
   if (!seg.structure) return 0;
   const ramp = Math.min(6, seg.len / 2);
   const u = Math.max(0, Math.min(1, distance / ramp, (seg.len - distance) / ramp));
-  return (seg.structure === 1 ? 2.4 : -2.4) * u * u * (3 - 2 * u);
+  return (seg.structure === 1 ? BRIDGE_RISE : -TUNNEL_DROP) * u * u * (3 - 2 * u);
 }
+/** Clearance rules are written against the deck, so they scale with it. */
+const CLEAR = BRIDGE_RISE / 2.4;
 
 export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, points: { x: number; z: number }[], roadKind: number, structure: Structure): Network | string {
   const pieces = buildPieces(points);
@@ -36,11 +41,11 @@ export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, 
         if (kind[i] || owners[i] >= 0) return 'Clear buildings and zoning from the span or portals first';
       }
     }
-    if (terrain.water[Math.min(GRID - 1, Math.floor(z)) * GRID + Math.min(GRID - 1, Math.floor(x))] && Math.abs(y) < 1.2) return 'Move the ends farther from the river to leave room for ramps';
+    if (terrain.water[Math.min(GRID - 1, Math.floor(z)) * GRID + Math.min(GRID - 1, Math.floor(x))] && Math.abs(y) < 1.2 * CLEAR) return 'Move the ends farther from the river to leave room for ramps';
     if (distance < 1.8 || sm.len - distance < 1.8) continue;
     for (const seg of net.segs.values()) {
       const hit = Network.nearestOn(seg, x, z);
-      if (hit.dist < HALF_WIDTH[seg.kind] + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.1) return 'The approaches need more clearance from crossing roads';
+      if (hit.dist < HALF_WIDTH[seg.kind] + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.1 * CLEAR) return 'The approaches need more clearance from crossing roads';
     }
   }
   const copy = Network.fromPlain(net.toPlain());

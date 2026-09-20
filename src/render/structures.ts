@@ -21,7 +21,7 @@ const LAMP = 0xfff0c2;
 const DECK_TOP = 0.015; // just under the curb ribbon (0.03) so the road never z-fights the slab
 const DECK_BOTTOM = -0.24;
 const BEAM_DEPTH = 0.22;
-const EMBANK_TOP = 0.7; // below this deck height the ramp sits on a filled embankment
+const EMBANK_TOP = 0.44; // below this deck height the ramp sits on a filled embankment
 const PIER_SPACING = 4;
 
 /**

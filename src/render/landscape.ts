@@ -149,7 +149,10 @@ export class LandscapeLayer {
     const colors = new Float32Array(positions.count * 3), color = new THREE.Color();
     for (let i = 0; i < positions.count; i++) {
       const x = positions.getX(i), z = positions.getZ(i);
-      const h = landscapeHeight(x, z, t.seed, this.samples) * Math.max(0, Math.min(1, -sea.at(x, z) / 2));
+      // Stay flat across the beach the water layer draws, then climb inland; otherwise the
+      // rising ground shreds its way through the flat sand.
+      const inland = Math.max(0, Math.min(1, (-sea.at(x, z) - 3.2) / 4));
+      const h = landscapeHeight(x, z, t.seed, this.samples) * inland;
       positions.setY(i, h - 0.025);
       this.baseHeights[i] = h;
       const patch = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + 1) / 2;
