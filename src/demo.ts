@@ -1,4 +1,6 @@
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
+import { OUT_OF_TOWN } from './sim/transit';
+import type { RailLine } from './sim/transit';
 import { footprint, siteOwners } from './sites';
 import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
 import { Network, KIND_AVENUE, KIND_ROAD } from './roads/network';
@@ -238,5 +240,10 @@ export function demoCity(expanded = false): SaveData {
 
   const level = new Uint8Array(N_TILES);
   for (let i = 0; i < N_TILES; i++) if (kind[i] >= T_COAL) level[i] = 1;
-  return { seed: DEMO_SEED, kind, level, net: net.toPlain(), money: expanded ? 40000 : 12000, cityLevel: expanded ? 5 : 0, tick: 0, tax: 10 };
+  // The demo ships with its railway already drawn: the two stations joined, and one line out of town.
+  const stations = Array.from(kind, (k, i) => k === T_STATION ? i : -1).filter(i => i >= 0);
+  const railLines: RailLine[] = stations.length > 1
+    ? [{ a: stations[0], b: stations[1] }, { a: stations[0], b: OUT_OF_TOWN }]
+    : [];
+  return { seed: DEMO_SEED, kind, level, net: net.toPlain(), railLines, money: expanded ? 40000 : 12000, cityLevel: expanded ? 5 : 0, tick: 0, tax: 10 };
 }

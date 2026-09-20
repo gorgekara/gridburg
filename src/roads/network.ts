@@ -2,9 +2,22 @@ import { GRID } from '../constants';
 
 export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
-/** A road fills one tile, an avenue a three-tile corridor; both leave a 0.09 curb strip. */
-export const HALF_WIDTH = [0.41, 1.41];
-export const SPEED = [3, 4.5]; // units per second
+export const KIND_LANE = 2;
+export const KIND_HIGHWAY = 3;
+/**
+ * Four kinds of road, in the order the upgrade tool walks them. A lane is a single narrow carriageway,
+ * a street fills one tile, an avenue a three-tile corridor, and an expressway a four-tile one; all
+ * leave a 0.09 curb strip. An expressway carries traffic fast but has no frontage: nothing can be
+ * zoned or built off it, so cities need ordinary streets behind it.
+ */
+export const HALF_WIDTH = [0.41, 1.41, 0.28, 1.92];
+export const SPEED = [3, 4.5, 2.4, 6.8]; // units per second
+export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway'];
+/** Whether buildings may use this kind of road as their access. */
+export const ROAD_FRONTAGE = [true, true, true, false];
+/** Upgrade order: lane, street, avenue, expressway, and back to a lane. */
+export const UPGRADE_ORDER = [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY];
+export const nextRoadKind = (kind: number): number => UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
 export const LIGHT_CYCLE = 18;
 
 export interface RNode {
@@ -522,7 +535,9 @@ export class Network {
     }
     const segs: number[][] = [];
     for (const s of this.segs.values()) {
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3)]);
+      // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
+      // the extra kinds set bit 5 as well.
+      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4)]);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -536,7 +551,7 @@ export class Network {
     for (const [id, a, b, cx, cz, f] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: f & 1, oneway: !!(f & 2), fixed: !!(f & 4),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       net.resample(s);

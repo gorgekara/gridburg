@@ -1,4 +1,4 @@
-import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from '../constants';
+import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, COST_RAIL_LINE, COST_INTERCITY_LINE } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
 import { POLICIES, POLICY_IDS } from '../policies';
 import type { PolicyId } from '../policies';
@@ -9,7 +9,7 @@ import { CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
-import { COST_AVENUE, COST_LIGHT, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
+import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
 
 export interface HudActions {
@@ -42,12 +42,14 @@ const CATEGORIES: Category[] = [
   {
     id: 'roads', label: 'Roads',
     tools: [
+      { id: 'lane', label: 'Lane', key: 'L', price: `${money(COST_LANE)} / cell`, note: 'One shared lane', hint: 'A narrow, cheap, slow street for the inside of a block. Traffic shares a single carriageway, so keep it away from through routes' },
       { id: 'road', label: 'Road', key: 'R', price: `${money(COST_ROAD)} / cell`, note: 'Two lanes', hint: 'Click to start, click again to finish. It keeps going from the last point until you join a road, right-click, or press Esc' },
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
+      { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
       { id: 'bridge', label: 'Bridge', price: '$75 / cell', note: 'Over rivers & roads', hint: 'Draw a span at least 14 cells long with dry approaches. Ramps rise automatically; crossing roads stay separate. Upgrade can widen the deck' },
       { id: 'tunnel', label: 'Tunnel', price: '$100 / cell', note: 'Underground route', hint: 'Draw at least 14 cells between two clear, dry portals. Traffic travels underground; cyan arrows reveal the route while road tools are selected' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
-      { id: 'upgrade', label: 'Upgrade', key: 'U', price: `${money(COST_AVENUE - COST_ROAD)} / cell`, note: 'Road ⇄ avenue', hint: 'Click an existing road to turn it into an avenue, or an avenue back into a road' },
+      { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Widening costs the difference; narrowing is free' },
     ],
   },
   {
@@ -86,7 +88,7 @@ const CATEGORIES: Category[] = [
   },
   {
     id: 'services', label: 'Services',
-    tools: (['park', 'clinic', 'school', 'fire', 'police', 'recycling', 'university'] as Tool[]).map(id => {
+    tools: (['park', 'playground', 'sports', 'garden', 'clinic', 'school', 'fire', 'police', 'recycling', 'university'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: `Base $${spec.upkeep}/s · ${spec.radius} cell radius`,
         hint: `${spec.name}: serves ${spec.capacity?.toLocaleString()} residents within ${spec.radius} cells. Both building and homes need highway-connected roads. Unlocks at ${MILESTONES[spec.unlock ?? 0].name}` };
@@ -95,7 +97,8 @@ const CATEGORIES: Category[] = [
   {
     id: 'transport', label: 'Transport', tools: [
       { id: 'bus', label: 'Bus stop', price: svc(T_BUS), note: '9-cell catchment · $0.45/s', hint: 'Place two stops near homes and jobs. Automatic return routes follow roads; congestion reduces capacity. Needs utilities' },
-      { id: 'station', label: 'Railway station', price: svc(T_STATION), note: '3 × 2 cells · $3/s', hint: 'Two stations connect automatically by elevated tracks along road corridors. 18-cell catchment, 120 passenger capacity per connection' },
+      { id: 'station', label: 'Railway station', price: svc(T_STATION), note: '3 × 2 cells · $3/s', hint: 'Build the stations, then draw the line between them with Rail line. 18-cell catchment, 120 passenger capacity per connection' },
+      { id: 'railline', label: 'Rail line', price: money(COST_RAIL_LINE), note: `Out of town ${money(COST_INTERCITY_LINE)}`, hint: 'Click one station, then the station it runs to. Finish near the map edge instead and the line leaves town, bringing people in and out by train rather than by road' },
       { id: 'subway', label: 'Metro station', price: svc(T_SUBWAY), note: '1 cell · $2.5/s', hint: 'Metro stations link to each other automatically through underground tunnels, so trains skip road traffic. 14-cell catchment, 100 passenger capacity per connection. Needs utilities' },
       { id: 'airport', label: 'Regional airport', price: svc(T_AIRPORT), note: '8 × 3 cells · $7/s', hint: 'Clear a runway-sized site beside a road. Flights replace some incoming car trips within 24 cells; needs utilities' },
     ],
@@ -523,6 +526,8 @@ export class Hud {
           <li><b>Roads</b> — pick Road or Avenue, then <b>click</b> to place points. <b>Straight</b> is two clicks,
           <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
           right-click or <b>Esc</b> stops. Crossings become junctions</li>
+          <li><b>Four road types</b> — Lane, Road, Avenue and Expressway, in rising order of width, speed and price.
+          Nothing can be zoned along an expressway, so feed it with ordinary streets. <b>Upgrade (U)</b> widens a road one step</li>
           <li><b>Traffic</b> — cars queue for real. Busy junctions jam; fix them with <b>avenues</b>, <b>signals</b>,
           <b>one-way</b> streets or <b>roundabouts</b>. Roads turn red where traffic is slow</li>
           <li><b>Utilities</b> run along roads. Buildings need <b>power</b>, <b>water</b> and <b>sewage</b> to grow past
@@ -532,7 +537,8 @@ export class Hud {
           <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. Click the city progress card to see your next milestone and service coverage</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
-          <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap</li>
+          <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
+          <li><b>Railways</b> — build two stations, then draw the line between them with <b>Rail line</b>. End a line near the map edge and it leaves town, bringing people in and out by train</li>
           <li><b>Policies</b> — standing decisions like recycling, smoke alarms or free public transport. They cost money every second and the bill grows with the city</li>
           <li><b>Pollution</b> from industry and coal spreads through the ground and drives residents away. Press <b>P</b> to see it</li>
         </ul>
@@ -697,7 +703,7 @@ export class Hud {
       value.classList.toggle('neg', s.civic[key] < 35);
     }
     this.milestoneRows.forEach((row, i) => { row.classList.toggle('earned', i <= s.cityLevel); row.classList.toggle('next', i === s.cityLevel + 1); });
-    this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.railLines} rail links · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
+    this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.railLines} rail lines · ${s.transport.intercityLines} intercity lines · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · ${s.transport.railPassengers} intercity rail passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
     this.incidentStats.textContent = `${s.incidents.patrols} police cars · ${s.incidents.fireEngines} fire engines · ${s.incidents.extinguished} fires extinguished · ${s.incidents.prevented} crimes prevented`;
     this.treatmentStats.textContent = `${s.treatedSewage} sewage units filtered`;
     for (const id of ['office', 'entry'] as Tool[]) {

@@ -18,7 +18,11 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
   end) or Smooth (every click continues the road as a flowing curve). Crossings become junctions
   automatically, endpoints snap to existing roads, and roads over water become bridges.
-- **Two road types.** Roads and wider, faster avenues, plus an Upgrade tool to convert one into the other.
+- **Four road types.** Lanes ($14/cell, one shared carriageway), streets ($25), avenues ($180) and
+  expressways ($430, fastest, but nothing can be zoned along them). Upgrade widens a road one step and
+  charges the difference; keep clicking and it wraps back to a lane.
+- **Alleys.** A building standing behind the row that fronts the street gets a service alley out to the
+  curb, threaded between its neighbours. Fire engines and patrol cars answer calls there as usual.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.
@@ -28,6 +32,13 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **City policies.** Six standing decisions — recycling, smoke alarms, neighborhood watch, study grants,
   free public transport and a congestion charge — each paid for every second, with a bill that grows with
   the city. They change pollution, incidents, school reach, transit ridership and how many people drive.
+- **Parks for every size of city.** Neighborhood parks from the start, playgrounds at Growing village,
+  a two-cell sports field at Thriving town and a three-cell city park with a pond at City.
+- **Railways you draw yourself.** Build two stations, then draw the line between them with Rail line.
+  Finish a line near the map edge instead and it leaves town, so people arrive and depart by train
+  rather than by road.
+- **Route maps.** Picking a transport tool lights up that mode's lines through the streets, its stops
+  and a marker running each route, the way the metro tool shows its tunnels.
 - **Service coverage at a glance.** Selecting a service paints the area existing buildings of that sort
   already reach, so the next clinic, station or bus stop goes where the gap is.
 - **Utilities along roads.** Wind and coal power, water towers and river pumps, sewage outlets. Buildings
@@ -53,7 +64,10 @@ demand. From Growing village, homes need healthcare and education to upgrade to 
 High-rises unlock at Thriving town; residential towers also need fire protection, public
 safety, waste collection and recreation. Fire and police provide coverage and growth benefits, and dispatch vehicles to incidents and patrol destinations.
 
-The demo city includes the new services. Existing v3 local saves and share links still load;
+Railway stations do not connect themselves: draw each line with **Rail line** ($2,500), clicking one
+station and then the other. Finishing within six cells of the map edge opens an intercity line
+($4,500) that runs off the map, carrying a share of the people who would otherwise drive in and out
+and earning fares. Demolishing a station retires the lines that used it. The demo city includes the new services. Existing v3 local saves and share links still load;
 new v6 saves preserve earned milestones, service funding, loan balances, decline timers, active fires, crime and recent patrol protection.
 Versions 4 and 5 also migrate automatically. Old cities inherit
 the milestone matching their current population without collecting past grants again.
@@ -62,7 +76,7 @@ the milestone matching their current population without collecting past grants a
 
 One bar along the bottom of the screen carries everything: zone demand and utility meters on the left,
 the build categories in the middle, and the city clock and speed controls on the right. Tool panels open
-above it. Zone colors appear only while the Zones menu is selected. Roads use normal asphalt by default; the traffic button in the top-right corner toggles congestion shading independently. Signals are 28% smaller and road vehicles are 32% smaller.
+above it. At night vehicles show their own lamps; they no longer wash the road with headlight beams, so streetlights carry the lighting. Zone colors appear only while the Zones menu is selected. Roads use normal asphalt by default; the traffic button in the top-right corner toggles congestion shading independently. Signals are 28% smaller and road vehicles are 32% smaller.
 
 Vehicles reserve their oriented footprint when spawning, moving, and entering a new road segment. Movement is checked along its path, and junction traffic is serialized when paths conflict. Occupied space blocks vehicles; a reused vehicle slot starts a new visual trip instead of interpolating from the previous car.
 
@@ -134,7 +148,8 @@ roads take priority, so curved roads and older saves retain their original geome
 | WASD / arrows, middle drag | Pan |
 | Wheel | Zoom |
 | I | Inspect a building and its growth requirements |
-| R, V, U | Road, Avenue, Upgrade |
+| L, R, V, X | Lane, Road, Avenue, Expressway |
+| U | Upgrade a road one step wider |
 | C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |
 | 1, 2, 3 | Homes, Shops, Industry |

@@ -15,7 +15,7 @@ const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const { newCity } = await import('../src/game.ts');
-const { Network, HALF_WIDTH } = await import('../src/roads/network.ts');
+const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
@@ -75,12 +75,15 @@ test('malformed save streams are rejected', () => {
   bytes[31] = 0; // a zero run length in the first RLE triple, just past the 30-byte header
   assert.equal(decode(bytes.toString('base64url')), null);
 });
-test('each new service has finite nonempty visible geometry', () => {
-  for (let k = 11; k <= 18; k++) {
+test('each new service has finite nonempty visible geometry inside its footprint', () => {
+  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN]) {
     const geo = buildingGeometry(k, 1, 0);
-    assert.ok(geo.attributes.position.count > 30);
-    assert.ok([...geo.attributes.position.array].every(Number.isFinite));
-    geo.computeBoundingBox(); assert.ok(geo.boundingBox.max.y > 0.15);
+    assert.ok(geo.attributes.position.count > 30, `kind ${k}`);
+    assert.ok([...geo.attributes.position.array].every(Number.isFinite), `kind ${k}`);
+    geo.computeBoundingBox(); assert.ok(geo.boundingBox.max.y > 0.15, `kind ${k}`);
+    const [w, d] = C.SERVICES[k].footprint ?? [1, 1];
+    assert.ok(geo.boundingBox.min.x >= -0.55 && geo.boundingBox.max.x <= w - 0.45, `kind ${k} fits its width`);
+    assert.ok(geo.boundingBox.min.z >= -0.55 && geo.boundingBox.max.z <= d - 0.45, `kind ${k} fits its depth`);
     geo.dispose();
   }
 });
@@ -100,7 +103,7 @@ function load(city) {
   const net = Network.fromPlain(city.net);
   ensureApproaches(net); // the app extends every entrance past the map edge before simulating
   const raster = rasterize(net);
-  send({ type: 'load', ...city, cityLevel: city.cityLevel ?? 0, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
+  send({ type: 'load', railLines: [], ...city, cityLevel: city.cityLevel ?? 0, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
 }
 test('real simulation grows a town, awards milestones, and stays finite', () => {
   const city = demoCity();
@@ -384,7 +387,7 @@ test('regular clock publishes population matching rendered building levels', () 
   assert.equal(state.stats.pop, actual);
 });
 
-const { transitNetwork, transitLineForTrip } = await import('../src/sim/transit.ts');
+const { transitNetwork, transitLineForTrip, OUT_OF_TOWN } = await import('../src/sim/transit.ts');
 const { footprint, siteOwners } = await import('../src/sites.ts');
 const { entrancePlan } = await import('../src/roads/entries.ts');
 const { railPath } = await import('../src/roads/rail.ts');
@@ -488,6 +491,103 @@ test('external traffic drives in from off the map without stalling the entrance'
   assert.ok(inCity > offMap, 'Most traffic still belongs to the city itself');
   assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
   console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
+});
+test('railways only run where the player drew them, and a line out of town carries travellers', () => {
+  const city = demoCity(true);
+  const stations = Array.from(city.kind, (k, i) => k === C.T_STATION ? i : -1).filter(i => i >= 0);
+  assert.ok(stations.length > 1, 'The demo has two stations');
+
+  // No lines drawn: two stations sitting there do not connect themselves.
+  load({ ...city, railLines: [] });
+  send({ type: 'warm', ticks: 60 });
+  assert.equal(latest().stats.transport.railLines, 0, 'Stations no longer pair up on their own');
+
+  // The line the player drew is the line that runs.
+  load({ ...city, railLines: [{ a: stations[0], b: stations[1] }] });
+  send({ type: 'warm', ticks: 60 });
+  assert.equal(latest().stats.transport.railLines, 1);
+  assert.equal(latest().stats.transport.intercityLines, 0);
+
+  // A line out of town reports itself and moves people in and out of the city.
+  load({ ...city, railLines: [{ a: stations[0], b: OUT_OF_TOWN }] });
+  send({ type: 'warm', ticks: 150 });
+  send({ type: 'speed', value: 1 });
+  assert.equal(latest().stats.transport.intercityLines, 1);
+  for (let f = 0; f < 40 * C.SIM_HZ; f++) {
+    simulateFrame();
+    if (messages.length > 60) messages.splice(0, messages.length - 20);
+    if (latest().stats.transport.railPassengers > 0) break;
+  }
+  const stats = latest().stats;
+  assert.ok(stats.transport.railPassengers > 0, `Intercity trains should carry travellers: ${JSON.stringify(stats.transport)}`);
+  assert.ok(stats.transport.fareIncome > 0, 'Their fares reach the treasury');
+  console.log(`  Intercity line: ${stats.transport.railPassengers} passengers/min, fares $${stats.transport.fareIncome.toFixed(2)}/s`);
+
+  // Lines travel with the city, and a line to a demolished station stops running.
+  city.railLines = [{ a: stations[0], b: stations[1] }, { a: stations[1], b: OUT_OF_TOWN }];
+  const restored = decode(encode(city));
+  assert.deepEqual(restored.railLines, city.railLines, 'Drawn lines survive a save');
+  const razed = { ...city, kind: Uint8Array.from(city.kind) };
+  for (const t of footprint(stations[1], C.T_STATION)) razed.kind[t] = 0;
+  load(razed);
+  send({ type: 'warm', ticks: 30 });
+  assert.equal(latest().stats.transport.railLines, 0, 'A line to a demolished station stops running');
+  assert.equal(latest().stats.transport.intercityLines, 0);
+});
+test('a fire in a back lot behind the street row is reached and put out', () => {
+  const city = demoCity(true);
+  const net = Network.fromPlain(city.net);
+  ensureApproaches(net);
+  const r = rasterize(net);
+  // Let the demo build itself up first: the shipped city is zoned but empty.
+  load(city);
+  send({ type: 'warm', ticks: 200 });
+  city.level = Uint8Array.from(latest().level);
+  // A back lot: a home whose access road point is further than the row that fronts the street.
+  let tile = -1, best = 0;
+  for (let i = 0; i < C.N_TILES; i++) {
+    if (city.kind[i] !== C.T_RES || !city.level[i] || r.accSeg[i] < 0) continue;
+    const d = Math.hypot(r.accX[i] - r.lotX[i], r.accZ[i] - r.lotZ[i]);
+    if (d > best) { best = d; tile = i; }
+  }
+  assert.ok(tile >= 0 && best > 1.5, `Demo should have a set-back home, deepest was ${best.toFixed(2)}`);
+  city.incidents = { fires: [{ tile, age: 0 }], crime: [], patrol: [] };
+  load(city);
+  send({ type: 'speed', value: 1 });
+  let engines = 0;
+  for (let f = 0; f < 90 * C.SIM_HZ; f++) {
+    simulateFrame();
+    engines = Math.max(engines, latest().stats.incidents.fireEngines);
+    if (latest().stats.incidents.extinguished > 0) break;
+  }
+  const stats = latest().stats;
+  assert.ok(engines > 0, 'A fire engine should be dispatched to the back lot');
+  assert.equal(stats.incidents.damaged, 0, 'The building should not burn down waiting for access');
+  assert.ok(stats.incidents.extinguished > 0, 'The fire should be put out');
+  console.log(`  Back lot ${best.toFixed(1)} cells off the street: ${stats.incidents.extinguished} fire out, ${engines} engines sent`);
+});
+test('four kinds of road: widths, costs, upgrade order, frontage and saves', () => {
+  assert.deepEqual(UPGRADE_ORDER.map(k => ROAD_LABEL[k]), ['Lane', 'Street', 'Avenue', 'Expressway']);
+  assert.equal(nextRoadKind(KIND_HIGHWAY), KIND_LANE, 'The cycle wraps back to the cheapest');
+  assert.ok(HALF_WIDTH[KIND_LANE] < HALF_WIDTH[KIND_ROAD]);
+  assert.ok(HALF_WIDTH[KIND_HIGHWAY] > HALF_WIDTH[KIND_AVENUE]);
+  assert.ok(SPEED[KIND_LANE] < SPEED[KIND_ROAD] && SPEED[KIND_HIGHWAY] > SPEED[KIND_AVENUE]);
+  assert.ok(C.ROAD_COST[KIND_LANE] < C.ROAD_COST[KIND_ROAD] && C.ROAD_COST[KIND_HIGHWAY] > C.ROAD_COST[KIND_AVENUE]);
+
+  const net = new Network();
+  net.insertPath([{ x: 10.5, z: 10.5 }, { x: 40.5, z: 10.5 }], KIND_LANE);
+  net.insertPath([{ x: 10.5, z: 30.5 }, { x: 40.5, z: 30.5 }], KIND_HIGHWAY);
+  const r = rasterize(net);
+  const beside = (z) => Array.from(r.accSeg).filter((id, i) => id >= 0 && Math.floor(i / C.GRID) === z).length;
+  assert.ok(beside(12) > 20, 'A lane gives its neighbours frontage');
+  assert.equal(beside(32), 0, 'An expressway gives no frontage');
+  assert.ok(Array.from(r.cover).some((v, i) => v && Math.floor(i / C.GRID) === 30), 'An expressway still paves its tiles');
+
+  const restored = Network.fromPlain(JSON.parse(JSON.stringify(net.toPlain())));
+  assert.deepEqual([...restored.segs.values()].map(s => s.kind).sort(), [KIND_LANE, KIND_HIGHWAY].sort());
+  const city = demoCity(); city.net = net.toPlain();
+  const saved = Network.fromPlain(decode(encode(city)).net);
+  assert.deepEqual([...saved.segs.values()].map(s => s.kind).sort(), [KIND_LANE, KIND_HIGHWAY].sort(), 'Road kinds survive a save');
 });
 test('policies cost money, change the simulation and survive a save', () => {
   assert.equal(policyExpense(noPolicies(), 5000), 0);

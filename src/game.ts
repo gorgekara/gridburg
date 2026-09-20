@@ -2,10 +2,12 @@ import type { IncidentSnapshot, IncidentView } from './sim/incidents';
 import { footprint, siteOwners } from './sites';
 import { defaultFunding } from './management';
 import { noPolicies } from './policies';
+import { OUT_OF_TOWN } from './sim/transit';
+import type { RailLine } from './sim/transit';
 import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
-import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
+import { RES_POP, T_RES, T_STATION, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
 import { Network, KIND_AVENUE } from './roads/network';
 import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
@@ -60,6 +62,8 @@ export class Game {
   onFrame: (() => void) | null = null;
 
   private worker: Worker;
+  /** Railway lines the player drew: station to station, or a station out of town. */
+  railLines: RailLine[] = [];
   private pendingSpent = 0;
   private dirty = false;
   private serial = 0;
@@ -150,12 +154,13 @@ export class Game {
       }
     }
     this.owners = siteOwners(this.kind);
+    this.pruneRailLines();
     const net = this.net.toPlain();
     this.segOrder = net.segs.map((s) => s[0]);
     this.serial++;
     this.segCong = new Uint8Array(this.segOrder.length);
     return {
-      kind: this.kind.slice(), net, serial: this.serial,
+      kind: this.kind.slice(), net, serial: this.serial, railLines: this.railLines.map(l => ({ ...l })),
       cover: this.raster.cover.slice(), accSeg: this.raster.accSeg.slice(), accS: this.raster.accS.slice(),
     };
   }
@@ -178,6 +183,7 @@ export class Game {
     this.seed = d.seed;
     this.terrain = generateTerrain(d.seed);
     this.net = Network.fromPlain(d.net);
+    this.railLines = (d.railLines ?? []).filter(l => l.a >= 0 && l.a < N_TILES && (l.b === OUT_OF_TOWN || (l.b >= 0 && l.b < N_TILES))).map(l => ({ ...l }));
     ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
     this.kind.set(d.kind);
@@ -209,7 +215,7 @@ export class Game {
 
   snapshot(): SaveData {
     return {
-      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(),
+      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(), railLines: this.railLines.map(l => ({ ...l })),
       funding: this.stats.funding, policies: this.stats.policies, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
   }
@@ -227,6 +233,23 @@ export class Game {
   setFunding(key: FundingKey, value: number): void {
     this.flush();
     this.send({ type: 'funding', key, value });
+  }
+
+  /** Draw a railway line; returns false when that exact line already runs. */
+  addRailLine(a: number, b: number): boolean {
+    const same = (l: RailLine): boolean => (l.a === a && l.b === b) || (l.a === b && l.b === a);
+    if (this.railLines.some(same)) return false;
+    this.railLines.push({ a, b });
+    this.dirty = true;
+    this.flush();
+    return true;
+  }
+
+  /** Lines whose stations are gone stop running, so bulldozing a station retires its lines. */
+  pruneRailLines(): void {
+    const before = this.railLines.length;
+    this.railLines = this.railLines.filter(l => this.kind[l.a] === T_STATION && (l.b === OUT_OF_TOWN || this.kind[l.b] === T_STATION));
+    if (this.railLines.length !== before) this.dirty = true;
   }
 
   setPolicy(id: PolicyId, on: boolean): void {

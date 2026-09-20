@@ -2,6 +2,7 @@ import { Network, HALF_WIDTH } from './network';
 import type { RSeg } from './network';
 import type { Raster } from './raster';
 import { GRID, SERVICES, T_STATION } from '../constants';
+import { APPROACH, entryGate } from './entries';
 
 /** Length of the elevated platform at each end of a line; the track is centred on the station hall. */
 export const PLATFORM_LENGTH = 2.45;
@@ -173,4 +174,32 @@ export function railTrack(net: Network, raster: Raster, a: number, b: number, st
     out[i].tx = (q.x - p.x) / l; out[i].tz = (q.z - p.z) / l;
   }
   return out;
+}
+
+/**
+ * The track for a line that leaves town: the corridor from its station to the nearest city entrance,
+ * then straight on past the map edge, alongside the highway that arrives there.
+ */
+export function intercityTrack(net: Network, raster: Raster, station: number, step = 0.25): TrackPoint[] {
+  const gates = [...net.nodes.values()].filter(n => n.entry).map(entryGate);
+  if (!gates.length) return [];
+  const sx = station % GRID, sz = Math.floor(station / GRID);
+  const gate = gates.reduce((best, g) => Math.hypot(g.x - sx, g.z - sz) < Math.hypot(best.x - sx, best.z - sz) ? g : best);
+  // Aim at the road tile just inside the gate, which the entrance's own avenue always serves.
+  let target = -1, bestDistance = Infinity;
+  for (let i = 0; i < GRID * GRID; i++) {
+    if (raster.accSeg[i] < 0) continue;
+    const d = Math.hypot(i % GRID + 0.5 - gate.x, Math.floor(i / GRID) + 0.5 - gate.z);
+    if (d < bestDistance) { bestDistance = d; target = i; }
+  }
+  if (target < 0) return [];
+  const track = railTrack(net, raster, station, target, step);
+  if (track.length < 2) return [];
+  // Carry on off the map, following the direction the entrance faces.
+  const last = track.at(-1)!;
+  const run = APPROACH + 6;
+  for (let d = step; d <= run; d += step) {
+    track.push({ x: last.x - gate.dx * d, z: last.z - gate.dz * d, tx: -gate.dx, tz: -gate.dz, hw: last.hw, s: last.s + d });
+  }
+  return track;
 }

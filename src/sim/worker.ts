@@ -5,10 +5,11 @@ import { TrafficSpace, vehicleLength } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, distance } from './transit';
+import type { RailLine } from './transit';
 import type { TransitNetwork } from './transit';
 import {
   GRID, N_TILES, MAX_CARS, SIM_HZ, T_RES, T_COM, T_IND, T_PUMP, T_TOWER, T_OUTLET,
-  RES_POP, COM_JOBS, IND_JOBS, POWER_DEMAND, WATER_DEMAND, IND_POLLUTION, SERVICES, START_MONEY, ROAD_UPKEEP,
+  RES_POP, COM_JOBS, IND_JOBS, POWER_DEMAND, WATER_DEMAND, IND_POLLUTION, SERVICES, START_MONEY, ROAD_UPKEEP, ROAD_UPKEEP_FACTOR,
   F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, isZone, isService, neighbor, tileHash,
 } from '../constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
@@ -19,7 +20,7 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_AVENUE, HALF_WIDTH, isGreen } from '../roads/network';
+import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, HALF_WIDTH, isGreen } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
@@ -59,15 +60,17 @@ let noPath = 0, gaveUp = 0;
 let subCount = 0;
 let netIncome = 0;
 const demand: [number, number, number, number] = [0, 0, 0, 0];
-let transit: TransitNetwork = { lines: [], airports: [] };
+let transit: TransitNetwork = { lines: [], airports: [], intercity: [] };
 let transitSignature = '';
 let transitTokens: number[] = [], transitDepartures: number[] = [];
-let riders = 0, airPassengers = 0, fareIncome = 0, treatedSewage = 0;
+let riders = 0, airPassengers = 0, railPassengers = 0, fareIncome = 0, treatedSewage = 0;
 let policies: Policies = noPolicies();
 let effects: PolicyEffects = policyEffects(policies);
 let policyCost = 0;
 let tollIncome = 0, tollWindow = 0;
 let riderWindow = 0, airWindow = 0, airTokens = 0;
+let railWindow = 0, railTokens = 0;
+let railLines: RailLine[] = [];
 let power: [number, number] = [0, 0];
 let water: [number, number] = [0, 0];
 let sewage: [number, number] = [0, 0];
@@ -126,7 +129,7 @@ let extRate = 0;
 let resTiles: number[] = [], resW: number[] = [];
 let jobTiles: number[] = [], jobW: number[] = [];
 
-const GAP = [0.42, 0.42];
+const GAP = [0.42, 0.42, 0.4, 0.46];
 const STOP_SETBACK = 0.85; // how far before a junction a car holds, for a plain one-tile road
 const RING_PATIENCE = 6; // seconds an entering car gives way before it books its turn on the ring
 const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
@@ -148,6 +151,7 @@ function pickWeighted(tiles: number[], cum: number[]): number {
 
 // ---- network snapshot -----------------------------------------------------------------------
 function applyNetwork(p: EditPayload): void {
+  railLines = (p.railLines ?? []).map(l => ({ ...l }));
   const net = Network.fromPlain(p.net);
   const oldLens = segs.map((s) => s.len);
   const oldA = segs.map((s) => s.a);
@@ -183,7 +187,7 @@ function applyNetwork(p: EditPayload): void {
   newSegs.forEach((s, i) => {
     nodeEdges[segA[i]].push({ seg: i, to: segB[i], fwd: true });
     if (!s.oneway) nodeEdges[segB[i]].push({ seg: i, to: segA[i], fwd: false });
-    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (s.kind === KIND_AVENUE ? 3 : 1);
+    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1);
     roadLength += s.len;
   });
   lockOwner = new Int32Array(nodeIds.length).fill(-1);
@@ -469,9 +473,24 @@ function externalTrip(tile: number, inbound: boolean, vehicle = 1): boolean {
   noPath++; return false;
 }
 
+/**
+ * A trip in or out of the city that a railway out of town can carry instead of the road. Stations
+ * only take what they have room for, so a single line does not swallow a city's worth of traffic.
+ */
+function byIntercityRail(tile: number): boolean {
+  if (railTokens < 1) return false;
+  const radius = SERVICES[T_STATION].radius!;
+  if (!transit.intercity.some(station => distance(station, tile) < radius)) return false;
+  if (Math.random() > 0.6) return false;
+  railTokens--; railWindow++; riderWindow++; money += 0.12 * effects.fare;
+  return true;
+}
+
 function spawn(dt: number): void {
   airTokens = Math.min(transit.airports.length * 240, airTokens + transit.airports.length * 4 * dt);
-  riderWindow *= Math.exp(-dt / 60); airWindow *= Math.exp(-dt / 60); tollWindow *= Math.exp(-dt / 60);
+  const intercityCapacity = transit.intercity.length * SERVICES[T_STATION].capacity!;
+  railTokens = Math.min(intercityCapacity, railTokens + transit.intercity.length * 6 * dt);
+  riderWindow *= Math.exp(-dt / 60); airWindow *= Math.exp(-dt / 60); railWindow *= Math.exp(-dt / 60); tollWindow *= Math.exp(-dt / 60);
   transit.lines.forEach((line, i) => {
     const congestion = line.mode === 'bus' ? Math.max(segCong[accSeg[line.a]] ?? 0, segCong[accSeg[line.b]] ?? 0) : 0;
     transitTokens[i] = Math.min(line.capacity, (transitTokens[i] ?? 0) + line.capacity / 20 * dt * (1 - congestion * 0.8));
@@ -505,10 +524,11 @@ function spawn(dt: number): void {
     if (inbound && jobTiles.length) {
       const d = pickWeighted(jobTiles, jobW);
       if (airTokens >= 1 && transit.airports.some(a => distance(a, d) < 24) && Math.random() < 0.45) { airTokens--; airWindow++; money += 0.2 * effects.fare; }
+      else if (byIntercityRail(d)) { /* arrived by train */ }
       else externalTrip(d, true, kind[d] === T_IND ? 3 : 2);
     } else if (resTiles.length) {
       const o = pickWeighted(resTiles, resW);
-      externalTrip(o, false);
+      if (!byIntercityRail(o)) externalTrip(o, false);
     }
   }
   // New residents arrive by road.
@@ -528,8 +548,10 @@ function spawn(dt: number): void {
  */
 function laneOffset(segIndex: number, seg: RSeg, slot: number): number {
   if (ringArc[segIndex]) return 0;
-  if (seg.oneway) return seg.kind === KIND_AVENUE ? (slot & 1 ? 0.7 : -0.7) : (slot & 1 ? 0.17 : -0.17);
-  return seg.kind === KIND_AVENUE ? (slot & 1 ? 0.35 : 1.05) : 0.2;
+  const wide = seg.kind === KIND_AVENUE || seg.kind === KIND_HIGHWAY;
+  const outer = seg.kind === KIND_HIGHWAY ? 1.45 : 1.05, inner = seg.kind === KIND_HIGHWAY ? 0.5 : 0.35;
+  if (seg.oneway) return wide ? (slot & 1 ? outer - 0.35 : -(outer - 0.35)) : (slot & 1 ? 0.17 : -0.17);
+  return wide ? (slot & 1 ? inner : outer) : seg.kind === KIND_LANE ? 0.12 : 0.2;
 }
 
 function carPose(leg: Leg, progress: number, slot: number, type: number): VehiclePose {
@@ -879,14 +901,14 @@ function census(): void {
   demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - taxPenalty, -1, 1);
   demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - taxPenalty, -1, 1);
   demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - taxPenalty, -1, 1) : -1;
-  const signature = `${serial}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
+  const signature = `${serial}:${JSON.stringify(railLines)}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
   if (signature !== transitSignature) {
-    transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]));
+    transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]), railLines);
     transitSignature = signature; transitTokens = transit.lines.map(() => 0); transitDepartures = transit.lines.map(() => 12);
     for (let i = 0; i < slots.length; i++) if (slots[i]?.line !== undefined) freeCar(i);
   }
-  riders = Math.round(riderWindow); airPassengers = Math.round(airWindow);
-  fareIncome = (riderWindow / 60 * 0.08 + airWindow / 60 * 0.2) * effects.fare;
+  riders = Math.round(riderWindow); airPassengers = Math.round(airWindow); railPassengers = Math.round(railWindow);
+  fareIncome = (riderWindow / 60 * 0.08 + airWindow / 60 * 0.2 + railWindow / 60 * 0.12) * effects.fare;
   tollIncome = tollWindow / 60 * effects.toll;
   tripRate = rw * 0.022;
   extRate = entries.length ? (rw + jw) * 0.005 : 0;
@@ -1010,7 +1032,7 @@ function grow(): void {
 function stats(): Stats {
   return {
     incidents: { fires: incidents.fires.size, crashes: incidents.crashes.size, crime: incidents.view().crime.length, patrols: slots.filter(c => c?.vehicle === 5).length, fireEngines: slots.filter(c => c?.vehicle === 6).length, prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged },
-    transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
+    transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, intercityLines: transit.intercity.length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, railPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
     funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
     cityLevel, happiness, civic: civicState.average,
     money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
@@ -1136,7 +1158,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       post({ type: 'inspection', report: null });
       pollution.fill(0);
       pendingMoveIns = [];
-      riderWindow = 0; airWindow = 0; tollWindow = 0; airTokens = 0; transitSignature = '';
+      riderWindow = 0; airWindow = 0; railWindow = 0; tollWindow = 0; airTokens = 0; railTokens = 0; transitSignature = '';
       cityLevel = m.cityLevel;
       money = m.money;
       subCount = 0;

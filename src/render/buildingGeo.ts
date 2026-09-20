@@ -1,7 +1,7 @@
 import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
@@ -329,6 +329,54 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.taper(0.04, 0.2, 0.45, x, 0.22, z, 0x43815b, 8);
     }
     b.box(0.26, 0.08, 0.1, 0.25, 0.08, 0, 0xa78058);
+  } else if (kind === T_PLAYGROUND) {
+    // Sand, a swing frame, a slide and a sandpit: a corner of the block given over to children.
+    b.box(0.96, 0.04, 0.96, 0, 0, 0, 0xd9c9a2);
+    b.box(0.9, 0.02, 0.9, 0, 0.04, 0, 0xe3d6b4);
+    for (const x of [-0.26, 0.26]) { b.box(0.03, 0.34, 0.03, x, 0.05, -0.3, 0x5d7f95); b.box(0.03, 0.34, 0.03, x, 0.05, -0.12, 0x5d7f95); }
+    b.box(0.58, 0.035, 0.035, 0, 0.38, -0.21, 0x5d7f95);
+    for (const x of [-0.14, 0.14]) { b.box(0.012, 0.2, 0.012, x, 0.18, -0.21, 0x8d9ba5); b.box(0.13, 0.03, 0.06, x, 0.16, -0.21, 0xd4693f); }
+    b.box(0.3, 0.26, 0.24, 0.22, 0.05, 0.24, 0x7fae6b);
+    b.taper(0.18, 0.02, 0.02, 0.22, 0.31, 0.24, 0xe0b23c, 4);
+    b.box(0.16, 0.05, 0.38, 0.06, 0.12, 0.34, 0x4f8fd0);
+    b.cyl(0.19, 0.06, -0.26, 0.04, 0.26, 0xc4a87a, 10);
+    b.cyl(0.03, 0.22, -0.34, 0.04, -0.3, 0x7d6245, 6);
+    b.taper(0.035, 0.16, 0.4, -0.34, 0.2, -0.3, 0x43815b, 8);
+  } else if (kind === T_SPORTS) {
+    // Two cells square: a marked pitch with goals, a little stand and a path along one edge.
+    b.box(1.96, 0.04, 1.96, 0.5, 0, 0.5, 0x5f9755);
+    b.box(1.7, 0.02, 1.5, 0.5, 0.04, 0.5, 0x6fae63);
+    b.box(1.62, 0.01, 0.03, 0.5, 0.06, 0.5, 0xe8ecdf);
+    for (const z of [-0.2, 1.2]) b.box(1.62, 0.01, 0.03, 0.5, 0.06, z, 0xe8ecdf);
+    for (const x of [-0.31, 1.31]) b.box(0.03, 0.01, 1.43, x, 0.06, 0.5, 0xe8ecdf);
+    for (const x of [-0.3, 1.3]) {
+      b.box(0.03, 0.22, 0.44, x, 0.06, 0.5, 0xe4e8e0);
+      b.box(0.03, 0.02, 0.44, x, 0.28, 0.5, 0xe4e8e0);
+    }
+    b.box(1.5, 0.12, 0.3, 0.5, 0.05, 1.3, 0xb9b4a6);
+    b.box(1.5, 0.12, 0.18, 0.5, 0.17, 1.38, 0xa8a294);
+    for (const x of [-0.35, 1.35]) { b.box(0.04, 0.6, 0.04, x, 0.06, 1.22, 0x7c8890); b.box(0.12, 0.06, 0.05, x, 0.66, 1.22, 0xf0efe4); }
+    b.box(1.96, 0.02, 0.26, 0.5, 0.05, -0.38, 0xd7cbaa);
+  } else if (kind === T_GARDEN) {
+    // Three cells square: lawns, a pond, winding paths and mature trees.
+    const rnd = mulberry32(0x9a71 + level);
+    b.box(2.96, 0.04, 2.96, 1, 0, 1, 0x63a05c);
+    b.box(2.7, 0.02, 2.7, 1, 0.04, 1, 0x72ad66);
+    b.box(2.7, 0.02, 0.3, 1, 0.06, 1, 0xd8c9a4);
+    b.box(0.3, 0.02, 2.7, 1, 0.06, 1, 0xd8c9a4);
+    b.cyl(0.58, 0.03, 1.6, 0.05, 1.75, 0x4e88b4, 18);
+    b.cyl(0.46, 0.02, 1.6, 0.07, 1.75, 0x5fa1cb, 18);
+    for (const [x, z] of [[0.1, 0.1], [1.9, 0.15], [0.15, 1.95], [2.05, 2.05], [0.5, 2.2], [2.2, 0.9]]) {
+      const h = 0.5 + rnd() * 0.35;
+      b.cyl(0.05, 0.3, x, 0.05, z, 0x7d6245, 7);
+      b.taper(0.06, 0.26, h, x, 0.3, z, rnd() < 0.5 ? 0x3d7a54 : 0x4c8a54, 9);
+    }
+    for (const [x, z, w, d] of [[1, 0.28, 0.32, 0.12], [1, 1.72, 0.32, 0.12], [0.28, 1, 0.12, 0.32], [1.72, 1, 0.12, 0.32]]) {
+      b.box(w, 0.07, d, x, 0.06, z, 0xa78058);
+      b.box(w, 0.13, 0.03, x, 0.13, z - d / 2, 0xa78058);
+    }
+    b.box(0.36, 0.5, 0.36, 2.25, 0.05, 1.7, 0xd6d2c4);
+    b.taper(0.3, 0.04, 0.22, 2.25, 0.55, 1.7, 0x8fae9c, 8);
   } else if (kind === T_SOLAR) {
     b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x8d9a82);
     for (const z of [-0.3, 0, 0.3]) {

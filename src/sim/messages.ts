@@ -5,6 +5,7 @@ import type { Policies, PolicyId } from '../policies';
 import type { Funding, FundingKey } from '../management';
 import type { CivicNeed } from '../constants';
 import type { PlainNet } from '../roads/network';
+import type { RailLine } from './transit';
 
 export interface TileReport {
   tile: number;
@@ -20,7 +21,7 @@ export interface TileReport {
 
 export interface Stats {
   incidents: { fires: number; crashes: number; crime: number; patrols: number; fireEngines: number; prevented: number; extinguished: number; damaged: number };
-  transport: { busLines: number; railLines: number; subwayLines: number; airports: number; riders: number; airPassengers: number; fareIncome: number };
+  transport: { busLines: number; railLines: number; intercityLines: number; subwayLines: number; airports: number; riders: number; airPassengers: number; railPassengers: number; fareIncome: number };
   treatedSewage: number;
   entries: number;
   funding: Funding;
@@ -56,6 +57,7 @@ export interface Stats {
 }
 
 export interface EditPayload {
+  railLines: RailLine[];
   kind: Uint8Array;
   net: PlainNet;
   serial: number;
@@ -84,7 +86,7 @@ export type WorkerToMain =
 export function emptyStats(money: number): Stats {
   return {
     incidents: { fires: 0, crashes: 0, crime: 0, patrols: 0, fireEngines: 0, prevented: 0, extinguished: 0, damaged: 0 },
-    transport: { busLines: 0, railLines: 0, subwayLines: 0, airports: 0, riders: 0, airPassengers: 0, fareIncome: 0 }, treatedSewage: 0, entries: 0,
+    transport: { busLines: 0, railLines: 0, intercityLines: 0, subwayLines: 0, airports: 0, riders: 0, airPassengers: 0, railPassengers: 0, fareIncome: 0 }, treatedSewage: 0, entries: 0,
     funding: defaultFunding(), policies: noPolicies(), policyExpense: 0, tollIncome: 0, debt: 0, taxIncome: 0, roadExpense: 0, serviceExpense: 0, loanExpense: 0, declining: 0,
     cityLevel: 0, happiness: 65, civic: { health: 0, education: 0, fire: 0, safety: 0, leisure: 0, waste: 0 },
     money, pop: 0, jobs: 0, cars: 0, commute: 0, demand: [0, 0, 0, 0], tick: 0, roadLength: 0, buildings: 0,

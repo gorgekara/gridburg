@@ -1,6 +1,6 @@
 import { roadHeight } from './structures';
 import { GRID, N_TILES } from '../constants';
-import { HALF_WIDTH } from './network';
+import { HALF_WIDTH, ROAD_FRONTAGE } from './network';
 import type { Network } from './network';
 
 /** How far from the edge of a road a tile can be and still use it: three rows deep, like CS zoning. */
@@ -33,7 +33,9 @@ export function rasterize(net: Network): Raster {
 
   for (const seg of net.segs.values()) {
     const hw = HALF_WIDTH[seg.kind];
-    const reach = hw + ACCESS_DEPTH;
+    // An expressway is a barrier, not an address: it paves its tiles but gives nothing frontage.
+    const frontage = ROAD_FRONTAGE[seg.kind] !== false;
+    const reach = hw + (frontage ? ACCESS_DEPTH : 0);
     for (let i = 0; i < seg.n; i++) {
       const x0 = seg.pts[i * 2], z0 = seg.pts[i * 2 + 1];
       const x1 = seg.pts[i * 2 + 2], z1 = seg.pts[i * 2 + 3];
@@ -54,7 +56,7 @@ export function rasterize(net: Network): Raster {
           const distance = seg.cum[i] + (seg.cum[i + 1] - seg.cum[i]) * u;
           if (seg.structure === 2 && Math.abs(roadHeight(seg, distance)) > 0.8) continue;
           if (d < hw + 0.42) cover[t] = 1;
-          if (seg.structure) continue;
+          if (seg.structure || !frontage) continue;
           if (d < reach && d < best[t]) {
             best[t] = d;
             accSeg[t] = seg.id;

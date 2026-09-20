@@ -55,30 +55,21 @@ export function vehicleGeometry(type: number): THREE.BufferGeometry {
   }
   const geometry = b.build(); geometry.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE); return geometry;
 }
-/** Head and tail lamps plus a soft beam on the road, drawn additively after dark. */
+/** Head and tail lamps, drawn additively after dark. The lamps light up; the road stays dark. */
 function lightGeometry(type: number): THREE.BufferGeometry {
   const model = type === 5 ? 1 : type === 6 ? 3 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   const pos: number[] = [], col: number[] = [];
-  const quad = (a: number[], b: number[], c: number[], d: number[], ca: number[], cb: number[]): void => {
-    // a,b share the near color; c,d the far one.
-    pos.push(...a, ...b, ...c, ...a, ...c, ...d);
-    col.push(...ca, ...cb, ...cb, ...ca, ...cb, ...ca);
-  };
   const lamp = (x: number, y: number, z: number, w: number, h: number, c: number[]): void => {
     const g = new THREE.BoxGeometry(w, h, 0.03).toNonIndexed(), p = g.getAttribute('position');
     for (let i = 0; i < p.count; i++) { pos.push(p.getX(i) + x, p.getY(i) + y, p.getZ(i) + z); col.push(...c); }
     g.dispose();
   };
-  const front = length / 2, warm = [1, 0.93, 0.72], red = [1, 0.12, 0.08], off = [0, 0, 0];
+  const front = length / 2, warm = [1, 0.93, 0.72], red = [1, 0.12, 0.08];
   for (const x of [-0.085, 0.085]) {
     lamp(x, 0.158, front + 0.012, 0.055, 0.04, warm);
     lamp(x, 0.158, -front - 0.012, 0.05, 0.04, red);
   }
-  // Beam: a widening fan in front that fades to black, which is invisible under additive blending.
-  const y = 0.1, beam = [0.15, 0.13, 0.09];
-  quad([-0.11, y, front], [0.11, y, front], [0.34, y, front + 1.5], [-0.34, y, front + 1.5], beam, off);
-  quad([-0.12, y, -front], [0.12, y, -front], [0.2, y, -front - 0.45], [-0.2, y, -front - 0.45], [0.16, 0.01, 0.005], off);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));

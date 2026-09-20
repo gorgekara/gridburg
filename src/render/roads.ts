@@ -3,7 +3,7 @@ import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, signalPhase } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, signalPhase } from '../roads/network';
 import type { Pose } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
@@ -163,7 +163,9 @@ export class RoadLayer {
       const from = trimA;
       const to = s.len - trimB;
       if (to - from < 0.5) continue;
-      const avenue = s.kind === KIND_AVENUE;
+      const avenue = s.kind === KIND_AVENUE, highway = s.kind === KIND_HIGHWAY, lane = s.kind === KIND_LANE;
+      const wide = avenue || highway;
+      const edge = highway ? 1.55 : 0.7, divider = highway ? 0.11 : 0.075;
       const strip = (s0: number, s1: number, halfW: number, offset: number, color: number): void => {
         const steps = Math.max(1, Math.ceil((s1 - s0) / 0.35));
         const arr = new Float32Array((steps + 1) * 2);
@@ -179,14 +181,22 @@ export class RoadLayer {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);
         }
-        if (avenue) for (let d = from; d + 0.5 < to; d += 1.1) { strip(d, d + 0.5, 0.02, 0.47, WHITE); strip(d, d + 0.5, 0.02, -0.47, WHITE); }
-      } else if (avenue) {
-        strip(from, to, 0.025, -0.075, LINE);
-        strip(from, to, 0.025, 0.075, LINE);
+        if (wide) for (let d = from; d + 0.5 < to; d += 1.1) { strip(d, d + 0.5, 0.02, edge - 0.23, WHITE); strip(d, d + 0.5, 0.02, -(edge - 0.23), WHITE); }
+      } else if (wide) {
+        // A divider down the middle, dashed lane lines either side, and on an expressway a hard shoulder.
+        strip(from, to, 0.025, -divider, LINE);
+        strip(from, to, 0.025, divider, LINE);
         for (let d = from; d + 0.5 < to; d += 1.1) {
-          strip(d, d + 0.5, 0.02, 0.7, WHITE);
-          strip(d, d + 0.5, 0.02, -0.7, WHITE);
+          strip(d, d + 0.5, 0.02, edge, WHITE);
+          strip(d, d + 0.5, 0.02, -edge, WHITE);
         }
+        if (highway) {
+          strip(from, to, 0.022, HALF_WIDTH[KIND_HIGHWAY] - 0.12, WHITE);
+          strip(from, to, 0.022, -(HALF_WIDTH[KIND_HIGHWAY] - 0.12), WHITE);
+        }
+      } else if (lane) {
+        // A lane is a single shared carriageway: no centre line, just a worn edge.
+        for (let d = from; d + 0.2 < to; d += 1.4) strip(d, d + 0.2, 0.016, 0, DASH);
       } else {
         for (let d = from; d + 0.3 < to; d += 0.8) strip(d, d + 0.3, 0.022, 0, DASH);
       }

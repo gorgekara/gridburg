@@ -5,6 +5,8 @@ import { daylight, DAY_SECONDS } from './render/daylight';
 import { IncidentLayer } from './render/incidents';
 import { TransportLayer } from './render/transport';
 import { SubwayLayer } from './render/subway';
+import { TransitLineLayer } from './render/transitLines';
+import { AlleyLayer } from './render/alleys';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -38,9 +40,11 @@ const overlay = new OverlayLayer();
 const cars = new CarLayer();
 const transport = new TransportLayer();
 const subway = new SubwayLayer();
+const transitLines = new TransitLineLayer();
+const alleys = new AlleyLayer();
 const incidents = new IncidentLayer();
 let showTraffic = false;
-scene.add(structures.group, landscape.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
+scene.add(structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -109,32 +113,41 @@ game.onNotice = (message) => hud.toast(message);
 
 const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].includes(t); };
 // Reaching for a service shows what the city already covers, so the gap is visible before placing.
+// A transport tool in hand opens that mode's route map, the way the metro tool opens the tunnels.
+const showTransitLines = (t: string): void => {
+  transitLines.setMode(t === 'bus' ? 'bus' : t === 'station' || t === 'railline' ? 'rail' : null);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+};
 const showCoverage = (): void => {
   const k = SERVICE_TOOL[input.tool];
   overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
 };
-input.onToolChange = (t) => { showCoverage(); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+game.onTerrain = () => { alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   showCoverage();
+  alleys.rebuild(game.kind, game.level, game.raster);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
   buildings.rebuild(game.kind, game.level, game.raster);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
 };
 game.onState = () => {
+  alleys.rebuild(game.kind, game.level, game.raster);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
   buildings.rebuild(game.kind, game.level, game.raster);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
@@ -258,6 +271,7 @@ renderer.setAnimationLoop((now: number) => {
   incidents.update(game.simTime);
   transport.update(game.simTime);
   subway.update(game.simTime);
+  transitLines.update(game.simTime);
   cars.update(game.carsPrev, game.carsNext, alpha, game.carIdsPrev, game.carIdsNext, game.carHeights, game.prevCarHeights, game.carPitch);
   buildings.update(now / 1000);
   overlay.update(now / 1000);

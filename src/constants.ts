@@ -27,9 +27,14 @@ export const T_STATION = 20;
 export const T_AIRPORT = 21;
 export const T_TREATMENT = 22;
 export const T_SUBWAY = 23;
+export const T_PLAYGROUND = 24;
+export const T_SPORTS = 25;
+export const T_GARDEN = 26;
 export const OFFICE_UNLOCK = 3;
 export const ENTRY_UNLOCK = 2;
 export const COST_ENTRY = 3500;
+export const COST_RAIL_LINE = 2500;
+export const COST_INTERCITY_LINE = 4500;
 export type CivicNeed = 'health' | 'education' | 'fire' | 'safety' | 'leisure' | 'waste';
 export const CIVIC_LABELS: Record<CivicNeed, string> = {
   health: 'Healthcare', education: 'Education', fire: 'Fire protection', safety: 'Public safety', leisure: 'Recreation', waste: 'Waste collection',
@@ -42,7 +47,13 @@ export const COST_ZONE = 5;
 export const COST_LIGHT = 150;
 export const COST_ROUNDABOUT = 900;
 export const START_MONEY = 14000;
-export const ROAD_UPKEEP = 0.015; // per unit length per second; avenues cost triple, for their three tiles
+export const COST_LANE = 14;
+export const COST_HIGHWAY = 430;
+export const ROAD_UPKEEP = 0.015; // per unit length per second, scaled per kind for the tiles it takes
+/** Build cost per unit length, indexed by road kind. */
+export const ROAD_COST = [COST_ROAD, COST_AVENUE, COST_LANE, COST_HIGHWAY];
+/** Upkeep multiplier per road kind: wider roads cost more to keep. */
+export const ROAD_UPKEEP_FACTOR = [1, 3, 0.6, 4.5];
 
 export interface ServiceSpec {
   name: string;
@@ -81,6 +92,10 @@ Object.assign(SERVICES, {
   [T_POLICE]: civic('Police station', 2200, 1.6, 2, 'safety', 1000, 18),
   [T_RECYCLING]: { ...civic('Recycling center', 2600, 1.8, 2, 'waste', 1800, 30), pollution: 0.6 },
   [T_UNIVERSITY]: civic('University', 6500, 3.5, 4, 'education', 2400, 26),
+  // Recreation grows with the city: a corner playground, then a sports field, then a proper park.
+  [T_PLAYGROUND]: civic('Playground', 900, 0.6, 1, 'leisure', 800, 12),
+  [T_SPORTS]: { ...civic('Sports field', 2600, 1.8, 3, 'leisure', 2000, 18), footprint: [2, 2] as [number, number] },
+  [T_GARDEN]: { ...civic('City park', 6000, 3.2, 4, 'leisure', 4000, 26), footprint: [3, 3] as [number, number] },
   [T_SOLAR]: { name: 'Solar farm', cost: 4800, upkeep: 1.5, unlock: 3, power: 1800, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });
 

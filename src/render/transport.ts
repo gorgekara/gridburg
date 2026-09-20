@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { GRID, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT } from '../constants';
 import { transitNetwork } from '../sim/transit';
-import { railPath, railTrack, PLATFORM_LENGTH } from '../roads/rail';
+import type { RailLine } from '../sim/transit';
+import { railPath, railTrack, intercityTrack, PLATFORM_LENGTH } from '../roads/rail';
 import type { TrackPoint } from '../roads/rail';
 import type { Raster } from '../roads/raster';
 import { Network, HALF_WIDTH } from '../roads/network';
@@ -211,13 +212,13 @@ export class TransportLayer {
     this.group.add(this.tracks, this.moving);
   }
   reset(): void { this.signature = ''; this.inputs = -1; }
-  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network): void {
+  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, railLines: readonly RailLine[] = []): void {
     // Stations rarely change, but this runs on every state update, so skip the costly
     // route search unless the network or a transport tile actually changed.
     const inputs = transportSignature(kind, flags, raster, net);
     if (inputs === this.inputs) return;
     this.inputs = inputs;
-    const transit = transitNetwork(kind, i => flags[i] === 0 && raster.accSeg[i] >= 0, (a, b) => kind[a] === T_STATION && railPath(net, raster, a, b).length > 1);
+    const transit = transitNetwork(kind, i => flags[i] === 0 && raster.accSeg[i] >= 0, (a, b) => kind[a] === T_STATION && railPath(net, raster, a, b).length > 1, railLines);
     const signature = `${net.version}:` + JSON.stringify(transit);
     if (signature === this.signature) return;
     this.signature = signature;
@@ -227,6 +228,29 @@ export class TransportLayer {
     const rail = transit.lines.filter(line => line.mode === 'rail');
     const trainMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.55 });
     const endCar = rail.length ? carGeometry(true, false) : null, midCar = rail.length ? carGeometry(false, true) : null;
+    let endCarOut: THREE.BufferGeometry | null = null, midCarOut: THREE.BufferGeometry | null = null;
+    // A line out of town runs from its station to the nearest city entrance and keeps going off the map.
+    const outbound = transit.intercity.map(station => ({ station, track: intercityTrack(net, raster, station) })).filter(o => o.track.length > 1);
+    for (const [n, out] of outbound.entries()) {
+      this.viaduct(solid, out.track, net);
+      this.terminus(solid, out.track, false, net, bridged.has(out.station) ? -1 : out.station);
+      bridged.add(out.station);
+      if (!endCarOut) { endCarOut = carGeometry(true, false); midCarOut = carGeometry(false, true); }
+      const cars = [endCarOut, midCarOut!, endCarOut].map((g, k) => {
+        const mesh = new THREE.Mesh(g, trainMat);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.rotation.order = 'YXZ'; mesh.userData.flip = k === 0;
+        this.moving.add(mesh);
+        return mesh;
+      });
+      const length = out.track.at(-1)!.s;
+      let a0 = TRAIN_HALF + 0.08, a1 = length - TRAIN_HALF - 0.08;
+      if (a1 < a0) a0 = a1 = length / 2;
+      this.trains.push({
+        cars, d0: a0, d1: a1, travel: runTime(a1 - a0), phase: (n * 5.7 + 3) % 20,
+        px: Float32Array.from(out.track, p => p.x - half), pz: Float32Array.from(out.track, p => p.z - half), cum: Float32Array.from(out.track, p => p.s),
+      });
+    }
     for (const [n, line] of rail.entries()) {
       const track = railTrack(net, raster, line.a, line.b);
       if (track.length < 2) continue;
@@ -250,7 +274,7 @@ export class TransportLayer {
         px: Float32Array.from(track, p => p.x - half), pz: Float32Array.from(track, p => p.z - half), cum: Float32Array.from(track, p => p.s),
       });
     }
-    if (!this.trains.length) { endCar?.dispose(); midCar?.dispose(); trainMat.dispose(); }
+    if (!this.trains.length) { endCar?.dispose(); midCar?.dispose(); endCarOut?.dispose(); midCarOut?.dispose(); trainMat.dispose(); }
     this.tracks.geometry.dispose(); this.tracks.geometry = solid.build(-half, -half);
     for (const i of transit.airports) {
       const plane = new Builder(1);
