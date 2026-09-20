@@ -23,6 +23,11 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   charges the difference; keep clicking and it wraps back to a lane.
 - **Alleys.** A building standing behind the row that fronts the street gets a service alley out to the
   curb, threaded between its neighbours. Fire engines and patrol cars answer calls there as usual.
+- **Dry land only.** The river is drawn a little wider than the tile mask that decides what is water, so
+  the strip either side counts as shore: nothing may be zoned or built there and no empty lot fills in.
+  Waterside works are the exception — a pump, an outlet or a treatment plant belongs on the bank.
+- **City messages.** Problems gather behind the bell in the top-right corner with a count; each new one
+  pops out for a few seconds, and clicking the bell lists everything outstanding.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.
@@ -51,7 +56,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 
 Grow from Settlement to Metropolis through seven permanent city levels, at 0, 120, 400,
 900, 1,800, 3,500 and 6,500 residents. Each new milestone grants money once and unlocks
-services. Click the city progress card for the roadmap and live service coverage.
+services. The level chip in the top-left corner carries your level and happiness; click it for the
+roadmap and live service coverage.
 
 Eight new buildings have distinct models and ongoing costs: neighborhood parks, medical
 clinics, elementary schools, fire stations, police stations, recycling centers, universities,

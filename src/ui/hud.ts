@@ -137,6 +137,7 @@ export class Hud {
   private inspector = el('section', 'inspector');
   private inspectorBody = el('div');
   private cityTitle = el('span', 'city-title');
+  private cityLevel = el('span', 'val');
   private cityNext = el('span', 'city-next');
   private cityFill = el('div', 'city-fill');
   private happiness = el('span', 'happiness');
@@ -175,7 +176,14 @@ export class Hud {
   private taxInput = el('input');
   private toastEl = el('div', 'toast');
   private hint = el('div', 'hint');
-  private alerts = el('div', 'alerts');
+  private messagePanel = el('div', 'popover messages');
+  private messageList = el('div', 'message-list');
+  private messagePop = el('div', 'msgpop');
+  private messageDot = el('span', 'dot');
+  private messageBtn: HTMLButtonElement = el('button');
+  /** What the city is already complaining about, so only genuinely new trouble pops out. */
+  private showing = new Set<string>();
+  private popTimer = 0;
   private costEl = el('div', 'cost');
   private help: HTMLElement;
   private about = el('div', 'help about');
@@ -217,18 +225,13 @@ export class Hud {
     dismiss.addEventListener('click', () => actions.closeInspection());
     this.inspector.append(dismiss, this.inspectorBody);
     root.append(this.inspector);
-    const city = el('button', 'city-progress');
-    city.title = 'View milestones, unlocks and neighborhood services';
-    const cityHeading = el('div', 'city-heading');
-    cityHeading.append(icon('city', 20), this.cityTitle, this.happiness);
     const progress = el('div', 'city-track');
     progress.append(this.cityFill);
-    city.append(cityHeading, progress, this.cityNext);
     const overview = el('section', 'city-overview');
     overview.setAttribute('aria-label', 'City progress and services');
     const close = el('button', 'overview-close', 'Close ×');
     close.addEventListener('click', () => overview.classList.remove('open'));
-    overview.append(close, el('h2', undefined, 'Your city, growing up'), el('p', 'pnote', 'Reach population milestones to earn grants and unlock buildings. Earned levels are permanent.'));
+    overview.append(close, el('h2', undefined, 'Your city, growing up'), this.cityTitle, progress, this.cityNext, el('p', 'pnote', 'Reach population milestones to earn grants and unlock buildings. Earned levels are permanent.'));
     const serviceGrid = el('div', 'civic-grid');
     for (const [key, label] of Object.entries(CIVIC_LABELS)) {
       const meter = el('div', 'civic-stat');
@@ -245,8 +248,8 @@ export class Hud {
       this.milestoneRows.push(row);
       overview.append(row);
     }
-    city.addEventListener('click', () => overview.classList.toggle('open'));
-    root.append(city, overview);
+    const openOverview = (): void => { overview.classList.toggle('open'); };
+    root.append(overview);
     // ---- top-left: headline numbers as icon chips ------------------------------------------
     const chips = el('div', 'chips');
     const chip = (ic: string, title: string, ...kids: (HTMLElement | SVGElement)[]): HTMLElement => {
@@ -258,11 +261,16 @@ export class Hud {
     const moneyChip = el('button', 'chip money');
     moneyChip.title = 'Budget and taxes';
     moneyChip.append(icon('money', 17), this.money, this.income, icon('caret', 12));
+    const levelChip = el('button', 'chip level');
+    levelChip.title = 'City level: milestones, unlocks and service coverage';
+    levelChip.append(icon('city', 17), this.cityLevel, this.happiness);
+    levelChip.addEventListener('click', openOverview);
     chips.append(
       moneyChip,
       chip('people', 'Population', this.pop),
       chip('jobs', 'Jobs', this.jobs),
       chip('car', 'Average commute, and cars on the road', this.commute, this.cars),
+      levelChip,
     );
 
     // Budget popover: the tax slider lives here instead of on the bar.
@@ -365,10 +373,18 @@ export class Hud {
     const trafficBtn = iconBtn('car', 'Traffic congestion overlay', () => { const on = actions.toggleTraffic(); trafficBtn.classList.toggle('active', on); trafficBtn.setAttribute('aria-pressed', String(on)); });
     trafficBtn.setAttribute('aria-pressed', 'false');
     const polBtn = iconBtn('smog', 'Pollution view (P)', () => polBtn.classList.toggle('active', actions.togglePollution()));
-    const menuBtn = iconBtn('menu', 'Menu', () => { budget.classList.remove('open'); policyPanel.classList.remove('open'); menu.classList.toggle('open'); });
+    this.messagePanel.append(el('div', 'ptitle', 'City messages'), this.messageList);
+    const menuBtn = iconBtn('menu', 'Menu', () => { budget.classList.remove('open'); policyPanel.classList.remove('open'); this.messagePanel.classList.remove('open'); menu.classList.toggle('open'); });
+    const messageBtn = iconBtn('message', 'City messages', () => {
+      budget.classList.remove('open'); policyPanel.classList.remove('open'); menu.classList.remove('open');
+      this.messagePop.classList.remove('show');
+      this.messagePanel.classList.toggle('open');
+    });
+    messageBtn.append(this.messageDot);
+    this.messageBtn = messageBtn;
     const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
     right.append(
-      trafficBtn, polBtn, policyBtn,
+      messageBtn, trafficBtn, polBtn, policyBtn,
       iconBtn('link', 'Copy a link to this city', actions.share),
       iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
       menuBtn,
@@ -379,6 +395,7 @@ export class Hud {
       if (!budget.contains(t) && !moneyChip.contains(t)) budget.classList.remove('open');
       if (!menu.contains(t) && !menuBtn.contains(t)) menu.classList.remove('open');
       if (!policyPanel.contains(t) && !policyBtn.contains(t)) policyPanel.classList.remove('open');
+      if (!this.messagePanel.contains(t) && !messageBtn.contains(t)) this.messagePanel.classList.remove('open');
     });
 
     // ---- the bottom bar: city readouts, the build categories and the clock, all in one strip ------
@@ -417,7 +434,7 @@ export class Hud {
     }
 
     this.polBtn = polBtn;
-    root.append(chips, budget, policyPanel, right, menu, this.alerts, this.about);
+    root.append(chips, budget, policyPanel, this.messagePanel, right, menu, this.messagePop, this.about);
 
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
@@ -486,6 +503,8 @@ export class Hud {
         menu.classList.remove('open');
         budget.classList.remove('open');
         policyPanel.classList.remove('open');
+        this.messagePanel.classList.remove('open');
+        this.messagePop.classList.remove('show');
         this.about.classList.remove('open');
         actions.closeInspection();
       }
@@ -534,7 +553,8 @@ export class Hud {
           <li><b>Inspect (I)</b> — click any building to see its local coverage and growth blockers. Amber markers warn of a service downgrade after 180 simulation seconds</li>
           <li><b>Budget</b> — click your treasury to adjust service funding, review expenses or take a repayable recovery loan. Private development continues while the city is in debt</li>
           <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
-          <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. Click the city progress card to see your next milestone and service coverage</li>
+          <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
+          <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and the count tells you how much is outstanding</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
           <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>
@@ -692,7 +712,10 @@ export class Hud {
     this.previousLevel = s.cityLevel;
     this.previousTick = s.tick;
     this.cityTitle.textContent = `Level ${s.cityLevel + 1} · ${milestone.name}`;
-    this.happiness.textContent = `${s.happiness}% happy`;
+    this.cityLevel.textContent = `Lv ${s.cityLevel + 1}`;
+    this.cityLevel.title = milestone.name;
+    this.happiness.textContent = `${s.happiness}%`;
+    this.happiness.title = `${s.happiness}% of residents are happy`;
     this.happiness.classList.toggle('neg', s.happiness < 50);
     const fraction = next ? Math.max(0, Math.min(1, (s.pop - milestone.population) / (next.population - milestone.population))) : 1;
     this.cityFill.style.width = `${fraction * 100}%`;
@@ -772,7 +795,28 @@ export class Hud {
     if (s.cityLevel >= 1 && s.civic.health < 35) a.push('Homes need healthcare: place a clinic near residents');
     if (s.cityLevel >= 1 && s.civic.education < 35) a.push('Education limits growth: place schools near homes');
     if (s.cityLevel >= 2 && s.civic.waste < 50) a.push('Waste coverage is low: build a recycling center');
-    this.alerts.replaceChildren(...a.slice(0, 4).map((t) => el('div', 'alert', t)));
+    this.setMessages(a);
+  }
+
+  /**
+   * The city's standing complaints live in the message panel behind the bell. Anything that has just
+   * started going wrong also pops out for a few seconds, so trouble is noticed without the screen
+   * filling up with red boxes that never leave.
+   */
+  private setMessages(messages: string[]): void {
+    const fresh = messages.filter(m => !this.showing.has(m));
+    this.showing = new Set(messages);
+    this.messageList.replaceChildren(...(messages.length
+      ? messages.map(t => el('div', 'message', t))
+      : [el('p', 'pnote', 'Nothing needs your attention.')]));
+    this.messageDot.textContent = messages.length ? String(messages.length) : '';
+    this.messageDot.classList.toggle('on', messages.length > 0);
+    this.messageBtn.classList.toggle('attention', messages.length > 0);
+    if (!fresh.length) return;
+    this.messagePop.replaceChildren(...fresh.slice(0, 3).map(t => el('div', 'message', t)));
+    this.messagePop.classList.add('show');
+    clearTimeout(this.popTimer);
+    this.popTimer = window.setTimeout(() => this.messagePop.classList.remove('show'), 5200);
   }
 
   private toastTimer = 0;

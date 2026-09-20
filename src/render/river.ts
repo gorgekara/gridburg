@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WATER_EDGE } from '../terrain';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { riverSamples } from './landscape';
@@ -123,7 +124,7 @@ export class RiverLayer {
     elevate(this.bank.geometry, 0.006);
 
     const wb = new MeshBuilder();
-    this.range = wb.ribbon(pts, count, widths.map((w) => w + 0.4), 0.014, WATER.getHex());
+    this.range = wb.ribbon(pts, count, widths.map((w) => w + WATER_EDGE), 0.014, WATER.getHex());
     this.water.geometry.dispose();
     this.water.geometry = wb.build();
     elevate(this.water.geometry, 0.014);

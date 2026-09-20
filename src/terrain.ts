@@ -2,9 +2,19 @@ import { GRID, N_TILES, idx, inBounds, mulberry32 } from './constants';
 
 export interface RiverPoint { x: number; z: number; w: number } // world tile coords (0..GRID), half width
 
+/** How far past the tile mask the river is actually drawn; RiverLayer uses the same margin. */
+export const WATER_EDGE = 0.4;
+
 export interface Terrain {
   seed: number;
   water: Uint8Array; // 1 where the tile is river
+  /**
+   * 1 where a dry tile still lies under the water as it is drawn. The mask above counts a tile as
+   * river only when its centre is inside the channel, while the ribbon reaches WATER_EDGE further
+   * and its bank blends further still, so a strip either side looks wet without being river.
+   * Nothing may be built there, or the buildings stand in the water.
+   */
+  shore: Uint8Array;
   /** Index into `river` of the nearest river sample for water tiles, -1 on land. Larger = further downstream. */
   flow: Int16Array;
   river: RiverPoint[];
@@ -63,6 +73,20 @@ export function generateTerrain(seed: number): Terrain {
     }
   }
 
+  // Anything whose tile would sit under the drawn water counts as shore: the tile's near edge has to
+  // clear the ribbon, so its centre must be more than half a tile beyond it.
+  const shore = new Uint8Array(N_TILES);
+  for (const p of river) {
+    const R = p.w + WATER_EDGE + 0.5;
+    for (let z = Math.floor(p.z - R - 1); z <= Math.ceil(p.z + R + 1); z++) {
+      for (let x = Math.floor(p.x - R - 1); x <= Math.ceil(p.x + R + 1); x++) {
+        if (!inBounds(x, z)) continue;
+        const i = idx(x, z);
+        if (!water[i] && Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z) < R) shore[i] = 1;
+      }
+    }
+  }
+
   // Highway entry on an edge the river does not cross, on the roomier side of it.
   const mid = GRID / 2;
   const lowSide = base > mid; // more land on the low-coordinate side
@@ -91,7 +115,7 @@ export function generateTerrain(seed: number): Terrain {
     ? { x: edge, z: lane, dx: dir, dz: 0 }
     : { x: lane, z: edge, dx: 0, dz: dir };
 
-  return { seed, water, flow, river, entry };
+  return { seed, water, shore, flow, river, entry };
 }
 
 /** Is any of the 4 neighbors of tile (x,z) water? */

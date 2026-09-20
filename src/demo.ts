@@ -138,7 +138,7 @@ export function demoCity(expanded = false): SaveData {
   // Zoning from the rasterized network.
   const ras = rasterize(net);
   const kind = new Uint8Array(N_TILES);
-  const free = (i: number): boolean => !terrain.water[i] && !ras.cover[i] && ras.accSeg[i] >= 0;
+  const free = (i: number, bank = false): boolean => !terrain.water[i] && (bank || !terrain.shore[i]) && !ras.cover[i] && ras.accSeg[i] >= 0;
   for (let i = 0; i < N_TILES; i++) {
     if (!free(i)) continue;
     const px = (i % GRID) + 0.5 - e.x, pz = ((i / GRID) | 0) + 0.5 - e.z;
@@ -161,7 +161,7 @@ export function demoCity(expanded = false): SaveData {
   }
 
   // Utilities.
-  const place = (near: { x: number; z: number }, k: number, ok: (i: number, x: number, z: number) => boolean): boolean => {
+  const place = (near: { x: number; z: number }, k: number, ok: (i: number, x: number, z: number) => boolean, bank = false): boolean => {
     for (let r = 0; r < 9; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {
@@ -169,7 +169,7 @@ export function demoCity(expanded = false): SaveData {
           const x = Math.floor(near.x) + dx, z = Math.floor(near.z) + dz;
           if (!inBounds(x, z)) continue;
           const i = idx(x, z);
-          if (free(i) && kind[i] < T_COAL && ok(i, x, z)) { kind[i] = k; return true; }
+          if (free(i, bank) && kind[i] < T_COAL && ok(i, x, z)) { kind[i] = k; return true; }
         }
       }
     }
@@ -189,19 +189,19 @@ export function demoCity(expanded = false): SaveData {
   let up = -1, down = -1, upFlow = 1e9, downFlow = -1;
   for (let i = 0; i < N_TILES; i++) {
     const x = i % GRID, z = (i / GRID) | 0;
-    if (!free(i) || !touchesWater(terrain, x, z)) continue;
+    if (!free(i, true) || !touchesWater(terrain, x, z)) continue;
     const f = adjacentFlow(terrain, x, z);
     if (f < upFlow) { upFlow = f; up = i; }
     if (f > downFlow) { downFlow = f; down = i; }
   }
   if (up >= 0) {
     kind[up] = T_PUMP;
-    place({ x: up % GRID, z: (up / GRID) | 0 }, T_PUMP, (_i, x, z) => touchesWater(terrain, x, z) && adjacentFlow(terrain, x, z) < upFlow + 12);
+    place({ x: up % GRID, z: (up / GRID) | 0 }, T_PUMP, (_i, x, z) => touchesWater(terrain, x, z) && adjacentFlow(terrain, x, z) < upFlow + 12, true);
   }
   if (down >= 0 && down !== up) {
     kind[down] = T_OUTLET;
     // A second outlet right beside the first so sewage capacity keeps up.
-    place({ x: down % GRID, z: (down / GRID) | 0 }, T_OUTLET, (_i, x, z) => touchesWater(terrain, x, z) && adjacentFlow(terrain, x, z) > upFlow + 20);
+    place({ x: down % GRID, z: (down / GRID) | 0 }, T_OUTLET, (_i, x, z) => touchesWater(terrain, x, z) && adjacentFlow(terrain, x, z) > upFlow + 20, true);
   }
 
   // Neighborhood centers demonstrate service coverage on both sides of the avenue.
@@ -226,7 +226,7 @@ export function demoCity(expanded = false): SaveData {
       const choices = Array.from({ length: N_TILES }, (_, i) => i).sort((a, b) => Math.hypot(a % GRID - near.x, Math.floor(a / GRID) - near.z) - Math.hypot(b % GRID - near.x, Math.floor(b / GRID) - near.z));
       for (const i of choices) {
         const cells = footprint(i, k);
-        if (!cells.length || ras.accSeg[i] < 0 || cells.some(t => terrain.water[t] || ras.cover[t] || SERVICES[kind[t]] || owners[t] >= 0)) continue;
+        if (!cells.length || ras.accSeg[i] < 0 || cells.some(t => terrain.water[t] || terrain.shore[t] || ras.cover[t] || SERVICES[kind[t]] || owners[t] >= 0)) continue;
         for (const t of cells) kind[t] = 0;
         kind[i] = k; return;
       }

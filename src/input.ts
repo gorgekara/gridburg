@@ -638,7 +638,7 @@ export class Input {
     const spec = SERVICES[k];
     if (g.stats.cityLevel < (spec.unlock ?? 0)) return `Unlocks at ${MILESTONES[spec.unlock!].name} (${MILESTONES[spec.unlock!].population} residents)`;
     const cells = footprint(t, k);
-    if (!cells.length || cells.some(i => !g.buildable(i))) return 'Cannot build on water or roads';
+    if (!cells.length || cells.some(i => !g.buildable(i, spec.needsWater))) return 'Cannot build on water or roads';
     if (spec.footprint && cells.some(i => g.kind[i] !== T_EMPTY)) return 'Clear the whole building footprint first';
     if (isService(g.kind[t])) return 'There is already a service building here';
     if (g.raster.accSeg[t] < 0) return 'Too far from a road';

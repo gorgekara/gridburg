@@ -62,6 +62,7 @@ const I: Record<string, string> = {
   playground: '<path d="M4 21V9m6 12V9M3 9h8M5 6.5 9 4M5 4l4 2.5"/><path d="M15 21V12h6l-3-4z"/><path d="M15 16h6"/>',
   sports: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M12 5v14M2.5 9.5H6v5H2.5M21.5 9.5H18v5h3.5"/><circle cx="12" cy="12" r="2.6"/>',
   garden: '<path d="M4 20h16"/><path d="M8 20c0-3.5 1.6-6 4-6s4 2.5 4 6"/><circle cx="12" cy="8.5" r="4.5"/><path d="M3 20c0-2 1-3.5 2.5-3.5M21 20c0-2-1-3.5-2.5-3.5"/>',
+  message: '<path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.3A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14.5h4"/>',
   policy: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5"/><path d="m9 13 1.6 1.6L14 11"/><path d="M9 18h6"/>',
   about: '<circle cx="12" cy="12" r="9"/><path d="M12 10.5V17"/><circle cx="12" cy="7.4" r="0.9" fill="currentColor"/>',
 };

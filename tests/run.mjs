@@ -19,7 +19,7 @@ const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGH
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
-const { generateTerrain } = await import('../src/terrain.ts');
+const { generateTerrain, WATER_EDGE } = await import('../src/terrain.ts');
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
 const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
@@ -491,6 +491,33 @@ test('external traffic drives in from off the map without stalling the entrance'
   assert.ok(inCity > offMap, 'Most traffic still belongs to the city itself');
   assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
   console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
+});
+test('nothing but waterside works stands where the river is drawn', () => {
+  const city = demoCity(true), terrain = generateTerrain(city.seed);
+  // How far a tile centre is inside the water as it is drawn: the mask radius plus the ribbon margin.
+  const wetness = (i) => {
+    const x = i % C.GRID + 0.5, z = Math.floor(i / C.GRID) + 0.5;
+    let deepest = -Infinity;
+    for (const p of terrain.river) deepest = Math.max(deepest, p.w + WATER_EDGE - Math.hypot(x - p.x, z - p.z));
+    return deepest;
+  };
+  let wet = 0;
+  for (let i = 0; i < C.N_TILES; i++) {
+    const k = city.kind[i];
+    if (!k || C.SERVICES[k]?.needsWater) continue; // a pump or an outlet belongs on the bank
+    if (wetness(i) > -0.5) wet++;
+  }
+  assert.equal(wet, 0, `${wet} demo buildings stand in the drawn river`);
+  assert.ok(terrain.shore.some(v => v), 'The seed has a shore strip to protect');
+  assert.ok(!terrain.shore.some((v, i) => v && terrain.water[i]), 'Shore marks dry tiles only');
+
+  // The rule holds for the player too: no zoning on the shore, but the bank still takes a pump.
+  const shore = terrain.shore.findIndex((v, i) => v && !rasterize(Network.fromPlain(city.net)).cover[i]);
+  assert.ok(shore >= 0);
+  const game = { terrain, raster: rasterize(Network.fromPlain(city.net)), owners: new Int32Array(C.N_TILES).fill(-1) };
+  const buildable = (i, bank) => !game.terrain.water[i] && !game.raster.cover[i] && game.owners[i] < 0 && (bank || !game.terrain.shore[i]);
+  assert.equal(buildable(shore, false), false);
+  assert.equal(buildable(shore, true), true);
 });
 test('railways connect themselves, and a station by an entrance runs out of town', () => {
   const city = demoCity(true);

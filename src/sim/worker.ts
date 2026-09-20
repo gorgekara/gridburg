@@ -985,7 +985,8 @@ function grow(): void {
       if (l > 0 && Math.random() < 0.08) { level[i] = l - 1; age[i] = 0; }
       continue;
     }
-    const d = demand[k - T_RES];
+    // An empty lot the water reaches never builds on: nothing should stand in the river.
+    const d = terrain.shore[i] && l === 0 ? 0 : demand[k - T_RES];
     const p = pollution[i];
     const isRes = k === T_RES;
     if (l === 0) {

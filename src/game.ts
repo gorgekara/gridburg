@@ -121,8 +121,14 @@ export class Game {
   }
 
   /** Can something be placed on this tile at all? */
-  buildable(i: number): boolean {
-    return !this.terrain.water[i] && !this.raster.cover[i] && this.owners[i] < 0;
+  /**
+   * Dry, unpaved, unclaimed ground. The shore strip counts as wet: it is drawn under the water even
+   * though the tile mask calls it land, so nothing may stand there. Waterside works are the exception —
+   * a pump or an outlet belongs on the bank.
+   */
+  buildable(i: number, bank = false): boolean {
+    if (this.terrain.water[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
+    return bank || !this.terrain.shore[i];
   }
 
   /** Change a tile's kind. Returns false if unchanged. */
