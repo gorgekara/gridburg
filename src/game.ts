@@ -1,10 +1,13 @@
 import type { IncidentSnapshot, IncidentView } from './sim/incidents';
 import { footprint, siteOwners } from './sites';
 import { defaultFunding } from './management';
+import { noPolicies } from './policies';
+import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
 import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
 import { Network, KIND_AVENUE } from './roads/network';
+import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
 import type { Raster } from './roads/raster';
 import { generateTerrain } from './terrain';
@@ -175,6 +178,7 @@ export class Game {
     this.seed = d.seed;
     this.terrain = generateTerrain(d.seed);
     this.net = Network.fromPlain(d.net);
+    ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
     this.kind.set(d.kind);
     this.level.set(d.level);
@@ -188,6 +192,7 @@ export class Game {
     this.stats.tick = d.tick;
     this.cityTime = d.tick;
     this.stats.funding = { ...defaultFunding(), ...d.funding };
+    this.stats.policies = { ...noPolicies(), ...d.policies };
     this.stats.debt = d.debt ?? 0;
     this.stats.cityLevel = d.cityLevel ?? levelForPopulation(d.kind.reduce((n, k, i) => n + (k === T_RES ? RES_POP[d.level[i]] : 0), 0));
     this.pendingSpent = 0;
@@ -197,7 +202,7 @@ export class Game {
     this.carsPrev = new Float32Array(MAX_CARS * 4);
     this.carsNext = new Float32Array(MAX_CARS * 4);
     const payload = this.payload();
-    this.send({ type: 'load', incidents: d.incidents, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
+    this.send({ type: 'load', incidents: d.incidents, policies: this.stats.policies, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
     this.onTerrain?.();
     this.onEdit?.();
   }
@@ -205,7 +210,7 @@ export class Game {
   snapshot(): SaveData {
     return {
       incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(),
-      funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
+      funding: this.stats.funding, policies: this.stats.policies, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
   }
 
@@ -222,6 +227,12 @@ export class Game {
   setFunding(key: FundingKey, value: number): void {
     this.flush();
     this.send({ type: 'funding', key, value });
+  }
+
+  setPolicy(id: PolicyId, on: boolean): void {
+    this.flush();
+    this.stats.policies = { ...this.stats.policies, [id]: on };
+    this.send({ type: 'policy', id, on });
   }
 
   loan(action: 'take' | 'repay'): void {
@@ -254,6 +265,7 @@ export function newCity(seed: number): SaveData {
   const b = net.addNode(bx, bz);
   b.fixed = true;
   net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_AVENUE, false, true);
+  ensureApproaches(net);
   return {
     seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
     money: START_MONEY, tick: 0, tax: 10,

@@ -57,6 +57,8 @@ const I: Record<string, string> = {
   tower: '<rect x="6" y="3" width="12" height="8" rx="2"/><path d="M8 11 6 21M16 11l2 10M12 11v10M7 16h10"/>',
   pump: '<path d="M12 21s5-5 5-9a5 5 0 0 0-10 0c0 4 5 9 5 9z"/><path d="M12 14V8.5M9.7 10.8 12 8.5l2.3 2.3"/>',
   outlet: '<path d="M3 7h9a4 4 0 0 1 4 4v2"/><path d="M3 12h8"/><path d="M16 16s2.2 2.4 2.2 3.8a2.2 2.2 0 0 1-4.4 0c0-1.4 2.2-3.8 2.2-3.8z"/>',
+  policy: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5"/><path d="m9 13 1.6 1.6L14 11"/><path d="M9 18h6"/>',
+  about: '<circle cx="12" cy="12" r="9"/><path d="M12 10.5V17"/><circle cx="12" cy="7.4" r="0.9" fill="currentColor"/>',
 };
 
 export function icon(name: string, size = 22): SVGSVGElement {

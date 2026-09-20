@@ -21,6 +21,8 @@ import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
 import { RES_POP } from './constants';
+import { serviceCoverage } from './coverage';
+import { SERVICE_TOOL } from './input';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
@@ -51,8 +53,10 @@ const hud = new Hud(uiRoot, {
   setSpeed: (v) => { game.setSpeed(v); hud.setSpeed(v); },
   setTax: (v) => game.setTax(v),
   setFunding: (key, value) => game.setFunding(key, value),
+  setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
   closeInspection: () => game.inspect(-1),
+  openMenu: () => openMenu(),
   newCity: () => {
     clearLocal();
     history.replaceState(null, '', location.pathname);
@@ -104,7 +108,12 @@ game.onInspection = (report) => hud.showInspection(report);
 game.onNotice = (message) => hud.toast(message);
 
 const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].includes(t); };
-input.onToolChange = (t) => { showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+// Reaching for a service shows what the city already covers, so the gap is visible before placing.
+const showCoverage = (): void => {
+  const k = SERVICE_TOOL[input.tool];
+  overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
+};
+input.onToolChange = (t) => { showCoverage(); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
@@ -112,6 +121,7 @@ input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
 game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
+  showCoverage();
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
@@ -139,11 +149,6 @@ game.onFrame = () => {
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
-  if (e.key === 'Escape' && playing && input.tool === 'none' && !menu.open) {
-    e.preventDefault();
-    openMenu();
-    return;
-  }
   if (e.key === ' ' || e.code === 'Space') {
     e.preventDefault();
     const v = game.speed === 0 ? 1 : 0;
@@ -233,12 +238,6 @@ window.addEventListener('beforeunload', () => { if (playing && settings.autosave
 const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
-const clock = document.createElement('div');
-clock.className = 'city-clock';
-clock.title = 'One day lasts 8 simulation minutes. Pausing and speed controls also affect daylight.';
-clock.setAttribute('aria-label', 'City time');
-uiRoot.append(clock);
-let lastClock = '';
 let last = performance.now();
 renderer.setAnimationLoop((now: number) => {
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -253,7 +252,7 @@ renderer.setAnimationLoop((now: number) => {
   river.update(now / 1000);
   const hour = Math.floor(light.hour), minute = Math.floor(light.hour % 1 * 60);
   const label = `${light.night > 0.5 ? '☾' : '☀'} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} · Day ${Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1}`;
-  if (label !== lastClock) { clock.textContent = label; lastClock = label; }
+  hud.setClock(label);
   const span = Math.max(1, game.nextTime - game.prevTime);
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
   incidents.update(game.simTime);

@@ -25,7 +25,8 @@ export class Incidents {
   crash(x: number, z: number, slots: number[], tile: number, y = 0): number {
     const id = this.nextCrash++; this.crashes.set(id, { id, x, z, y, slots, tile, remaining: 35 }); return id;
   }
-  step(kind: Uint8Array, level: Uint8Array, population: number, cityLevel: number, rng: () => number, damage: (tile: number) => void): void {
+  /** `risk` carries the city's standing policies: 1 is the untouched rate, lower means fewer incidents. */
+  step(kind: Uint8Array, level: Uint8Array, population: number, cityLevel: number, rng: () => number, risk: { fire: number; crime: number }, damage: (tile: number) => void): void {
     const buildings: number[] = [];
     for (let i = 0; i < N_TILES; i++) {
       this.patrol[i] = Math.max(0, this.patrol[i] - 1);
@@ -38,8 +39,8 @@ export class Incidents {
       if (++f.age >= 120) { damage(tile); this.damaged++; this.fires.delete(tile); }
     }
     if (!buildings.length || cityLevel < 2) return;
-    if (this.fires.size < 3 && rng() < Math.min(0.045, 0.01 + population / 180000)) this.ignite(buildings[Math.floor(rng() * buildings.length)]);
-    if (rng() < Math.min(0.09, 0.02 + population / 100000)) {
+    if (this.fires.size < 3 && rng() < Math.min(0.045, 0.01 + population / 180000) * risk.fire) this.ignite(buildings[Math.floor(rng() * buildings.length)]);
+    if (rng() < Math.min(0.09, 0.02 + population / 100000) * risk.crime) {
       const tile = buildings[Math.floor(rng() * buildings.length)];
       if (this.patrol[tile] > 0 && rng() < 0.85) this.prevented++;
       else this.crime[tile] = Math.min(100, this.crime[tile] + 50);

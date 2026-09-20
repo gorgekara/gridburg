@@ -11,7 +11,7 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 ## What is in it
 
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
-  Escape reopens it in game and pauses. Settings cover shadows, day length, autosaving and the
+  The HUD menu button reopens it in game and pauses. Settings cover shadows, day length, autosaving and the
   infinite money cheat, and they persist in the browser.
 - **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
   can type a seed in when starting a city.
@@ -22,6 +22,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.
+- **Traffic from outside arrives by road.** Every entrance carries on sixteen cells past the map edge.
+  Regional traffic is created and retired out there and drives in, so cars never appear on the doorstep and
+  the queue to leave forms off the map instead of across the entrance.
+- **City policies.** Six standing decisions — recycling, smoke alarms, neighborhood watch, study grants,
+  free public transport and a congestion charge — each paid for every second, with a bill that grows with
+  the city. They change pollution, incidents, school reach, transit ridership and how many people drive.
+- **Service coverage at a glance.** Selecting a service paints the area existing buildings of that sort
+  already reach, so the next clinic, station or bus stop goes where the gap is.
 - **Utilities along roads.** Wind and coal power, water towers and river pumps, sewage outlets. Buildings
   need all three to grow past small. Outlets foul the river downstream, so pumps belong upstream.
 - **Pollution.** Industry and coal pollute the ground around them. It spreads, drives residents away, and
@@ -52,7 +60,9 @@ the milestone matching their current population without collecting past grants a
 
 ## City view and emergency activity
 
-Zone colors appear only while the Zones menu is selected. Roads use normal asphalt by default; the traffic button in the top-right corner toggles congestion shading independently. Signals are 28% smaller and road vehicles are 32% smaller.
+One bar along the bottom of the screen carries everything: zone demand and utility meters on the left,
+the build categories in the middle, and the city clock and speed controls on the right. Tool panels open
+above it. Zone colors appear only while the Zones menu is selected. Roads use normal asphalt by default; the traffic button in the top-right corner toggles congestion shading independently. Signals are 28% smaller and road vehicles are 32% smaller.
 
 Vehicles reserve their oriented footprint when spawning, moving, and entering a new road segment. Movement is checked along its path, and junction traffic is serialized when paths conflict. Occupied space blocks vehicles; a reused vehicle slot starts a new visual trip instead of interpolating from the previous car.
 
@@ -83,8 +93,15 @@ Click **Inspect** (I), then a building, to see its residents or jobs, local serv
 operating costs and exact upgrade blockers. Clicking without a build tool also inspects.
 Clicking a roof selects that building, even when it hides another tile behind it.
 
-The treasury opens a detailed budget with tax revenue, road upkeep, service upkeep and loan
-payments. Nine funding sliders range from 50% to 150%. Upkeep scales directly; capacity has
+The policies button in the top-right corner opens the city's standing policies. Each costs a fixed
+amount per second plus a share for every resident, unlocks at a city level, and is saved with the city.
+Recycling cuts industrial pollution by 40%, smoke alarms cut fires by 55%, neighborhood watch slows
+crime by 40%, study grants stretch schools 30% further, free public transport moves far more commuters
+but ends fare income, and the congestion charge removes a quarter of car commutes and tolls the rest at
+the cost of a few points of happiness.
+
+The treasury opens a detailed budget with tax revenue, congestion charge income, road upkeep, service
+upkeep, policy costs and loan payments. Nine funding sliders range from 50% to 150%. Upkeep scales directly; capacity has
 diminishing returns (71% at half funding, 122% at 150%). A single $6,000 recovery loan costs
 $6,600 total, repaid at $6 per simulation second. Repayment pauses with the simulation and
 can be settled early. Private growth on existing zones continues even when city cash is negative.
@@ -112,7 +129,7 @@ roads take priority, so curved roads and older saves retain their original geome
 | --- | --- |
 | Left click | Place road points, signals, roundabouts and service buildings |
 | Left drag | Zone or bulldoze a rectangle (a drag also lays a single road) |
-| Right click / Esc | Stop laying a road; Esc again puts the tool away |
+| Right click / Esc | Stop laying a road; Esc again puts the tool away, closes panels and clears the inspection |
 | Right drag, Q / E | Rotate |
 | WASD / arrows, middle drag | Pan |
 | Wheel | Zoom |
@@ -165,8 +182,8 @@ the workflow in `.github/workflows/deploy.yml`.
 
 ## Not in it
 
-Player terraforming, individual citizens, districts and policies, large-scale disasters, sound, and
-complete mobile controls. Hills are scenic; the construction grid remains level.
+Player terraforming, individual citizens, per-district rules, large-scale disasters, sound, and
+complete mobile controls. Policies apply to the whole city. Hills are scenic; the construction grid remains level.
 
 MIT license.
 

@@ -1,5 +1,7 @@
 import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
+import { POLICIES, POLICY_IDS } from '../policies';
+import type { PolicyId } from '../policies';
 import type { FundingKey } from '../management';
 import { MILESTONES } from '../progression';
 import { SERVICE_TOOL } from '../input';
@@ -18,6 +20,8 @@ export interface HudActions {
   setFunding(key: FundingKey, value: number): void;
   loan(action: 'take' | 'repay'): void;
   closeInspection(): void;
+  openMenu(): void;
+  setPolicy(id: PolicyId, on: boolean): void;
   newCity(): void;
   demoCity(): void;
   share(): void;
@@ -151,6 +155,8 @@ export class Hud {
     power: el('div', 'mfill'), water: el('div', 'mfill'), sewage: el('div', 'mfill'),
   };
   private budgetIncome = el('span', 'val');
+  private policyToggles = new Map<PolicyId, HTMLInputElement>();
+  private policyRows = new Map<PolicyId, HTMLElement>();
   private polBtn: HTMLButtonElement = el('button');
   private demandBars: HTMLElement[] = [];
   private toolBtns = new Map<Tool, HTMLButtonElement>();
@@ -170,6 +176,13 @@ export class Hud {
   private alerts = el('div', 'alerts');
   private costEl = el('div', 'cost');
   private help: HTMLElement;
+  private about = el('div', 'help about');
+  private clock = el('div', 'city-clock');
+  /** The city clock, written by the render loop. */
+  setClock(label: string): void {
+    if (this.clock.textContent !== label) this.clock.textContent = label;
+  }
+
   /** Reflects the infinite money cheat in the menu. */
   setCheatLabel: (on: boolean) => void = () => {};
   private welcome = el('section', 'welcome');
@@ -267,7 +280,7 @@ export class Hud {
     incRow.append(el('span', 'label', 'Net income'), this.budgetIncome);
     budget.append(el('div', 'ptitle', 'City budget'), taxRow);
     this.taxInput.setAttribute('aria-label', 'Tax rate');
-    for (const [key, label] of [['fareIncome', 'Transport fares'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['loanExpense', 'Loan payment']]) {
+    for (const [key, label] of [['fareIncome', 'Transport fares'], ['tollIncome', 'Congestion charge'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['policyExpense', 'Policies'], ['loanExpense', 'Loan payment']]) {
       const row = el('div', 'finance-row');
       const value = el('strong');
       row.append(el('span', undefined, label), value);
@@ -293,6 +306,29 @@ export class Hud {
     const loanActions = el('div', 'loan-actions'); loanActions.append(this.borrow, this.repay);
     budget.append(el('div', 'ptitle', 'Recovery loan'), el('p', 'pnote', `$${LOAN_AMOUNT.toLocaleString()} cash · $${LOAN_TOTAL.toLocaleString()} total repayment · $${LOAN_PAYMENT}/simulation second. One loan at a time; pauses with the city.`), this.debtLabel, loanActions);
 
+    // Policies popover: standing decisions that cost money every second and change how the city behaves.
+    const policyPanel = el('div', 'popover policies');
+    policyPanel.append(el('div', 'ptitle', 'City policies'), el('p', 'pnote', 'Each policy is paid for every second, and the bill grows with the city.'));
+    for (const id of POLICY_IDS) {
+      const spec = POLICIES[id];
+      const row = el('label', 'policy-row');
+      const box = el('input') as HTMLInputElement;
+      box.type = 'checkbox';
+      box.setAttribute('aria-label', spec.label);
+      box.addEventListener('change', () => actions.setPolicy(id, box.checked));
+      const text = el('span', 'policy-text');
+      text.append(
+        el('strong', undefined, spec.label),
+        el('span', 'policy-effect', spec.effect),
+        el('span', 'pnote', spec.note),
+        el('span', 'policy-cost', ''),
+      );
+      row.append(icon(spec.icon, 20), text, box);
+      this.policyToggles.set(id, box);
+      this.policyRows.set(id, row);
+      policyPanel.append(row);
+    }
+
     // ---- top-right: view toggle, share, help, and a small menu ---------------------------------
     const right = el('div', 'topright');
     const iconBtn = (ic: string, title: string, fn: () => void): HTMLButtonElement => {
@@ -303,6 +339,7 @@ export class Hud {
       return b;
     };
     this.help = this.buildHelp();
+    this.buildAbout();
     const menu = el('div', 'popover menu');
     const menuItem = (ic: string, label: string, fn: () => void): HTMLButtonElement => {
       const b = el('button', 'mitem');
@@ -315,6 +352,8 @@ export class Hud {
       menuItem('plus', 'New city', () => { if (confirm('Start a new city on a new map? Your current city will be lost.')) actions.newCity(); }),
       menuItem('city', 'Load demo city', actions.demoCity),
       menuItem('link', 'Copy share link', actions.share),
+      menuItem('menu', 'Main menu', actions.openMenu),
+      menuItem('about', 'About Gridburg', () => this.about.classList.add('open')),
     );
     const cheat = menuItem('money', '', () => { cheatLabel(actions.toggleInfiniteMoney()); });
     const cheatLabel = (on: boolean): void => { cheat.querySelector('span')!.textContent = `Infinite money: ${on ? 'on' : 'off'}`; cheat.classList.toggle('active', on); };
@@ -324,21 +363,23 @@ export class Hud {
     const trafficBtn = iconBtn('car', 'Traffic congestion overlay', () => { const on = actions.toggleTraffic(); trafficBtn.classList.toggle('active', on); trafficBtn.setAttribute('aria-pressed', String(on)); });
     trafficBtn.setAttribute('aria-pressed', 'false');
     const polBtn = iconBtn('smog', 'Pollution view (P)', () => polBtn.classList.toggle('active', actions.togglePollution()));
-    const menuBtn = iconBtn('menu', 'Menu', () => { budget.classList.remove('open'); menu.classList.toggle('open'); });
+    const menuBtn = iconBtn('menu', 'Menu', () => { budget.classList.remove('open'); policyPanel.classList.remove('open'); menu.classList.toggle('open'); });
+    const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
     right.append(
-      trafficBtn, polBtn,
+      trafficBtn, polBtn, policyBtn,
       iconBtn('link', 'Copy a link to this city', actions.share),
       iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
       menuBtn,
     );
-    moneyChip.addEventListener('click', () => { menu.classList.remove('open'); budget.classList.toggle('open'); });
+    moneyChip.addEventListener('click', () => { menu.classList.remove('open'); policyPanel.classList.remove('open'); budget.classList.toggle('open'); });
     window.addEventListener('pointerdown', (e) => {
       const t = e.target as Node;
       if (!budget.contains(t) && !moneyChip.contains(t)) budget.classList.remove('open');
       if (!menu.contains(t) && !menuBtn.contains(t)) menu.classList.remove('open');
+      if (!policyPanel.contains(t) && !policyBtn.contains(t)) policyPanel.classList.remove('open');
     });
 
-    // ---- bottom-left: demand and utilities ------------------------------------------------------
+    // ---- the bottom bar: city readouts, the build categories and the clock, all in one strip ------
     const status = el('div', 'status');
     const dem = el('div', 'demand');
     dem.title = 'Demand for residential, commercial, industrial and office zones';
@@ -362,7 +403,8 @@ export class Hud {
     }
     status.append(dem, meters);
 
-    // ---- bottom-right: game speed -------------------------------------------------------------------
+    this.clock.title = 'One day lasts 8 simulation minutes. Pausing and speed controls also affect daylight.';
+    this.clock.setAttribute('aria-label', 'City time');
     const speed = el('div', 'speed');
     for (const [v, label] of [[0, '❚❚'], [1, '▶'], [2, '▶▶'], [3, '▶▶▶']] as [number, string][]) {
       const b = el('button', 'sbtn', label);
@@ -373,7 +415,7 @@ export class Hud {
     }
 
     this.polBtn = polBtn;
-    root.append(chips, budget, right, menu, this.alerts, status, speed);
+    root.append(chips, budget, policyPanel, right, menu, this.alerts, this.about);
 
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
@@ -426,18 +468,48 @@ export class Hud {
       this.catBtns.set(c.id, b);
       cats.append(b);
     }
-    dock.append(this.panel, cats);
-    root.append(dock, this.toastEl, this.costEl, this.help);
+    dock.append(this.panel);
+    const bar = el('div', 'bottombar');
+    bar.append(status, cats, this.clock, speed);
+    root.append(dock, bar, this.toastEl, this.costEl, this.help);
 
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       if (e.key === 'h' || e.key === 'H') this.help.classList.toggle('open');
       if (e.key === 'p' || e.key === 'P') this.polBtn.classList.toggle('active', actions.togglePollution());
-      if (e.key === 'Escape') { this.help.classList.remove('open'); overview.classList.remove('open'); actions.closeInspection(); }
+      // Escape clears what is open or selected; the main menu has its own button.
+      if (e.key === 'Escape') {
+        this.help.classList.remove('open');
+        overview.classList.remove('open');
+        menu.classList.remove('open');
+        budget.classList.remove('open');
+        policyPanel.classList.remove('open');
+        this.about.classList.remove('open');
+        actions.closeInspection();
+      }
     });
     this.setTool('road');
     this.setMode('straight');
     this.setSpeed(1);
+  }
+
+  /** A short note on who made the game, with a way out to the author's site. */
+  private buildAbout(): void {
+    this.about.setAttribute('role', 'dialog');
+    this.about.setAttribute('aria-modal', 'true');
+    this.about.setAttribute('aria-label', 'About Gridburg');
+    const card = el('div', 'card');
+    card.innerHTML = `
+      <h2>About Gridburg</h2>
+      <p>A small city builder about traffic: lay out the roads, zone the land, and watch every car find
+      its own way across town.</p>
+      <p>Built by <a href="https://karakabakov.com" target="_blank" rel="noopener noreferrer">karakabakov.com</a>.</p>
+      <p class="dim">Runs entirely in your browser. Your city is saved locally and shared through a link.</p>`;
+    const close = el('button', 'menu-mini primary', 'Close');
+    close.addEventListener('click', () => this.about.classList.remove('open'));
+    card.append(close);
+    this.about.append(card);
+    this.about.addEventListener('click', e => { if (e.target === this.about) this.about.classList.remove('open'); });
   }
 
   private buildHelp(): HTMLElement {
@@ -460,6 +532,8 @@ export class Hud {
           <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. Click the city progress card to see your next milestone and service coverage</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
+          <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap</li>
+          <li><b>Policies</b> — standing decisions like recycling, smoke alarms or free public transport. They cost money every second and the bill grows with the city</li>
           <li><b>Pollution</b> from industry and coal spreads through the ground and drives residents away. Press <b>P</b> to see it</li>
         </ul>
         <p><b>Left drag</b> build · <b>Right drag</b> rotate · <b>Q / E</b> rotate · <b>WASD</b> pan · <b>Wheel</b> zoom ·
@@ -580,7 +654,7 @@ export class Hud {
   }
 
   update(s: Stats): void {
-    for (const [key, value] of this.financeValues) value.textContent = `$${(key === 'fareIncome' ? s.transport.fareIncome : s[key as 'taxIncome' | 'roadExpense' | 'serviceExpense' | 'loanExpense']).toFixed(2)}/s`;
+    for (const [key, value] of this.financeValues) value.textContent = `$${(key === 'fareIncome' ? s.transport.fareIncome : s[key as 'taxIncome' | 'tollIncome' | 'roadExpense' | 'serviceExpense' | 'policyExpense' | 'loanExpense']).toFixed(2)}/s`;
     for (const key of FUNDING_KEYS) {
       const slider = this.fundingInputs.get(key)!;
       if (document.activeElement !== slider) {
@@ -588,6 +662,18 @@ export class Hud {
         this.fundingValues.get(key)!.textContent = `${s.funding[key]}%`;
       }
       slider.title = `${Math.round(fundingOutput(s.funding[key] / 100) * 100)}% capacity`;
+    }
+    for (const id of POLICY_IDS) {
+      const spec = POLICIES[id], locked = s.cityLevel < spec.unlock;
+      const box = this.policyToggles.get(id)!, row = this.policyRows.get(id)!;
+      box.checked = s.policies[id];
+      box.disabled = locked;
+      row.classList.toggle('locked', locked);
+      row.classList.toggle('on', s.policies[id]);
+      const cost = spec.base + spec.perResident * s.pop;
+      row.querySelector('.policy-cost')!.textContent = locked
+        ? `Unlocks at ${MILESTONES[spec.unlock].name}`
+        : `$${cost.toFixed(2)}/s${s.policies[id] ? '' : ' while active'}`;
     }
     this.borrow.disabled = s.debt > 0;
     this.repay.disabled = s.debt === 0 || s.money < s.debt;

@@ -13,6 +13,8 @@ import {
 } from '../constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
 import { civicShortfalls } from './growth';
+import { isPolicyId, noPolicies, policyEffects, policyExpense, POLICIES } from '../policies';
+import type { Policies, PolicyEffects } from '../policies';
 import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
@@ -61,6 +63,10 @@ let transit: TransitNetwork = { lines: [], airports: [] };
 let transitSignature = '';
 let transitTokens: number[] = [], transitDepartures: number[] = [];
 let riders = 0, airPassengers = 0, fareIncome = 0, treatedSewage = 0;
+let policies: Policies = noPolicies();
+let effects: PolicyEffects = policyEffects(policies);
+let policyCost = 0;
+let tollIncome = 0, tollWindow = 0;
 let riderWindow = 0, airWindow = 0, airTokens = 0;
 let power: [number, number] = [0, 0];
 let water: [number, number] = [0, 0];
@@ -465,7 +471,7 @@ function externalTrip(tile: number, inbound: boolean, vehicle = 1): boolean {
 
 function spawn(dt: number): void {
   airTokens = Math.min(transit.airports.length * 240, airTokens + transit.airports.length * 4 * dt);
-  riderWindow *= Math.exp(-dt / 60); airWindow *= Math.exp(-dt / 60);
+  riderWindow *= Math.exp(-dt / 60); airWindow *= Math.exp(-dt / 60); tollWindow *= Math.exp(-dt / 60);
   transit.lines.forEach((line, i) => {
     const congestion = line.mode === 'bus' ? Math.max(segCong[accSeg[line.a]] ?? 0, segCong[accSeg[line.b]] ?? 0) : 0;
     transitTokens[i] = Math.min(line.capacity, (transitTokens[i] ?? 0) + line.capacity / 20 * dt * (1 - congestion * 0.8));
@@ -483,9 +489,12 @@ function spawn(dt: number): void {
     const o = pickWeighted(resTiles, resW);
     const d = pickWeighted(jobTiles, jobW);
     const line = transitLineForTrip(transit, o, d);
-    if (line >= 0 && transitTokens[line] >= 1 && Math.random() < (transit.lines[line].mode !== 'bus' ? 0.9 : 0.65)) {
-      transitTokens[line]--; riderWindow++; money += 0.08;
-    } else spawnTrip(accSeg[o], accS[o], accSeg[d], accS[d], tileHash(o) < 0.2 ? 2 : 1);
+    if (line >= 0 && transitTokens[line] >= 1 && Math.random() < Math.min(0.98, (transit.lines[line].mode !== 'bus' ? 0.9 : 0.65) * effects.transitShare)) {
+      transitTokens[line]--; riderWindow++; money += 0.08 * effects.fare;
+    } else if (Math.random() < effects.carTrips) {
+      money += effects.toll; tollWindow += effects.toll ? 1 : 0;
+      spawnTrip(accSeg[o], accS[o], accSeg[d], accS[d], tileHash(o) < 0.2 ? 2 : 1);
+    }
   }
   if (!entries.length) return;
   while (extBudget >= 1 && n < 6 && freeList.length) {
@@ -495,7 +504,7 @@ function spawn(dt: number): void {
     const inbound = comJobs + indJobs + officeJobs > pop * 0.5 ? Math.random() < 0.7 : Math.random() < 0.3;
     if (inbound && jobTiles.length) {
       const d = pickWeighted(jobTiles, jobW);
-      if (airTokens >= 1 && transit.airports.some(a => distance(a, d) < 24) && Math.random() < 0.45) { airTokens--; airWindow++; money += 0.2; }
+      if (airTokens >= 1 && transit.airports.some(a => distance(a, d) < 24) && Math.random() < 0.45) { airTokens--; airWindow++; money += 0.2 * effects.fare; }
       else externalTrip(d, true, kind[d] === T_IND ? 3 : 2);
     } else if (resTiles.length) {
       const o = pickWeighted(resTiles, resW);
@@ -861,7 +870,7 @@ function census(): void {
   const needs = cityLevel >= 2 ? ['health', 'education', 'fire', 'safety', 'waste'] as const : cityLevel >= 1 ? ['health', 'education'] as const : [];
   const serviceScore = needs.length ? needs.reduce((sum, k) => sum + civic[k], 0) / needs.length : 70;
   const crimePenalty = buildings ? incidents.crime.reduce((sum, v) => sum + v, 0) / buildings * 0.4 : 0;
-  happiness = Math.round(clamp(55 - crimePenalty + serviceScore * 0.3 + civic.leisure * 0.15 - unservedRes * 25 - dirtyShare * 25 - resPollution * 3 - Math.max(0, tax - 10) * 1.5 - Math.max(0, commuteAvg - 25) * 0.3, 0, 100));
+  happiness = Math.round(clamp(55 + effects.happiness - crimePenalty + serviceScore * 0.3 + civic.leisure * 0.15 - unservedRes * 25 - dirtyShare * 25 - resPollution * 3 - Math.max(0, tax - 10) * 1.5 - Math.max(0, commuteAvg - 25) * 0.3, 0, 100));
   const jobs = comJobs + indJobs + officeJobs;
   const taxPenalty = (tax - 10) / 40;
   const commutePenalty = clamp((commuteAvg - 25) / 50, 0, 1);
@@ -877,7 +886,8 @@ function census(): void {
     for (let i = 0; i < slots.length; i++) if (slots[i]?.line !== undefined) freeCar(i);
   }
   riders = Math.round(riderWindow); airPassengers = Math.round(airWindow);
-  fareIncome = riderWindow / 60 * 0.08 + airWindow / 60 * 0.2;
+  fareIncome = (riderWindow / 60 * 0.08 + airWindow / 60 * 0.2) * effects.fare;
+  tollIncome = tollWindow / 60 * effects.toll;
   tripRate = rw * 0.022;
   extRate = entries.length ? (rw + jw) * 0.005 : 0;
 
@@ -889,22 +899,24 @@ function census(): void {
     const operating = (flags[i] & (F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) ? 0.5 : 1;
     taxIncome += amount * operating * tax / 10 * (1 - incidents.crime[i] / 200) * (incidents.fires.has(i) ? 0 : 1);
   }
+  policyCost = policyExpense(policies, pop);
   serviceExpense = upkeep;
   loanExpense = Math.min(LOAN_PAYMENT, debt);
-  netIncome = taxIncome - roadUpkeep - serviceExpense - loanExpense;
+  netIncome = taxIncome - roadUpkeep - serviceExpense - policyCost - loanExpense;
 }
 
 function civicEfficiency(i: number): number {
   const spec = SERVICES[kind[i]];
   if (!spec?.civic || flags[i] & (F_NO_ROAD | F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) return 0;
   const congestion = accSeg[i] >= 0 ? segCong[accSeg[i]] ?? 0 : 1;
-  return fundingOutput(serviceFunding(spec, funding)) * (1 - 0.5 * Math.min(1, congestion));
+  const grants = spec.civic === 'education' ? effects.educationCapacity : 1;
+  return fundingOutput(serviceFunding(spec, funding)) * (1 - 0.5 * Math.min(1, congestion)) * grants;
 }
 
 function spreadPollution(): void {
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
-    if (k === T_IND) pollution[i] += IND_POLLUTION[level[i]];
+    if (k === T_IND) pollution[i] += IND_POLLUTION[level[i]] * effects.industryPollution;
     else if (isService(k)) pollution[i] += SERVICES[k].pollution;
   }
   for (let i = 0; i < N_TILES; i++) {
@@ -999,11 +1011,11 @@ function stats(): Stats {
   return {
     incidents: { fires: incidents.fires.size, crashes: incidents.crashes.size, crime: incidents.view().crime.length, patrols: slots.filter(c => c?.vehicle === 5).length, fireEngines: slots.filter(c => c?.vehicle === 6).length, prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged },
     transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
-    funding: { ...funding }, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
+    funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
     cityLevel, happiness, civic: civicState.average,
     money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
     demand: [...demand], tick, roadLength: Math.round(roadLength), buildings,
-    noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome + fareIncome,
+    noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome + fareIncome + tollIncome,
   };
 }
 
@@ -1022,7 +1034,7 @@ function postState(): void {
 
 /** Dispatch from working stations; cars must reach the destination before helping. */
 function stepIncidents(): void {
-  incidents.step(kind, level, pop, cityLevel, Math.random, tile => { level[tile] = Math.max(0, level[tile] - 1); age[tile] = 0; });
+  incidents.step(kind, level, pop, cityLevel, Math.random, { fire: effects.fireRate, crime: effects.crimeRate }, tile => { level[tile] = Math.max(0, level[tile] - 1); age[tile] = 0; });
   for (const [tile, delay] of dispatchCooldown) if (delay <= 1) dispatchCooldown.delete(tile); else dispatchCooldown.set(tile, delay - 1);
   // An occasional two-vehicle collision blocks the occupied lane until police or recovery clear it.
   if (cityLevel >= 2 && activeCars > 12 && incidents.crashes.size < 2 && Math.random() < 0.018) {
@@ -1116,13 +1128,15 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       age.fill(0);
       neglect.set(m.neglect ?? new Uint8Array(N_TILES));
       funding = { ...defaultFunding(), ...m.funding };
+      policies = { ...noPolicies(), ...m.policies };
+      effects = policyEffects(policies);
       debt = m.debt ?? 0;
       incidents.load(m.incidents); dispatchCooldown.clear();
       inspected = -1;
       post({ type: 'inspection', report: null });
       pollution.fill(0);
       pendingMoveIns = [];
-      riderWindow = 0; airWindow = 0; airTokens = 0; transitSignature = '';
+      riderWindow = 0; airWindow = 0; tollWindow = 0; airTokens = 0; transitSignature = '';
       cityLevel = m.cityLevel;
       money = m.money;
       subCount = 0;
@@ -1156,6 +1170,16 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     case 'funding':
       if (!FUNDING_KEYS.includes(m.key) || !validFunding(m.value)) break;
       funding[m.key] = m.value;
+      census(); postState();
+      break;
+    case 'policy':
+      if (!isPolicyId(m.id)) break;
+      if (m.on && cityLevel < POLICIES[m.id].unlock) {
+        post({ type: 'notice', message: `${POLICIES[m.id].label} unlocks at city level ${POLICIES[m.id].unlock + 1}.` });
+        break;
+      }
+      policies[m.id] = m.on;
+      effects = policyEffects(policies);
       census(); postState();
       break;
     case 'loan':

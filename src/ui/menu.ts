@@ -42,7 +42,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 const randomSeed = (): number => Math.floor(Math.random() * 0xffffffff) >>> 0;
 
-/** Front screen: continue a city, start one on a chosen map, or change settings. Escape reopens it. */
+/** Front screen: continue a city, start one on a chosen map, or change settings. The HUD menu reopens it. */
 export class MainMenu {
   readonly root = el('div', 'menu-screen');
   private panels = el('div', 'menu-body');

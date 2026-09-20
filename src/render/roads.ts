@@ -212,8 +212,10 @@ export class RoadLayer {
     for (const entry of net.nodes.values()) {
       if (!entry.entry) continue;
       const e = entrySite(entry.x, entry.z);
-      const ex = entry.x - half, ez = entry.z - half;
-      const far = new Float32Array([ex, ez, ex - e.dx * 140, ez - e.dz * 140]);
+      // The drivable approach already reaches the entry node; the painted highway carries on from there.
+      const ex = e.x - half, ez = e.z - half;
+      const fx = entry.x - half, fz = entry.z - half;
+      const far = new Float32Array([fx, fz, fx - e.dx * 140, fz - e.dz * 140]);
       const hw = HALF_WIDTH[KIND_AVENUE];
       b.ribbon(far, 2, hw + 0.09, 0.03, CURB);
       b.ribbon(far, 2, hw, 0.045, ASPHALT);

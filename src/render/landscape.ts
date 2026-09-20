@@ -161,7 +161,8 @@ export class LandscapeLayer {
   develop(kind: Uint8Array, raster: Raster, net: Network): void {
     const t = this.terrain;
     if (!t) return;
-    const entries = [...net.nodes.values()].filter(n => n.entry).map(n => ({ ...entrySite(n.x, n.z), x: n.x - 40, z: n.z - 40 }));
+    // Measured from the gate on the map edge, so the cleared corridor covers the whole off-map approach.
+    const entries = [...net.nodes.values()].filter(n => n.entry).map(n => { const e = entrySite(n.x, n.z); return { ...e, x: e.x - 40, z: e.z - 40 }; });
     const roadDistance = (x: number, z: number): number => Math.min(...entries.map(e => {
       const along = (x - e.x) * -e.dx + (z - e.z) * -e.dz;
       return along >= -2 ? Math.abs((x - e.x) * e.dz - (z - e.z) * e.dx) : Infinity;

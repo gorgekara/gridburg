@@ -25,6 +25,9 @@ export class OverlayLayer {
   private tex: THREE.DataTexture;
   private data: Uint8Array;
   private markers: THREE.InstancedMesh;
+  private coverTex: THREE.DataTexture;
+  private coverData: Uint8Array;
+  private coverPlane: THREE.Mesh;
 
   constructor() {
     this.data = new Uint8Array(GRID * GRID * 4);
@@ -40,6 +43,23 @@ export class OverlayLayer {
     plane.position.y = 0.017;
     plane.renderOrder = 1;
     this.group.add(plane);
+
+    // Service coverage sits just above the pollution wash, hard edged so the reach of each building reads.
+    this.coverData = new Uint8Array(GRID * GRID * 4);
+    this.coverTex = new THREE.DataTexture(this.coverData, GRID, GRID, THREE.RGBAFormat);
+    this.coverTex.magFilter = THREE.LinearFilter;
+    this.coverTex.minFilter = THREE.LinearFilter;
+    this.coverTex.needsUpdate = true;
+    this.coverPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(GRID, GRID),
+      new THREE.MeshBasicMaterial({ map: this.coverTex, transparent: true, depthWrite: false }),
+    );
+    this.coverPlane.rotation.x = -Math.PI / 2;
+    // Above the road surface and its markings, so the wash reads across a built-up neighborhood.
+    this.coverPlane.position.y = 0.09;
+    this.coverPlane.renderOrder = 3;
+    this.coverPlane.visible = false;
+    this.group.add(this.coverPlane);
 
     this.markers = new THREE.InstancedMesh(
       new THREE.OctahedronGeometry(0.17),
@@ -66,6 +86,24 @@ export class OverlayLayer {
       }
     }
     this.tex.needsUpdate = true;
+  }
+
+  /** Paint how well the service being placed already covers the map, or clear it with null. */
+  setCoverage(cover: Uint8Array | null): void {
+    this.coverPlane.visible = !!cover;
+    if (!cover) return;
+    for (let z = 0; z < GRID; z++) {
+      const row = GRID - 1 - z; // texture rows run bottom-up, tiles top-down
+      for (let x = 0; x < GRID; x++) {
+        const n = cover[z * GRID + x];
+        const o = (row * GRID + x) * 4;
+        this.coverData[o] = n > 1 ? 90 : 40;
+        this.coverData[o + 1] = 235;
+        this.coverData[o + 2] = n > 1 ? 120 : 190;
+        this.coverData[o + 3] = n ? Math.min(180, 95 + n * 30) : 0;
+      }
+    }
+    this.coverTex.needsUpdate = true;
   }
 
   setFlags(kind: Uint8Array, level: Uint8Array, flags: Uint8Array, raster: Raster): void {

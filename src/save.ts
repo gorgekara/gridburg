@@ -2,11 +2,14 @@ import type { IncidentSnapshot } from './sim/incidents';
 import { N_TILES, START_MONEY, T_RES, RES_POP, isZone, isService } from './constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, LOAN_TOTAL, NEGLECT_LIMIT } from './management';
 import type { Funding } from './management';
+import { noPolicies, policiesFromMask, policyMask } from './policies';
+import type { Policies } from './policies';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
 export interface SaveData {
   incidents?: IncidentSnapshot;
+  policies?: Policies;
   funding?: Funding;
   debt?: number;
   neglect?: Uint8Array;
@@ -22,8 +25,10 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 8;
-const HEAD = 28;
+const VERSION = 9;
+// v9 appends a two-byte policy mask to the v8 header.
+const HEAD_V8 = 28;
+const HEAD = 30;
 const C_OFF = 40; // coordinates are stored as (value + 40) * 256 in a uint16
 const C_SCALE = 256;
 
@@ -81,6 +86,7 @@ export function encode(d: SaveData): string {
   dv.setUint32(15, d.debt ?? 0);
   const funding = d.funding ?? defaultFunding();
   FUNDING_KEYS.forEach((key, i) => { all[19 + i] = funding[key]; });
+  dv.setUint16(28, policyMask(d.policies ?? noPolicies()));
   dv.setInt32(2, Math.round(d.money));
   dv.setUint32(6, d.tick);
   dv.setUint32(10, d.seed >>> 0);
@@ -92,8 +98,8 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, 7, VERSION].includes(version)) return null;
-    const header = legacy ? 14 : version === 4 ? 15 : HEAD;
+    if (![3, 4, 5, 6, 7, 8, VERSION].includes(version)) return null;
+    const header = legacy ? 14 : version === 4 ? 15 : version >= 9 ? HEAD : HEAD_V8;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
     const tax = bytes[1];
@@ -105,6 +111,7 @@ export function decode(str: string): SaveData | null {
       if (!validFunding(bytes[19 + i])) return null;
       funding[key] = bytes[19 + i];
     }
+    const policies = version >= 9 ? policiesFromMask(dv.getUint16(28)) : noPolicies();
     const money = dv.getInt32(2);
     const tick = dv.getUint32(6);
     const seed = dv.getUint32(10);
@@ -154,7 +161,7 @@ export function decode(str: string): SaveData | null {
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
+    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
   } catch {
     return null;
   }

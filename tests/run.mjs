@@ -14,11 +14,14 @@ const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
+const { newCity } = await import('../src/game.ts');
 const { Network, HALF_WIDTH } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
 const { generateTerrain } = await import('../src/terrain.ts');
+const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
+const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`✓ ${name}`); }
 
@@ -69,7 +72,7 @@ test('malformed save streams are rejected', () => {
   assert.equal(decode('garbage'), null);
   const bytes = Buffer.from(encode(demoCity()), 'base64url');
   assert.equal(decode(bytes.subarray(0, bytes.length - 2).toString('base64url')), null);
-  bytes[29] = 0; // a zero run length in the first RLE triple
+  bytes[31] = 0; // a zero run length in the first RLE triple, just past the 30-byte header
   assert.equal(decode(bytes.toString('base64url')), null);
 });
 test('each new service has finite nonempty visible geometry', () => {
@@ -94,7 +97,9 @@ Math.random = C.mulberry32(2026);
 const send = data => self.onmessage({ data });
 const latest = () => messages.filter(m => m.type === 'state').at(-1);
 function load(city) {
-  const net = Network.fromPlain(city.net), raster = rasterize(net);
+  const net = Network.fromPlain(city.net);
+  ensureApproaches(net); // the app extends every entrance past the map edge before simulating
+  const raster = rasterize(net);
   send({ type: 'load', ...city, cityLevel: city.cityLevel ?? 0, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
 }
 test('real simulation grows a town, awards milestones, and stays finite', () => {
@@ -441,6 +446,90 @@ test('metro stations form their own underground lines with metro capacity and ca
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 12)), 0);
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 40)), -1);
 });
+test('entrances run out past the map edge and extending them twice changes nothing', () => {
+  const city = newCity(7), net = Network.fromPlain(city.net);
+  const entry = [...net.nodes.values()].find(n => n.entry);
+  assert.ok(entry, 'A fresh city has a highway entry');
+  const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
+  assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
+  const approach = net.segsAt(entry.id);
+  assert.equal(approach.length, 1);
+  assert.ok(Math.abs(approach[0].len - APPROACH) < 0.01, `Approach length ${approach[0].len}`);
+  const gateId = approach[0].a === entry.id ? approach[0].b : approach[0].a;
+  const gate = net.nodes.get(gateId);
+  assert.ok(net.segsAt(gateId).length === 2, 'The gate joins the approach to the city stub');
+  assert.ok(Math.min(gate.x, gate.z, C.GRID - gate.x, C.GRID - gate.z) <= 0.5, 'The gate sits on the map edge');
+  const before = net.toPlain();
+  ensureApproaches(net);
+  assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');
+  assert.deepEqual(net.toPlain().segs.length, before.segs.length);
+  const restored = Network.fromPlain(decode(encode(city)).net);
+  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 1, 'Off-map entries survive a save');
+});
+test('external traffic drives in from off the map without stalling the entrance', () => {
+  const city = demoCity(true);
+  load(city);
+  send({ type: 'warm', ticks: 120 });
+  send({ type: 'speed', value: 1 });
+  const half = C.GRID / 2;
+  let offMap = 0, inCity = 0;
+  for (let f = 0; f < 20 * C.SIM_HZ; f++) {
+    simulateFrame();
+    if (f % 30) continue;
+    const frame = messages.at(-1);
+    for (let s = 0; s < C.MAX_CARS; s++) {
+      const x = frame.cars[s * 4], z = frame.cars[s * 4 + 1];
+      if (!x && !z) continue;
+      if (Math.max(Math.abs(x), Math.abs(z)) > half) offMap++; else inCity++;
+    }
+  }
+  const stats = latest().stats;
+  assert.ok(offMap > 0, 'Traffic from outside should be rolling in on the off-map approach');
+  assert.ok(inCity > offMap, 'Most traffic still belongs to the city itself');
+  assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
+  console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
+});
+test('policies cost money, change the simulation and survive a save', () => {
+  assert.equal(policyExpense(noPolicies(), 5000), 0);
+  const recycling = { ...noPolicies(), recycling: true };
+  assert.ok(Math.abs(policyExpense(recycling, 1000) - (POLICIES.recycling.base + POLICIES.recycling.perResident * 1000)) < 1e-9);
+  assert.equal(policyEffects(noPolicies()).industryPollution, 1);
+  assert.ok(policyEffects(recycling).industryPollution < 1);
+  assert.deepEqual(policiesFromMask(policyMask(recycling)), recycling);
+
+  const city = demoCity(true);
+  load(city);
+  send({ type: 'warm', ticks: 60 });
+  const before = latest().stats;
+  send({ type: 'policy', id: 'recycling', on: true });
+  const after = latest().stats;
+  assert.equal(after.policies.recycling, true);
+  assert.ok(after.policyExpense > 0, 'A live policy costs money every second');
+  assert.ok(after.income < before.income, 'Policy upkeep comes out of the budget');
+
+  const locked = demoCity();
+  locked.cityLevel = 0;
+  load(locked);
+  send({ type: 'policy', id: 'congestionCharge', on: true });
+  assert.equal(latest().stats.policies.congestionCharge, false, 'Policies respect their unlock level');
+  assert.match(messages.filter(m => m.type === 'notice').at(-1).message, /unlocks at city level/);
+
+  city.policies = { ...noPolicies(), recycling: true, alarms: true };
+  const restored = decode(encode(city));
+  assert.deepEqual(restored.policies, city.policies);
+});
+test('recycling keeps industrial pollution down', () => {
+  const dirty = demoCity(true);
+  load(dirty);
+  send({ type: 'warm', ticks: 150 });
+  const unregulated = latest().stats.resPollution;
+  load(dirty);
+  send({ type: 'policy', id: 'recycling', on: true });
+  send({ type: 'warm', ticks: 150 });
+  const regulated = latest().stats.resPollution;
+  assert.ok(regulated < unregulated, `Recycling should cut pollution: ${regulated} vs ${unregulated}`);
+  console.log(`  Ground pollution under homes: ${unregulated.toFixed(2)} unregulated, ${regulated.toFixed(2)} with recycling`);
+});
 test('additional entries persist and reach disconnected neighborhoods', () => {
   const city = demoCity(), net = Network.fromPlain(city.net), terrain = generateTerrain(city.seed);
   let planned;
@@ -454,7 +543,9 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   assert.equal(typeof entrancePlan(net, terrain, city.kind, 40, 40), 'string');
   const r = rasterize(planned);
   const newNode = [...planned.nodes.values()].filter(n => n.entry).at(-1);
-  const newSeg = planned.segsAt(newNode.id)[0];
+  const approach = planned.segsAt(newNode.id)[0];
+  const gate = approach.a === newNode.id ? approach.b : approach.a;
+  const newSeg = planned.segsAt(gate).find(s => s.id !== approach.id);
   const tile = Array.from(r.accSeg).findIndex((id, i) => id === newSeg.id && !r.cover[i] && !terrain.water[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
@@ -552,7 +643,8 @@ test('fires and patrol protection persist while old v5 saves still migrate', () 
   const restored = decode(encode(city)); assert.deepEqual(restored.incidents, city.incidents);
   const empty = demoCity(); const bytes = Buffer.from(encode(empty), 'base64url');
   const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4;
-  const v5 = bytes.subarray(0, bytes.length - tail); v5[0] = 5;
+  // A v5 stream has no policy mask: keep the first 28 header bytes and the body that follows the v9 header.
+  const v5 = Buffer.concat([bytes.subarray(0, 28), bytes.subarray(30, bytes.length - tail)]); v5[0] = 5;
   const migrated = decode(v5.toString('base64url')); assert.ok(migrated); assert.equal(migrated.incidents, undefined);
   city.incidents.fires[0].age = 120; assert.equal(decode(encode(city)), null);
 });
@@ -561,10 +653,11 @@ test('patrol visits prevent crime and unattended fires damage buildings', () => 
   kind[tile] = C.T_RES; level[tile] = 2; events.visit(tile);
   // Fire roll fails, crime roll succeeds, then choose the only home and prevent the crime.
   const rolls = [1, 0, 0, 0]; let n = 0;
-  events.step(kind, level, 400, 2, () => rolls[n++], () => {});
+  const normal = { fire: 1, crime: 1 };
+  events.step(kind, level, 400, 2, () => rolls[n++], normal, () => {});
   assert.equal(events.prevented, 1); assert.equal(events.crime[tile], 0);
   events.ignite(tile); let damaged = false;
-  for (let i = 0; i < 120; i++) events.step(kind, level, 0, 0, () => 1, () => { damaged = true; });
+  for (let i = 0; i < 120; i++) events.step(kind, level, 0, 0, () => 1, normal, () => { damaged = true; });
   assert.ok(damaged); assert.equal(events.fires.size, 0);
 });
 test('real fire engines arrive before extinguishing and police patrols visit neighborhoods', () => {
@@ -663,7 +756,9 @@ test('forests clear roads, occupied lots and full service footprints, then resto
 const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/structures.ts');
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
-  const legacy = Buffer.from(encode(demoCity()), 'base64url'); legacy[0] = 6;
+  const current = Buffer.from(encode(demoCity()), 'base64url');
+  // Versions before 9 carry no policy mask, so drop those two header bytes.
+  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30)]); legacy[0] = 6;
   assert.ok(decode(legacy.toString('base64url')), 'Version 6 cities remain readable');
   const net = new Network();
   net.insertPath([{ x: 30, z: 10 }, { x: 30, z: 65 }], 0);
