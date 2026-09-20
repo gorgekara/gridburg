@@ -15,7 +15,12 @@ export function riverSamples(t: Terrain): RiverSample[] {
   const r = t.river, a = r[0], b = r[1], c = r[r.length - 1], d = r[r.length - 2];
   const al = Math.hypot(a.x - b.x, a.z - b.z), cl = Math.hypot(c.x - d.x, c.z - d.z);
   const points: RiverSample[] = [];
-  for (let n = 110; n >= 1; n--) points.push({ x: a.x + (a.x - b.x) / al * n - 40, z: a.z + (a.z - b.z) / al * n - 40, w: a.w, y: Math.max(0, Math.min(4, (n - 10) * 2)) });
+  // The stream climbs into the hills as a chute rather than a step: the ground mesh is coarse,
+  // and anything steeper than this leaves the water standing on a shelf of its own.
+  for (let n = 110; n >= 1; n--) {
+    const u = Math.max(0, Math.min(1, (n - 7) / 26));
+    points.push({ x: a.x + (a.x - b.x) / al * n - 40, z: a.z + (a.z - b.z) / al * n - 40, w: a.w, y: 4 * u * u * (3 - 2 * u) });
+  }
   for (const p of r) points.push({ ...p, x: p.x - 40, z: p.z - 40, y: 0 });
   for (let n = 1; n <= 110; n++) points.push({ x: c.x + (c.x - d.x) / cl * n - 40, z: c.z + (c.z - d.z) / cl * n - 40, w: c.w, y: 0 });
   return points;
@@ -52,7 +57,10 @@ export function landscapeHeight(x: number, z: number, seed: number, river: River
   const phase = (seed % 997) / 97;
   const hills = 7 + 6 * Math.sin(x * 0.057 + phase) * Math.cos(z * 0.071 - phase) + 3 * Math.sin(x * 0.13 + z * 0.09);
   const bank = Math.max(0, Math.min(1, (distance - 0.9) / 14));
-  return bed * Math.min(1, edge / 3) + fade * fade * Math.max(1, hills) * bank * bank;
+  // A shallow trench along the channel. The ground mesh is far coarser than the stream is
+  // wide, so without it the interpolated surface cuts up through the water on the bends.
+  const trench = 0.4 * Math.max(0, 1 - Math.max(0, distance) / 2.5);
+  return bed * Math.min(1, edge / 3) - trench + fade * fade * Math.max(1, hills) * bank * bank;
 }
 
 export class LandscapeLayer {

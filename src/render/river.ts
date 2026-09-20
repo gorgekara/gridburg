@@ -16,7 +16,7 @@ export class RiverLayer {
   private lead = 0; // extrapolated points added before the real samples
 
   private spray = new THREE.InstancedMesh(new THREE.SphereGeometry(0.16, 5, 4), new THREE.MeshBasicMaterial({ color: 0xdaeff3, transparent: true, opacity: 0.4, depthWrite: false }), 32);
-  private cascade = { x: 0, z: 0, dx: 0, dz: 1, w: 2 };
+  private cascade = { x: 0, y: 0, z: 0, dx: 0, dz: 1, w: 2, fall: 0 };
   private sprayObject = new THREE.Object3D();
   private time = { value: 0 };
 
@@ -24,9 +24,15 @@ export class RiverLayer {
     this.time.value = seconds;
     const c = this.cascade, obj = this.sprayObject;
     for (let i = 0; i < 32; i++) {
-      const age = (seconds * 0.7 + i * 0.618) % 1, across = Math.sin(i * 19.3) * c.w;
-      obj.position.set(c.x - c.dz * across + c.dx * age, 0.15 + Math.sin(age * Math.PI) * 0.65, c.z + c.dx * across + c.dz * age);
-      obj.scale.setScalar(0.4 + Math.sin(age * Math.PI) * 1.2); obj.updateMatrix(); this.spray.setMatrixAt(i, obj.matrix);
+      // Each drop rides down the chute and throws itself up again at the bottom.
+      const age = (seconds * 0.7 + i * 0.618) % 1, across = Math.sin(i * 19.3) * c.w * 0.8;
+      const along = 2.4 * age;
+      obj.position.set(
+        c.x - c.dz * across + c.dx * along,
+        c.y + 0.1 + Math.sin(age * Math.PI) * 0.5 - age * c.fall,
+        c.z + c.dx * across + c.dz * along,
+      );
+      obj.scale.setScalar(0.35 + Math.sin(age * Math.PI) * 1.1); obj.updateMatrix(); this.spray.setMatrixAt(i, obj.matrix);
     }
     this.spray.instanceMatrix.needsUpdate = true;
   }
@@ -72,8 +78,9 @@ export class RiverLayer {
         diffuseColor.rgb += vec3(0.08, 0.12, 0.13) * streak;
         float foam = smoothstep(0.84, 1.0, across) * smoothstep(0.45, 0.75, rNoise(vec2(vRiver.x * 2.6 - riverTime * 0.9, vRiver.y * 9.0)));
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.93, 0.92), foam * 0.5);
-        float cascade = smoothstep(0.1, 0.6, vHeight) * (1.0 - smoothstep(3.5, 4.0, vHeight));
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.78, 0.9, 0.92), cascade * (0.55 + flow * 0.4));`);
+        // White water wherever the bed is tilted: the chute foams, the flats below do not.
+        float slope = clamp(length(vec2(dFdx(vHeight), dFdy(vHeight))) * 26.0, 0.0, 1.0);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.92, 0.94), slope * (0.5 + flow * 0.45));`);
       shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         float e = 0.08, f0 = rFlow(vRiver, riverTime);
         vec2 grad = vec2(rFlow(vRiver + vec2(e, 0.0), riverTime) - f0, rFlow(vRiver + vec2(0.0, e), riverTime) - f0) / e;
@@ -86,8 +93,15 @@ export class RiverLayer {
 
   rebuild(t: Terrain): void {
     const samples = riverSamples(t);
-    const foot = samples[100], next = samples[101], len = Math.hypot(next.x - foot.x, next.z - foot.z);
-    this.cascade = { x: foot.x, z: foot.z, dx: (next.x - foot.x) / len, dz: (next.z - foot.z) / len, w: foot.w };
+    // Spray belongs where the water is actually falling, so find the steepest stretch upstream.
+    let drop = 0, steepest = 0;
+    for (let i = 1; i < Math.min(samples.length, 110); i++) {
+      const fall = samples[i - 1].y - samples[i].y;
+      if (fall > steepest) { steepest = fall; drop = i; }
+    }
+    const foot = samples[drop], next = samples[Math.min(samples.length - 1, drop + 1)];
+    const len = Math.hypot(next.x - foot.x, next.z - foot.z) || 1;
+    this.cascade = { x: foot.x, y: foot.y, z: foot.z, dx: (next.x - foot.x) / len, dz: (next.z - foot.z) / len, w: foot.w, fall: steepest };
     const pts = samples.flatMap(p => [p.x, p.z]);
     const widths = samples.map(p => p.w);
     // Where the channel runs through open sea there is no bank to draw, only more water.
