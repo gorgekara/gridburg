@@ -4,8 +4,11 @@
   command = "npm run build"
   publish = "dist"
 
+# The test harness loads the TypeScript sources directly, through module.registerHooks and
+# Node's own type stripping. Both are unflagged from Node 22.18, so the build needs a modern
+# runtime; on Node 20 the tests cannot even be imported and the build stops there.
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "24"
 
 # The build runs the type check and the test suite before it emits anything, so
 # a broken simulation cannot deploy.
