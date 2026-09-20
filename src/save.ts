@@ -5,9 +5,6 @@ import type { Funding } from './management';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
-import type { MapKind } from './maps';
-import { mapFromSave, mapToSave } from './maps';
-
 export interface SaveData {
   incidents?: IncidentSnapshot;
   funding?: Funding;
@@ -15,8 +12,6 @@ export interface SaveData {
   neglect?: Uint8Array;
   cityLevel?: number;
   seed: number;
-  /** Which kind of map the seed was generated as; older saves are all river valleys. */
-  mapKind?: MapKind;
   kind: Uint8Array;
   level: Uint8Array;
   net: PlainNet;
@@ -78,8 +73,6 @@ export function encode(d: SaveData): string {
   const incidentBytes = new TextEncoder().encode(JSON.stringify(d.incidents ?? { fires: [], crime: [], patrol: [] }));
   bytes.push((incidentBytes.length >>> 24) & 255, (incidentBytes.length >>> 16) & 255, (incidentBytes.length >>> 8) & 255, incidentBytes.length & 255);
   for (const byte of incidentBytes) bytes.push(byte);
-  // v8 tail: the map kind, appended so every earlier layout still reads the same.
-  bytes.push(mapToSave(d.mapKind ?? 'river'));
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -155,15 +148,13 @@ export function decode(str: string): SaveData | null {
       if (!data || !Array.isArray(data.fires) || data.fires.length > N_TILES || !data.fires.every((f: { tile: unknown; age: number }) => f && tile(f.tile) && Number.isInteger(f.age) && f.age >= 0 && f.age < 120) || !pairs(data.crime, 100) || !pairs(data.patrol, 180)) return null;
       incidents = { fires: data.fires, crime: data.crime, patrol: data.patrol }; p += length;
     }
-    // v8 appends the map kind. Accepting it whatever the version byte says keeps saves
-    // readable both ways round, since every older layout ends exactly here.
-    let mapKind: MapKind = 'river';
-    if (bytes.length - p === 1) { mapKind = mapFromSave(bytes[p]); p += 1; }
+    // Cities saved while the map kinds existed carry one extra byte; skip it.
+    if (bytes.length - p === 1) p += 1;
     if (p !== bytes.length) return null;
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, mapKind, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
+    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
   } catch {
     return null;
   }

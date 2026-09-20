@@ -18,7 +18,7 @@ const { Network, HALF_WIDTH } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
-const { generateTerrain, reachableLand, entryTile, MAP_TYPES } = await import('../src/terrain.ts');
+const { generateTerrain } = await import('../src/terrain.ts');
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`✓ ${name}`); }
 
@@ -187,95 +187,14 @@ function landPatches(water) {
   return { label, sizes };
 }
 
-test('river valleys never move: the same maps as before map types existed', () => {
-  // Recorded before `generateTerrain` grew a type argument. The demo city and saved cities depend on it.
+test('river valleys never move: the same maps every seed has always made', () => {
+  // Recorded from the original generator. The demo city and saved cities depend on it.
   const golden = '69b03eec a72d6265 69020fd6 bb0fdf3a 623474d1 2041838b b6f8bdee 506f4201 17e74ff3 52defdfe 51f43905 6547e6b3 841a48e0 f20a9953 af8ce1da f8f1ec87 85d4d797 7aa0bc57 c7dfaf0c 2d5956db aacd8a34 d8e45250 90bb1bc6 16506900 e3c5ff2b bd562806 7b44873a 414bdc04 7126d800 291d5de7';
   const digests = [];
   for (let seed = 1; seed <= 30; seed++) {
-    const plain = generateTerrain(seed), named = generateTerrain(seed, 'river');
-    assert.equal(plain.type, 'river', 'The default map type is the river valley');
-    assert.deepEqual(named.water, plain.water);
-    assert.deepEqual(named.flow, plain.flow);
-    assert.deepEqual(named.river, plain.river);
-    assert.deepEqual(named.entry, plain.entry);
-    digests.push(terrainDigest(plain));
+    digests.push(terrainDigest(generateTerrain(seed)));
   }
   assert.equal(digests.join(' '), golden, 'River valley maps must stay byte for byte what they were');
-});
-test('every map type is playable: dry entry, room to build and one region behind it', () => {
-  assert.deepEqual(MAP_TYPES.map(m => m.id), ['river', 'islands', 'seaport', 'lakes']);
-  for (const { id, name, blurb } of MAP_TYPES) {
-    assert.ok(name.length > 3 && name.length < 24, name);
-    assert.ok(blurb.length > 10, blurb);
-    let worstDry = 1, worstReach = 1;
-    for (let seed = 1; seed <= 24; seed++) {
-      const t = generateTerrain(seed, id), where = `${id} seed ${seed}`;
-      assert.equal(t.type, id, where);
-      // The entry sits on an edge, in a tile lane, facing inward.
-      assert.ok(Math.abs(t.entry.dx) + Math.abs(t.entry.dz) === 1, where);
-      assert.ok([0, C.GRID].includes(t.entry.dx ? t.entry.x : t.entry.z), where);
-      assert.ok(Number.isInteger((t.entry.dx ? t.entry.z : t.entry.x) - 0.5), where);
-      // ...with a clear run of dry tiles, three lanes wide, for the highway stub.
-      for (let s = 0; s < 7; s++) for (let o = -1; o <= 1; o++) {
-        const x = Math.floor(t.entry.x + t.entry.dx * (s + 0.5) + (t.entry.dx ? 0 : o));
-        const z = Math.floor(t.entry.z + t.entry.dz * (s + 0.5) + (t.entry.dz ? 0 : o));
-        assert.equal(t.water[C.idx(x, z)], 0, `${where}: the highway approach runs through water at ${x},${z}`);
-      }
-      const dry = (C.N_TILES - t.water.reduce((n, v) => n + v, 0)) / C.N_TILES;
-      const home = entryTile(t.entry);
-      const { mask, count } = reachableLand(t);
-      assert.equal(t.water[home], 0, `${where}: the entry tile is under water`);
-      assert.ok(mask[home], where);
-      assert.ok(dry >= 0.45, `${where}: only ${(dry * 100) | 0}% of the map is dry`);
-      assert.ok(count >= 0.4 * C.N_TILES, `${where}: only ${((count / C.N_TILES) * 100) | 0}% of the map is reachable`);
-      // Land the player cannot reach is either scenery or the far bank of the channel, never a marooned town.
-      const { label, sizes } = landPatches(t.water);
-      let scenery = 0;
-      for (let c = 0; c < sizes.length; c++) {
-        if (c === label[home]) continue;
-        assert.ok(sizes[c] < 200 || sizes[c] > 0.15 * C.N_TILES, `${where}: ${sizes[c]} tiles of land stranded`);
-        if (sizes[c] < 200) scenery += sizes[c];
-      }
-      assert.ok(scenery <= 400, `${where}: ${scenery} tiles of islet clutter`);
-      worstDry = Math.min(worstDry, dry); worstReach = Math.min(worstReach, count / C.N_TILES);
-    }
-    console.log(`  ${name}: at worst ${(worstDry * 100) | 0}% dry, ${(worstReach * 100) | 0}% reachable from the entry`);
-  }
-});
-test('maps are deterministic from seed and type alone, and each type is its own map', () => {
-  for (const { id } of MAP_TYPES) {
-    for (const seed of [1, 7, 4242]) {
-      const a = generateTerrain(seed, id), b = generateTerrain(seed, id);
-      assert.deepEqual(a.water, b.water); assert.deepEqual(a.flow, b.flow);
-      assert.deepEqual(a.river, b.river); assert.deepEqual(a.entry, b.entry);
-      assert.equal(a.seed, seed);
-      const other = generateTerrain(seed + 1, id);
-      assert.notDeepEqual(other.water, a.water, 'Neighboring seeds give unrelated maps');
-    }
-  }
-  const sameSeed = MAP_TYPES.map(m => terrainDigest(generateTerrain(9, m.id)));
-  assert.equal(new Set(sameSeed).size, MAP_TYPES.length, 'One seed gives four different maps');
-});
-test('every map type keeps an ordered flow channel that all its water drains into', () => {
-  for (const { id } of MAP_TYPES) {
-    for (let seed = 1; seed <= 12; seed++) {
-      const t = generateTerrain(seed, id), where = `${id} seed ${seed}`;
-      assert.ok(t.river.length > 20, where);
-      for (let i = 1; i < t.river.length; i++) {
-        const a = t.river[i - 1], b = t.river[i], step = Math.hypot(a.x - b.x, a.z - b.z);
-        assert.ok(step > 1e-6 && step < 4, `${where}: channel samples jump ${step}`);
-        assert.ok(b.w > 0.5 && Number.isFinite(b.x) && Number.isFinite(b.z), where);
-      }
-      let channel = 0;
-      for (let i = 0; i < C.N_TILES; i++) {
-        if (!t.water[i]) { assert.equal(t.flow[i], -1, `${where}: dry tile ${i} has a flow index`); continue; }
-        // Sewage has to reach the sea: open water carries the index of the channel sample it drains to.
-        assert.ok(t.flow[i] >= 0 && t.flow[i] < t.river.length, `${where}: water tile ${i} has no flow`);
-        channel++;
-      }
-      assert.ok(channel > 100, where);
-    }
-  }
 });
 const { BuildingLayer } = await import('../src/render/buildings.ts');
 const THREE = await import('three');
@@ -721,74 +640,6 @@ test('daylight repeats across saved days and transitions continuously through da
   }
   const city = demoCity(); city.tick = 321;
   assert.deepEqual(daylight(decode(encode(city)).tick), daylight(city.tick));
-});
-test('landscape preserves the construction plane and river path, with elevated upstream cascades', () => {
-  for (const seed of [1, 42, 777]) {
-    const t = generateTerrain(seed), samples = riverSamples(t);
-    for (let i = 0; i < t.river.length; i++) {
-      const p = t.river[i], sample = samples[110 + i];
-      assert.deepEqual(sample, { ...p, x: p.x - 40, z: p.z - 40, y: 0 });
-    }
-    for (let z = -40; z <= 40; z += 4) for (let x = -40; x <= 40; x += 4) assert.equal(landscapeHeight(x, z, seed, samples), 0);
-    assert.equal(samples[98].y, 4); assert.equal(samples[100].y, 0);
-    assert.ok(landscapeHeight(90, 90, seed, samples) > 0);
-    const river = new RiverLayer(); river.rebuild(t); river.tint(new Uint8Array(t.river.length).fill(255)); river.update(100);
-    for (const mesh of river.group.children) {
-      for (const value of mesh.geometry.getAttribute('position').array) assert.ok(Number.isFinite(value));
-    }
-  }
-});
-const { WaterLayer, signedWaterField, BEACH_Y, WATER_Y } = await import('../src/render/water.ts');
-test('open water merges into few quads, holds the shoreline on tile edges and reaches the horizon only at sea', () => {
-  const fake = (fill, river = []) => {
-    const water = new Uint8Array(C.N_TILES);
-    for (let z = 0; z < C.GRID; z++) for (let x = 0; x < C.GRID; x++) if (fill(x, z)) water[C.idx(x, z)] = 1;
-    return { seed: 7, water, flow: new Int16Array(C.N_TILES).fill(-1), river, entry: { x: 0, z: 40, dx: 1, dz: 0 } };
-  };
-  const maps = {
-    // A coastal half, inland lakes, a shredded archipelago, and a map with no water at all.
-    sea: fake((x, z) => z < C.GRID / 2),
-    lakes: fake((x, z) => [[20, 20, 9], [55, 30, 12]].some(([cx, cz, r]) => Math.hypot(x - cx, z - cz) < r)),
-    islands: fake((x, z) => Math.sin(x * 0.19) * Math.cos(z * 0.23) + Math.sin((x + z) * 0.11) < 0.15),
-    dry: fake(() => false),
-  };
-  for (const [name, t] of Object.entries(maps)) {
-    const layer = new WaterLayer(); layer.rebuild(t); layer.rebuild(t); layer.update(12.5);
-    let tris = 0, far = false;
-    for (const mesh of layer.group.children) {
-      const p = mesh.geometry.getAttribute('position');
-      for (const v of p.array) assert.ok(Number.isFinite(v), name);
-      for (let i = 0; i < p.count; i++) {
-        assert.ok(Math.abs(p.getX(i)) <= 180 && Math.abs(p.getZ(i)) <= 180, `${name} leaves the landscape`);
-        assert.ok(p.getY(i) >= BEACH_Y - 1e-6 && p.getY(i) <= WATER_Y + 1e-6, `${name} floats off the construction plane`);
-        far ||= Math.abs(p.getX(i)) > 41 || Math.abs(p.getZ(i)) > 41;
-      }
-      tris += mesh.geometry.getIndex().count / 3;
-    }
-    const tiles = t.water.reduce((a, b) => a + b, 0);
-    // Greedy runs, not a quad per tile: the flat sea half is a couple of rectangles.
-    assert.ok(tris < Math.max(4, tiles / 2), `${name} merged ${tiles} tiles into ${tris} triangles`);
-    if (name === 'sea') assert.ok(tris <= 20, `half the map is water and it took ${tris} triangles`);
-    assert.equal(tiles > 0, tris > 0);
-    // Only water running off the map edge extends out to the horizon.
-    const edge = [...Array(C.GRID).keys()].some(n => t.water[C.idx(n, 0)] || t.water[C.idx(n, C.GRID - 1)] || t.water[C.idx(0, n)] || t.water[C.idx(C.GRID - 1, n)]);
-    assert.equal(far, edge, `${name} horizon skirt`);
-
-    const field = signedWaterField(t);
-    for (let z = 0; z < C.GRID; z++) for (let x = 0; x < C.GRID; x++) {
-      const d = field.at(x + 0.5 - C.GRID / 2, z + 0.5 - C.GRID / 2);
-      assert.equal(d > 0, t.water[C.idx(x, z)] === 1, `${name} field sign at ${x},${z}`);
-      assert.ok(Math.abs(d) >= 1 - 1e-6 && Math.abs(d) <= 8 + 1e-6, `${name} field range at ${x},${z}`);
-      // Between a wet and a dry tile the field crosses zero right on the shared edge, so the
-      // rendered contour follows tile boundaries instead of stepping around whole tiles.
-      for (const [dx, dz] of [[1, 0], [0, 1]]) {
-        if (x + dx >= C.GRID || z + dz >= C.GRID || t.water[C.idx(x, z)] === t.water[C.idx(x + dx, z + dz)]) continue;
-        const edgeD = field.at(x + 0.5 + dx * 0.5 - C.GRID / 2, z + 0.5 + dz * 0.5 - C.GRID / 2);
-        assert.ok(Math.abs(edgeD) < 0.35, `${name} shoreline off the tile edge by ${edgeD.toFixed(2)}`);
-      }
-    }
-    layer.dispose();
-  }
 });
 test('forests clear roads, occupied lots and full service footprints, then restore deterministically', () => {
   const city = demoCity(true), t = generateTerrain(city.seed), net = Network.fromPlain(city.net), raster = rasterize(net);

@@ -13,9 +13,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
   Escape reopens it in game and pauses. Settings cover shadows, day length, autosaving and the
   infinite money cheat, and they persist in the browser.
-- **Four kinds of map.** River valley, Island chain, Sea port and Lake district, each generated
-  from a seed you can type in. Every map is checked for a dry highway entry and a large connected
-  landmass, so all of them are playable.
+- **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
+  can type a seed in when starting a city.
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
   end) or Smooth (every click continues the road as a flowing curve). Crossings become junctions
   automatically, endpoints snap to existing roads, and roads over water become bridges.

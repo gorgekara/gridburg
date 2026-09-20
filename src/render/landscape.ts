@@ -4,7 +4,6 @@ import type { Terrain } from '../terrain';
 import type { Raster } from '../roads/raster';
 import { siteOwners } from '../sites';
 import type { Network } from '../roads/network';
-import { signedWaterField } from './water';
 import { entrySite } from '../roads/entries';
 
 /** Trees keep full detail within this radius, a single cone beyond it, and vanish past the cull. */
@@ -16,9 +15,7 @@ export function riverSamples(t: Terrain): RiverSample[] {
   const r = t.river, a = r[0], b = r[1], c = r[r.length - 1], d = r[r.length - 2];
   const al = Math.hypot(a.x - b.x, a.z - b.z), cl = Math.hypot(c.x - d.x, c.z - d.z);
   const points: RiverSample[] = [];
-  // Only a valley river tumbles in from upstream; a strait or a shipping lane runs flat to the horizon.
-  const cascades = t.type === 'river' || t.type === 'lakes';
-  for (let n = 110; n >= 1; n--) points.push({ x: a.x + (a.x - b.x) / al * n - 40, z: a.z + (a.z - b.z) / al * n - 40, w: a.w, y: cascades ? Math.max(0, Math.min(4, (n - 10) * 2)) : 0 });
+  for (let n = 110; n >= 1; n--) points.push({ x: a.x + (a.x - b.x) / al * n - 40, z: a.z + (a.z - b.z) / al * n - 40, w: a.w, y: Math.max(0, Math.min(4, (n - 10) * 2)) });
   for (const p of r) points.push({ ...p, x: p.x - 40, z: p.z - 40, y: 0 });
   for (let n = 1; n <= 110; n++) points.push({ x: c.x + (c.x - d.x) / cl * n - 40, z: c.z + (c.z - d.z) / cl * n - 40, w: c.w, y: 0 });
   return points;
@@ -62,8 +59,6 @@ export class LandscapeLayer {
   readonly group = new THREE.Group();
   private terrain?: Terrain;
   private samples: RiverSample[] = [];
-  /** Signed distance to open water; negative on land. Keeps trees and rocks off the sea. */
-  private sea: { at(x: number, z: number): number } | null = null;
   private entrySignature = "";
   private baseHeights = new Float32Array();
   private natureSites = new Map<number, { bank: number; h: number }>();
@@ -138,21 +133,13 @@ export class LandscapeLayer {
     this.entrySignature = "";
     this.natureSites.clear();
     this.samples = riverSamples(t);
-    // Open water runs past the map edge, so the surrounding hills sink under it instead of
-    // ringing a coastal map with mountains.
-    const sea = signedWaterField(t);
-    this.sea = sea;
     const geo = new THREE.PlaneGeometry(360, 360, 150, 150);
     geo.rotateX(-Math.PI / 2);
     const positions = geo.getAttribute('position');
     this.baseHeights = new Float32Array(positions.count);
     const colors = new Float32Array(positions.count * 3), color = new THREE.Color();
     for (let i = 0; i < positions.count; i++) {
-      const x = positions.getX(i), z = positions.getZ(i);
-      // Stay flat across the beach the water layer draws, then climb inland; otherwise the
-      // rising ground shreds its way through the flat sand.
-      const inland = Math.max(0, Math.min(1, (-sea.at(x, z) - 3.2) / 4));
-      const h = landscapeHeight(x, z, t.seed, this.samples) * inland;
+      const x = positions.getX(i), z = positions.getZ(i), h = landscapeHeight(x, z, t.seed, this.samples);
       positions.setY(i, h - 0.025);
       this.baseHeights[i] = h;
       const patch = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + 1) / 2;
@@ -202,7 +189,6 @@ export class LandscapeLayer {
       } else {
         if (roadDistance(x, z) < 7.5) continue;
       }
-      if (this.sea && this.sea.at(x, z) > -0.7) continue;
       let site = this.natureSites.get(n);
       if (!site) {
         const bank = riverDistance(x, z, this.samples).distance;

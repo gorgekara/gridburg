@@ -1,5 +1,3 @@
-import { MAP_TYPES } from '../terrain';
-import type { MapKind } from '../maps';
 import { icon } from './icons';
 
 export interface Settings {
@@ -26,14 +24,14 @@ export function saveSettings(s: Settings): void {
 
 export interface MenuActions {
   continueCity(): void;
-  newCity(kind: MapKind, seed: number): void;
+  newCity(seed: number): void;
   demoCity(): void;
   resume(): void;
   help(): void;
   apply(settings: Settings): void;
 }
 
-interface SaveInfo { mapKind: MapKind; population: number; day: number }
+interface SaveInfo { population: number; day: number }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -52,10 +50,8 @@ export class MainMenu {
   private resumeBtn = el('button', 'menu-item primary');
   private continueBtn = el('button', 'menu-item');
   private continueNote = el('span', 'menu-note');
-  private kind: MapKind = 'river';
   private seed = randomSeed();
   private seedField = el('input', 'menu-seed') as HTMLInputElement;
-  private cards = new Map<MapKind, HTMLElement>();
   private actions: MenuActions;
   settings: Settings;
   open = false;
@@ -68,7 +64,7 @@ export class MainMenu {
     this.root.setAttribute('aria-label', 'Main menu');
     const card = el('div', 'menu-card');
     const title = el('div', 'menu-title');
-    title.append(el('h1', undefined, 'Gridburg'), el('p', 'menu-sub', 'Build a city on the map of your choosing.'));
+    title.append(el('h1', undefined, 'Gridburg'), el('p', 'menu-sub', 'Lay out the roads, zone the land, and grow a city.'));
     card.append(title, this.panels);
     this.root.append(card);
     host.append(this.root);
@@ -110,7 +106,7 @@ export class MainMenu {
     page.append(
       this.resumeBtn,
       this.continueBtn,
-      this.button('New city', 'Pick a map and start fresh', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
+      this.button('New city', 'A fresh river valley to build on', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
       this.button('Demo city', 'A finished city to look around', () => this.actions.demoCity(), 'city'),
       this.button('Settings', 'Graphics, day length and cheats', () => this.show('settings'), 'menu'),
       this.button('How to play', 'The basics, in five steps', () => this.actions.help(), 'help'),
@@ -121,16 +117,8 @@ export class MainMenu {
 
   private buildNew(): void {
     const page = el('div', 'menu-page');
-    page.append(el('h2', 'menu-heading', 'Choose a map'));
-    const grid = el('div', 'menu-maps');
-    for (const choice of MAP_TYPES) {
-      const card = el('button', 'map-card');
-      card.append(el('strong', undefined, choice.name), el('span', 'menu-note', choice.blurb));
-      card.addEventListener('click', () => this.pick(choice.id));
-      this.cards.set(choice.id, card);
-      grid.append(card);
-    }
-    page.append(grid);
+    page.append(el('h2', 'menu-heading', 'New city'));
+    page.append(el('p', 'menu-note', 'Every seed lays out a different river valley. Keep one you like by noting its number.'));
 
     const seedRow = el('div', 'menu-row');
     this.seedField.type = 'text';
@@ -148,18 +136,12 @@ export class MainMenu {
     const start = el('button', 'menu-mini primary', 'Start city');
     start.addEventListener('click', () => {
       const typed = Number.parseInt(this.seedField.value, 10);
-      this.actions.newCity(this.kind, Number.isFinite(typed) ? typed >>> 0 : this.seed);
+      this.actions.newCity(Number.isFinite(typed) ? typed >>> 0 : this.seed);
     });
     actions.append(back, start);
     page.append(actions);
-    this.pick('river');
     this.pages.set('new', page);
     this.panels.append(page);
-  }
-
-  private pick(kind: MapKind): void {
-    this.kind = kind;
-    for (const [id, card] of this.cards) card.classList.toggle('active', id === kind);
   }
 
   private toggle(label: string, hint: string, get: () => boolean, set: (v: boolean) => void): HTMLElement {
@@ -213,7 +195,7 @@ export class MainMenu {
   setSave(info: SaveInfo | null, running: boolean): void {
     this.continueBtn.hidden = !info;
     this.resumeBtn.hidden = !running;
-    if (info) this.continueNote.textContent = `${MAP_TYPES.find(m => m.id === info.mapKind)?.name ?? 'River valley'} · ${info.population.toLocaleString()} residents · day ${info.day}`;
+    if (info) this.continueNote.textContent = `${info.population.toLocaleString()} residents · day ${info.day}`;
   }
 
   setOpen(open: boolean): void {

@@ -10,7 +10,6 @@ import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
 import { RoadLayer } from './render/roads';
 import { RiverLayer } from './render/river';
-import { WaterLayer } from './render/water';
 import { BuildingLayer } from './render/buildings';
 import { OverlayLayer } from './render/overlay';
 import { CarLayer } from './render/cars';
@@ -22,7 +21,6 @@ import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
 import { RES_POP } from './constants';
-import type { MapKind } from './maps';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
@@ -31,7 +29,6 @@ const { renderer, scene, camera, controls, grid, update: updateScene } = createS
 const landscape = new LandscapeLayer();
 const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
-const water = new WaterLayer();
 const structures = new StructureLayer();
 const roads = new RoadLayer();
 const buildings = new BuildingLayer();
@@ -41,7 +38,7 @@ const transport = new TransportLayer();
 const subway = new SubwayLayer();
 const incidents = new IncidentLayer();
 let showTraffic = false;
-scene.add(structures.group, landscape.group, water.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
+scene.add(structures.group, landscape.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -113,7 +110,7 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); water.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
@@ -181,17 +178,17 @@ function startCity(data: Parameters<typeof game.load>[0], message?: string): voi
   if (message) hud.toast(message);
 }
 
-const savedCity = (): { mapKind: MapKind; population: number; day: number } | null => {
+const savedCity = (): { population: number; day: number } | null => {
   const save = loadLocal();
   if (!save) return null;
   let population = 0;
   for (let i = 0; i < save.kind.length; i++) if (save.kind[i] === 2) population += RES_POP[save.level[i]];
-  return { mapKind: save.mapKind ?? 'river', population, day: Math.floor(save.tick / 480) + 1 };
+  return { population, day: Math.floor(save.tick / 480) + 1 };
 };
 
 const menu: MainMenu = new MainMenu(uiRoot, {
   continueCity: () => { const save = loadLocal(); if (save) startCity(save); },
-  newCity: (kind, seed) => { clearLocal(); history.replaceState(null, '', location.pathname); startCity(newCity(seed, kind)); hud.setTax(10); },
+  newCity: (seed) => { clearLocal(); history.replaceState(null, '', location.pathname); startCity(newCity(seed)); hud.setTax(10); },
   demoCity: () => { history.replaceState(null, '', location.pathname); startCity(demoCity(true), 'Demo city loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
   resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
   help: () => { menu.setOpen(false); hud.showWelcome(); },
@@ -233,7 +230,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, water, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 const clock = document.createElement('div');
@@ -254,7 +251,6 @@ renderer.setAnimationLoop((now: number) => {
   streetlights.update(light.night);
   cars.setNight(light.night);
   river.update(now / 1000);
-  water.update(now / 1000);
   const hour = Math.floor(light.hour), minute = Math.floor(light.hour % 1 * 60);
   const label = `${light.night > 0.5 ? '☾' : '☀'} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} · Day ${Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1}`;
   if (label !== lastClock) { clock.textContent = label; lastClock = label; }

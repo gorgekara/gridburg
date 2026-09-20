@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import type { Terrain } from '../terrain';
-import { GRID } from '../constants';
 import { MeshBuilder } from './meshBuilder';
 import { riverSamples } from './landscape';
 
@@ -89,56 +88,31 @@ export class RiverLayer {
     const samples = riverSamples(t);
     const foot = samples[100], next = samples[101], len = Math.hypot(next.x - foot.x, next.z - foot.z);
     this.cascade = { x: foot.x, z: foot.z, dx: (next.x - foot.x) / len, dz: (next.z - foot.z) / len, w: foot.w };
-    // No upstream drop on sea maps, so no spray either.
-    this.spray.visible = samples[0].y > 0.1;
     const pts = samples.flatMap(p => [p.x, p.z]);
     const widths = samples.map(p => p.w);
     // Where the channel runs through open sea there is no bank to draw, only more water.
-    // A channel through open water has no banks to draw: walk out from each sample until the
-    // water ends, and treat stretches with sea on both sides as part of the sea itself.
-    const shoreReach = (x: number, z: number, dx: number, dz: number): number => {
-      for (let d = 0.5; d <= 12; d += 0.5) {
-        const tx = Math.max(0, Math.min(GRID - 1, Math.floor(x + dx * d)));
-        const tz = Math.max(0, Math.min(GRID - 1, Math.floor(z + dz * d)));
-        if (t.water[tz * GRID + tx] !== 1) return d;
-      }
-      return 12;
-    };
-    // On sea maps the channel is a shipping lane through open water, drawn by the sea itself.
-    const lane = t.type === 'seaport' || t.type === 'islands';
-    const atSea = samples.map((p, i) => {
-      if (lane) return true;
-      const next = samples[Math.min(samples.length - 1, i + 1)], prev = samples[Math.max(0, i - 1)];
-      const dx = next.x - prev.x, dz = next.z - prev.z, len = Math.hypot(dx, dz) || 1;
-      // A river has land within a few tiles on both sides; open water on either side means
-      // this stretch is really part of a sea or a lake, so it gets no banks of its own.
-      const open = Math.max(6, p.w + 4);
-      return [-1, 1].some(side =>
-        shoreReach(p.x + 40, p.z + 40, -dz / len * side, dx / len * side) > open);
-    });
+
     this.lead = 110;
     const count = samples.length;
-    const elevate = (geometry: THREE.BufferGeometry, offset: number, sunk: number): void => {
+    const elevate = (geometry: THREE.BufferGeometry, offset: number): void => {
       const p = geometry.getAttribute('position');
       for (let i = 0; i < samples.length; i++) {
-        // Offshore stretches sink clear of the sea and its beach, which draw that water instead.
-        const y = samples[i].y + (atSea[i] ? sunk : offset);
-        p.setY(i * 2, y); p.setY(i * 2 + 1, y);
+        p.setY(i * 2, samples[i].y + offset); p.setY(i * 2 + 1, samples[i].y + offset);
       }
       geometry.computeVertexNormals(); geometry.computeBoundingSphere();
     };
 
     const bb = new MeshBuilder();
-    bb.ribbon(pts, count, widths.map((w, i) => atSea[i] ? w + 0.05 : w + 0.85 + Math.sin(i * 0.73) * 0.16), 0.006, 0xcdbf8f);
+    bb.ribbon(pts, count, widths.map((w, i) => w + 0.85 + Math.sin(i * 0.73) * 0.16), 0.006, 0xcdbf8f);
     this.bank.geometry.dispose();
     this.bank.geometry = bb.build();
-    elevate(this.bank.geometry, 0.006, -0.016);
+    elevate(this.bank.geometry, 0.006);
 
     const wb = new MeshBuilder();
     this.range = wb.ribbon(pts, count, widths.map((w) => w + 0.4), 0.014, WATER.getHex());
     this.water.geometry.dispose();
     this.water.geometry = wb.build();
-    elevate(this.water.geometry, 0.014, -0.012);
+    elevate(this.water.geometry, 0.014);
     // River-space coordinates: distance downstream and position across the channel.
     const uv = new Float32Array(this.water.geometry.getAttribute('position').count * 2);
     let along = 0;
