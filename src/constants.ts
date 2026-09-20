@@ -36,13 +36,13 @@ export const CIVIC_LABELS: Record<CivicNeed, string> = {
 };
 
 export const COST_ROAD = 25; // per unit of length
-export const COST_AVENUE = 60;
+export const COST_AVENUE = 180; // tripled when avenues grew to a three-tile corridor
 export const BRIDGE_FACTOR = 3;
 export const COST_ZONE = 5;
 export const COST_LIGHT = 150;
 export const COST_ROUNDABOUT = 900;
 export const START_MONEY = 14000;
-export const ROAD_UPKEEP = 0.015; // per unit length per second; avenues cost double
+export const ROAD_UPKEEP = 0.015; // per unit length per second; avenues cost triple, for their three tiles
 
 export interface ServiceSpec {
   name: string;

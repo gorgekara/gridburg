@@ -177,7 +177,7 @@ function applyNetwork(p: EditPayload): void {
   newSegs.forEach((s, i) => {
     nodeEdges[segA[i]].push({ seg: i, to: segB[i], fwd: true });
     if (!s.oneway) nodeEdges[segB[i]].push({ seg: i, to: segA[i], fwd: false });
-    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (s.kind === KIND_AVENUE ? 2 : 1);
+    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (s.kind === KIND_AVENUE ? 3 : 1);
     roadLength += s.len;
   });
   lockOwner = new Int32Array(nodeIds.length).fill(-1);
