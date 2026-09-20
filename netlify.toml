@@ -1,0 +1,11 @@
+# The game is a static bundle: Vite builds it, Netlify serves it. There is no
+# server side and nothing to proxy — every asset is generated at build time.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# The build runs the type check and the test suite before it emits anything, so
+# a broken simulation cannot deploy.

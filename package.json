@@ -7,7 +7,7 @@
     "dev": "vite",
     "test": "node tests/run.mjs",
     "test:soak": "node tests/soak.mjs",
-    "build": "tsc && vite build",
+    "build": "tsc && node tests/run.mjs && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
