@@ -103,7 +103,7 @@ function load(city) {
   const net = Network.fromPlain(city.net);
   ensureApproaches(net); // the app extends every entrance past the map edge before simulating
   const raster = rasterize(net);
-  send({ type: 'load', railLines: [], ...city, cityLevel: city.cityLevel ?? 0, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
+  send({ type: 'load', ...city, cityLevel: city.cityLevel ?? 0, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
 }
 test('real simulation grows a town, awards milestones, and stays finite', () => {
   const city = demoCity();
@@ -387,7 +387,7 @@ test('regular clock publishes population matching rendered building levels', () 
   assert.equal(state.stats.pop, actual);
 });
 
-const { transitNetwork, transitLineForTrip, OUT_OF_TOWN } = await import('../src/sim/transit.ts');
+const { transitNetwork, transitLineForTrip, intercityStations } = await import('../src/sim/transit.ts');
 const { footprint, siteOwners } = await import('../src/sites.ts');
 const { entrancePlan } = await import('../src/roads/entries.ts');
 const { railPath } = await import('../src/roads/rail.ts');
@@ -492,27 +492,18 @@ test('external traffic drives in from off the map without stalling the entrance'
   assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
   console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
 });
-test('railways only run where the player drew them, and a line out of town carries travellers', () => {
+test('railways connect themselves, and a station by an entrance runs out of town', () => {
   const city = demoCity(true);
   const stations = Array.from(city.kind, (k, i) => k === C.T_STATION ? i : -1).filter(i => i >= 0);
   assert.ok(stations.length > 1, 'The demo has two stations');
-
-  // No lines drawn: two stations sitting there do not connect themselves.
-  load({ ...city, railLines: [] });
-  send({ type: 'warm', ticks: 60 });
-  assert.equal(latest().stats.transport.railLines, 0, 'Stations no longer pair up on their own');
-
-  // The line the player drew is the line that runs.
-  load({ ...city, railLines: [{ a: stations[0], b: stations[1] }] });
-  send({ type: 'warm', ticks: 60 });
-  assert.equal(latest().stats.transport.railLines, 1);
-  assert.equal(latest().stats.transport.intercityLines, 0);
-
-  // A line out of town reports itself and moves people in and out of the city.
-  load({ ...city, railLines: [{ a: stations[0], b: OUT_OF_TOWN }] });
+  load(city);
   send({ type: 'warm', ticks: 150 });
+  const transport = latest().stats.transport;
+  assert.equal(transport.railLines, 1, 'Two stations pair up on their own');
+  assert.equal(transport.intercityLines, 1, 'The station nearest the city entrance also runs out of town');
+
+  // Those trains carry people who would otherwise arrive and leave by road.
   send({ type: 'speed', value: 1 });
-  assert.equal(latest().stats.transport.intercityLines, 1);
   for (let f = 0; f < 40 * C.SIM_HZ; f++) {
     simulateFrame();
     if (messages.length > 60) messages.splice(0, messages.length - 20);
@@ -523,16 +514,17 @@ test('railways only run where the player drew them, and a line out of town carri
   assert.ok(stats.transport.fareIncome > 0, 'Their fares reach the treasury');
   console.log(`  Intercity line: ${stats.transport.railPassengers} passengers/min, fares $${stats.transport.fareIncome.toFixed(2)}/s`);
 
-  // Lines travel with the city, and a line to a demolished station stops running.
-  city.railLines = [{ a: stations[0], b: stations[1] }, { a: stations[1], b: OUT_OF_TOWN }];
-  const restored = decode(encode(city));
-  assert.deepEqual(restored.railLines, city.railLines, 'Drawn lines survive a save');
+  // A gate too far from any station leaves the intercity service unstaffed.
+  const far = intercityStations([{ x: 79, z: 79 }], stations);
+  assert.deepEqual(far, [], 'Stations beyond the range of an entrance stay local');
+  assert.deepEqual(intercityStations([{ x: stations[0] % C.GRID, z: Math.floor(stations[0] / C.GRID) }], stations), [stations[0]]);
+
+  // Demolishing a station takes its services with it.
   const razed = { ...city, kind: Uint8Array.from(city.kind) };
   for (const t of footprint(stations[1], C.T_STATION)) razed.kind[t] = 0;
   load(razed);
   send({ type: 'warm', ticks: 30 });
-  assert.equal(latest().stats.transport.railLines, 0, 'A line to a demolished station stops running');
-  assert.equal(latest().stats.transport.intercityLines, 0);
+  assert.equal(latest().stats.transport.railLines, 0, 'One station cannot make a line by itself');
 });
 test('a fire in a back lot behind the street row is reached and put out', () => {
   const city = demoCity(true);

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { GRID, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT } from '../constants';
 import { transitNetwork } from '../sim/transit';
-import type { RailLine } from '../sim/transit';
 import { railPath, railTrack, intercityTrack, PLATFORM_LENGTH } from '../roads/rail';
 import type { TrackPoint } from '../roads/rail';
 import type { Raster } from '../roads/raster';
@@ -212,13 +211,13 @@ export class TransportLayer {
     this.group.add(this.tracks, this.moving);
   }
   reset(): void { this.signature = ''; this.inputs = -1; }
-  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, railLines: readonly RailLine[] = []): void {
+  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, gates: readonly { x: number; z: number }[] = []): void {
     // Stations rarely change, but this runs on every state update, so skip the costly
     // route search unless the network or a transport tile actually changed.
     const inputs = transportSignature(kind, flags, raster, net);
     if (inputs === this.inputs) return;
     this.inputs = inputs;
-    const transit = transitNetwork(kind, i => flags[i] === 0 && raster.accSeg[i] >= 0, (a, b) => kind[a] === T_STATION && railPath(net, raster, a, b).length > 1, railLines);
+    const transit = transitNetwork(kind, i => flags[i] === 0 && raster.accSeg[i] >= 0, (a, b) => kind[a] === T_STATION && railPath(net, raster, a, b).length > 1, gates);
     const signature = `${net.version}:` + JSON.stringify(transit);
     if (signature === this.signature) return;
     this.signature = signature;

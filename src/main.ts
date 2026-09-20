@@ -24,6 +24,7 @@ import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
 import { RES_POP } from './constants';
 import { serviceCoverage } from './coverage';
+import { entryGate } from './roads/entries';
 import { SERVICE_TOOL } from './input';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
@@ -115,9 +116,11 @@ const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].incl
 // Reaching for a service shows what the city already covers, so the gap is visible before placing.
 // A transport tool in hand opens that mode's route map, the way the metro tool opens the tunnels.
 const showTransitLines = (t: string): void => {
-  transitLines.setMode(t === 'bus' ? 'bus' : t === 'station' || t === 'railline' ? 'rail' : null);
-  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+  transitLines.setMode(t === 'bus' ? 'bus' : t === 'station' ? 'rail' : null);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
 };
+// Which entrances a railway can leave town through; recomputed with the network, not stored.
+const entryGates = (): { x: number; z: number }[] => [...game.net.nodes.values()].filter(n => n.entry).map(entryGate);
 const showCoverage = (): void => {
   const k = SERVICE_TOOL[input.tool];
   overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
@@ -132,22 +135,22 @@ game.onTerrain = () => { alleys.reset(); transport.reset(); landscape.rebuild(ga
 game.onEdit = () => {
   showCoverage();
   alleys.rebuild(game.kind, game.level, game.raster);
-  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
   buildings.rebuild(game.kind, game.level, game.raster);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
 };
 game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster);
-  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+  transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   buildings.rebuild(game.kind, game.level, game.raster);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net, game.railLines);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);

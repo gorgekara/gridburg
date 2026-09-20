@@ -5,7 +5,6 @@ import { TrafficSpace, vehicleLength } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, distance } from './transit';
-import type { RailLine } from './transit';
 import type { TransitNetwork } from './transit';
 import {
   GRID, N_TILES, MAX_CARS, SIM_HZ, T_RES, T_COM, T_IND, T_PUMP, T_TOWER, T_OUTLET,
@@ -13,6 +12,7 @@ import {
   F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, isZone, isService, neighbor, tileHash,
 } from '../constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
+import { entrySite } from '../roads/entries';
 import { civicShortfalls } from './growth';
 import { isPolicyId, noPolicies, policyEffects, policyExpense, POLICIES } from '../policies';
 import type { Policies, PolicyEffects } from '../policies';
@@ -70,7 +70,6 @@ let policyCost = 0;
 let tollIncome = 0, tollWindow = 0;
 let riderWindow = 0, airWindow = 0, airTokens = 0;
 let railWindow = 0, railTokens = 0;
-let railLines: RailLine[] = [];
 let power: [number, number] = [0, 0];
 let water: [number, number] = [0, 0];
 let sewage: [number, number] = [0, 0];
@@ -151,7 +150,6 @@ function pickWeighted(tiles: number[], cum: number[]): number {
 
 // ---- network snapshot -----------------------------------------------------------------------
 function applyNetwork(p: EditPayload): void {
-  railLines = (p.railLines ?? []).map(l => ({ ...l }));
   const net = Network.fromPlain(p.net);
   const oldLens = segs.map((s) => s.len);
   const oldA = segs.map((s) => s.a);
@@ -901,9 +899,10 @@ function census(): void {
   demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - taxPenalty, -1, 1);
   demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - taxPenalty, -1, 1);
   demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - taxPenalty, -1, 1) : -1;
-  const signature = `${serial}:${JSON.stringify(railLines)}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
+  const signature = `${serial}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
   if (signature !== transitSignature) {
-    transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]), railLines);
+    const gates = entryNodes.map(n => entrySite(nodeX[n], nodeZ[n]));
+    transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]), gates);
     transitSignature = signature; transitTokens = transit.lines.map(() => 0); transitDepartures = transit.lines.map(() => 12);
     for (let i = 0; i < slots.length; i++) if (slots[i]?.line !== undefined) freeCar(i);
   }

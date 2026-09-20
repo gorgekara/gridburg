@@ -6,11 +6,10 @@ import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UN
 import { gridPoint, roadPoint } from './placement';
 import * as THREE from 'three';
 import {
-  T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_SCHOOL, COST_RAIL_LINE, COST_INTERCITY_LINE, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
+  T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
-import { OUT_OF_TOWN } from './sim/transit';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
@@ -21,7 +20,7 @@ export type Tool =
   | 'none' | 'inspect'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade' | 'bridge' | 'tunnel'
   | 'roundabout' | 'light' | 'oneway'
-  | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'railline' | 'subway' | 'airport' | 'treatment'
+  | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'school' | 'fire' | 'police' | 'recycling' | 'university' | 'solar'
   | 'bulldoze';
@@ -30,7 +29,7 @@ export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
   bridge: 0x9cd9c1, tunnel: 0x86d9e7,
-  office: 0xb791e0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, railline: 0x9fd5c4, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
+  office: 0xb791e0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
   road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff,
@@ -140,7 +139,6 @@ export class Input {
   }
 
   setTool(t: Tool): void {
-    this.lineStart = -1;
     this.cancel();
     this.tool = t;
     this.rectMat.color.setHex(TOOL_COLOR[t]);
@@ -606,8 +604,6 @@ export class Input {
       net.version++;
       g.spend(0);
       g.flush();
-    } else if (this.tool === 'railline') {
-      this.railLineClick(p);
     } else if (this.tool === 'roundabout') {
       const c = this.roundaboutCenter(p);
       if (!g.canAfford(COST_ROUNDABOUT)) { this.onToast?.('Not enough money'); return; }
@@ -624,43 +620,6 @@ export class Input {
       g.setKind(t, k, SERVICES[k].cost);
       g.flush();
     }
-  }
-
-  /** The station the player picked first, waiting for the other end of the line. */
-  private lineStart = -1;
-
-  /** The railway station under a click, taking the whole 3x2 site into account. */
-  private stationAt(p: P): number {
-    const t = this.tileOf(p);
-    const owner = this.game.owners[t];
-    const tile = owner >= 0 ? owner : t;
-    return this.game.kind[tile] === T_STATION ? tile : -1;
-  }
-
-  /**
-   * Railways are drawn, not inferred: pick a station, then the station it should run to, or a point
-   * near the map edge to send the line out of town.
-   */
-  private railLineClick(p: P): void {
-    const g = this.game;
-    const station = this.stationAt(p);
-    if (this.lineStart < 0) {
-      if (station < 0) { this.onToast?.('Start a railway line at one of your stations'); return; }
-      this.lineStart = station;
-      this.onToast?.('Now pick the station it runs to, or the map edge to leave town');
-      return;
-    }
-    if (g.kind[this.lineStart] !== T_STATION) { this.lineStart = -1; return; }
-    const edge = Math.min(p.x, p.z, GRID - p.x, GRID - p.z) <= 6;
-    const end = station >= 0 && station !== this.lineStart ? station : edge ? OUT_OF_TOWN : -2;
-    if (end === -2) { this.onToast?.('Finish the line at another station, or within six cells of the map edge'); return; }
-    const cost = end === OUT_OF_TOWN ? COST_INTERCITY_LINE : COST_RAIL_LINE;
-    if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
-    if (!g.addRailLine(this.lineStart, end)) { this.onToast?.('That line already runs'); this.lineStart = -1; return; }
-    g.spend(cost);
-    g.flush();
-    this.onToast?.(end === OUT_OF_TOWN ? 'Intercity line opened: trains now run off the map' : 'Railway line opened between your stations');
-    this.lineStart = -1;
   }
 
   /** Avenue rings need a wider island to fit the four-lane corridor. */

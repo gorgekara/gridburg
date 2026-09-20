@@ -33,8 +33,6 @@ export const T_GARDEN = 26;
 export const OFFICE_UNLOCK = 3;
 export const ENTRY_UNLOCK = 2;
 export const COST_ENTRY = 3500;
-export const COST_RAIL_LINE = 2500;
-export const COST_INTERCITY_LINE = 4500;
 export type CivicNeed = 'health' | 'education' | 'fire' | 'safety' | 'leisure' | 'waste';
 export const CIVIC_LABELS: Record<CivicNeed, string> = {
   health: 'Healthcare', education: 'Education', fire: 'Fire protection', safety: 'Public safety', leisure: 'Recreation', waste: 'Waste collection',

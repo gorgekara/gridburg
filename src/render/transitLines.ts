@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRID, SERVICES, T_BUS, T_STATION } from '../constants';
 import { transitNetwork } from '../sim/transit';
-import type { RailLine, TransitMode } from '../sim/transit';
+import type { TransitMode } from '../sim/transit';
 import type { Raster } from '../roads/raster';
 import { intercityTrack, railPath } from '../roads/rail';
 import type { Network } from '../roads/network';
@@ -44,13 +44,13 @@ export class TransitLineLayer {
     this.inputs = -1;
   }
 
-  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, railLines: readonly RailLine[] = []): void {
+  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, gates: readonly { x: number; z: number }[] = []): void {
     if (!this.mode) return;
     const inputs = transportSignature(kind, flags, raster, net);
     if (inputs === this.inputs) return;
     this.inputs = inputs;
     const operating = (i: number): boolean => flags[i] === 0 && raster.accSeg[i] >= 0;
-    const transit = transitNetwork(kind, operating, (a, b) => railPath(net, raster, a, b).length > 1, railLines);
+    const transit = transitNetwork(kind, operating, (a, b) => railPath(net, raster, a, b).length > 1, gates);
     const lines = transit.lines.filter(l => l.mode === this.mode);
     const intercity = this.mode === 'rail' ? transit.intercity : [];
     const signature = `${net.version}:${this.mode}:` + JSON.stringify([lines, intercity]);

@@ -34,9 +34,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   the city. They change pollution, incidents, school reach, transit ridership and how many people drive.
 - **Parks for every size of city.** Neighborhood parks from the start, playgrounds at Growing village,
   a two-cell sports field at Thriving town and a three-cell city park with a pond at City.
-- **Railways you draw yourself.** Build two stations, then draw the line between them with Rail line.
-  Finish a line near the map edge instead and it leaves town, so people arrive and depart by train
-  rather than by road.
+- **Railways that connect themselves.** Two stations link up by elevated track along the road
+  corridors, and a station within thirty cells of a city entrance also runs a service out of town, so
+  some people arrive and depart by train rather than by road.
 - **Route maps.** Picking a transport tool lights up that mode's lines through the streets, its stops
   and a marker running each route, the way the metro tool shows its tunnels.
 - **Service coverage at a glance.** Selecting a service paints the area existing buildings of that sort
@@ -64,10 +64,9 @@ demand. From Growing village, homes need healthcare and education to upgrade to 
 High-rises unlock at Thriving town; residential towers also need fire protection, public
 safety, waste collection and recreation. Fire and police provide coverage and growth benefits, and dispatch vehicles to incidents and patrol destinations.
 
-Railway stations do not connect themselves: draw each line with **Rail line** ($2,500), clicking one
-station and then the other. Finishing within six cells of the map edge opens an intercity line
-($4,500) that runs off the map, carrying a share of the people who would otherwise drive in and out
-and earning fares. Demolishing a station retires the lines that used it. The demo city includes the new services. Existing v3 local saves and share links still load;
+Railway stations connect to each other automatically. A station near a city entrance also runs a line
+out of town, which runs off the map beside the highway and carries a share of the people who would
+otherwise drive in and out, earning fares. The demo city includes the new services. Existing v3 local saves and share links still load;
 new v6 saves preserve earned milestones, service funding, loan balances, decline timers, active fires, crime and recent patrol protection.
 Versions 4 and 5 also migrate automatically. Old cities inherit
 the milestone matching their current population without collecting past grants again.

@@ -1,4 +1,4 @@
-import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, COST_RAIL_LINE, COST_INTERCITY_LINE } from '../constants';
+import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
 import { POLICIES, POLICY_IDS } from '../policies';
 import type { PolicyId } from '../policies';
@@ -97,8 +97,7 @@ const CATEGORIES: Category[] = [
   {
     id: 'transport', label: 'Transport', tools: [
       { id: 'bus', label: 'Bus stop', price: svc(T_BUS), note: '9-cell catchment · $0.45/s', hint: 'Place two stops near homes and jobs. Automatic return routes follow roads; congestion reduces capacity. Needs utilities' },
-      { id: 'station', label: 'Railway station', price: svc(T_STATION), note: '3 × 2 cells · $3/s', hint: 'Build the stations, then draw the line between them with Rail line. 18-cell catchment, 120 passenger capacity per connection' },
-      { id: 'railline', label: 'Rail line', price: money(COST_RAIL_LINE), note: `Out of town ${money(COST_INTERCITY_LINE)}`, hint: 'Click one station, then the station it runs to. Finish near the map edge instead and the line leaves town, bringing people in and out by train rather than by road' },
+      { id: 'station', label: 'Railway station', price: svc(T_STATION), note: '3 × 2 cells · $3/s', hint: 'Two stations connect automatically by elevated tracks along road corridors. A station near a city entrance also runs a service out of town. 18-cell catchment, 120 passenger capacity per connection' },
       { id: 'subway', label: 'Metro station', price: svc(T_SUBWAY), note: '1 cell · $2.5/s', hint: 'Metro stations link to each other automatically through underground tunnels, so trains skip road traffic. 14-cell catchment, 100 passenger capacity per connection. Needs utilities' },
       { id: 'airport', label: 'Regional airport', price: svc(T_AIRPORT), note: '8 × 3 cells · $7/s', hint: 'Clear a runway-sized site beside a road. Flights replace some incoming car trips within 24 cells; needs utilities' },
     ],
@@ -538,7 +537,7 @@ export class Hud {
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. Click the city progress card to see your next milestone and service coverage</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
-          <li><b>Railways</b> — build two stations, then draw the line between them with <b>Rail line</b>. End a line near the map edge and it leaves town, bringing people in and out by train</li>
+          <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>
           <li><b>Policies</b> — standing decisions like recycling, smoke alarms or free public transport. They cost money every second and the bill grows with the city</li>
           <li><b>Pollution</b> from industry and coal spreads through the ground and drives residents away. Press <b>P</b> to see it</li>
         </ul>

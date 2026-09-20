@@ -6,11 +6,8 @@ import { noPolicies, policiesFromMask, policyMask } from './policies';
 import type { Policies } from './policies';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
-import { OUT_OF_TOWN } from './sim/transit';
-import type { RailLine } from './sim/transit';
 
 export interface SaveData {
-  railLines?: RailLine[];
   incidents?: IncidentSnapshot;
   policies?: Policies;
   funding?: Funding;
@@ -28,8 +25,9 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 10;
-// v9 appends a two-byte policy mask to the v8 header; v10 appends the railway lines after the incidents.
+const VERSION = 9;
+// v9 appends a two-byte policy mask to the v8 header. v10 cities, which stored drawn railway
+// lines after the incidents, still load; their lines are ignored now that railways pair up again.
 const HEAD_V8 = 28;
 const HEAD = 30;
 const C_OFF = 40; // coordinates are stored as (value + 40) * 256 in a uint16
@@ -81,13 +79,6 @@ export function encode(d: SaveData): string {
   const incidentBytes = new TextEncoder().encode(JSON.stringify(d.incidents ?? { fires: [], crime: [], patrol: [] }));
   bytes.push((incidentBytes.length >>> 24) & 255, (incidentBytes.length >>> 16) & 255, (incidentBytes.length >>> 8) & 255, incidentBytes.length & 255);
   for (const byte of incidentBytes) bytes.push(byte);
-  // Railway lines: a count, then each line's two tiles. A line out of town stores 0xffff as its far end.
-  const railLines = (d.railLines ?? []).slice(0, 255);
-  bytes.push(railLines.length & 255);
-  for (const line of railLines) {
-    const far = line.b === OUT_OF_TOWN ? 0xffff : line.b;
-    bytes.push((line.a >> 8) & 255, line.a & 255, (far >> 8) & 255, far & 255);
-  }
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -108,7 +99,7 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, 7, 8, 9, VERSION].includes(version)) return null;
+    if (![3, 4, 5, 6, 7, 8, VERSION, 10].includes(version)) return null;
     const header = legacy ? 14 : version === 4 ? 15 : version >= 9 ? HEAD : HEAD_V8;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
@@ -167,17 +158,13 @@ export function decode(str: string): SaveData | null {
       if (!data || !Array.isArray(data.fires) || data.fires.length > N_TILES || !data.fires.every((f: { tile: unknown; age: number }) => f && tile(f.tile) && Number.isInteger(f.age) && f.age >= 0 && f.age < 120) || !pairs(data.crime, 100) || !pairs(data.patrol, 180)) return null;
       incidents = { fires: data.fires, crime: data.crime, patrol: data.patrol }; p += length;
     }
-    const railLines: RailLine[] = [];
+    // A v10 city carries a block of drawn railway lines here. Railways connect themselves again,
+    // so the block is validated for length and then skipped.
     if (version >= 10) {
       if (p >= bytes.length) return null;
       const count = bytes[p]; p += 1;
       if (p + count * 4 !== bytes.length) return null;
-      for (let k = 0; k < count; k++, p += 4) {
-        const a = dv.getUint16(p), far = dv.getUint16(p + 2);
-        const b = far === 0xffff ? OUT_OF_TOWN : far;
-        if (a >= N_TILES || (b !== OUT_OF_TOWN && b >= N_TILES)) return null;
-        railLines.push({ a, b });
-      }
+      p += count * 4;
     }
     // Cities saved while the map kinds existed carry one extra byte; skip it.
     if (bytes.length - p === 1) p += 1;
@@ -185,7 +172,7 @@ export function decode(str: string): SaveData | null {
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents, railLines };
+    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
   } catch {
     return null;
   }

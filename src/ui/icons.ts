@@ -57,7 +57,6 @@ const I: Record<string, string> = {
   tower: '<rect x="6" y="3" width="12" height="8" rx="2"/><path d="M8 11 6 21M16 11l2 10M12 11v10M7 16h10"/>',
   pump: '<path d="M12 21s5-5 5-9a5 5 0 0 0-10 0c0 4 5 9 5 9z"/><path d="M12 14V8.5M9.7 10.8 12 8.5l2.3 2.3"/>',
   outlet: '<path d="M3 7h9a4 4 0 0 1 4 4v2"/><path d="M3 12h8"/><path d="M16 16s2.2 2.4 2.2 3.8a2.2 2.2 0 0 1-4.4 0c0-1.4 2.2-3.8 2.2-3.8z"/>',
-  railline: '<path d="M4 20 20 4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="5" r="2.4"/><path d="m9 13 2 2m2-6 2 2"/>',
   lane: '<path d="M6 21V3m12 18V3"/><path d="M12 7v3m0 4v3"/>',
   highway: '<path d="M3 21V3m18 18V3"/><path d="M12 3v4m0 4v2m0 4v4"/><path d="M7.5 21V3m9 18V3"/>',
   playground: '<path d="M4 21V9m6 12V9M3 9h8M5 6.5 9 4M5 4l4 2.5"/><path d="M15 21V12h6l-3-4z"/><path d="M15 16h6"/>',

@@ -5,7 +5,6 @@ import type { Policies, PolicyId } from '../policies';
 import type { Funding, FundingKey } from '../management';
 import type { CivicNeed } from '../constants';
 import type { PlainNet } from '../roads/network';
-import type { RailLine } from './transit';
 
 export interface TileReport {
   tile: number;
@@ -57,7 +56,6 @@ export interface Stats {
 }
 
 export interface EditPayload {
-  railLines: RailLine[];
   kind: Uint8Array;
   net: PlainNet;
   serial: number;
