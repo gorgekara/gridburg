@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from '../terrain';
+import { GRID } from '../constants';
 import { MeshBuilder } from './meshBuilder';
 import { riverSamples } from './landscape';
 
@@ -88,20 +89,36 @@ export class RiverLayer {
     const samples = riverSamples(t);
     const foot = samples[100], next = samples[101], len = Math.hypot(next.x - foot.x, next.z - foot.z);
     this.cascade = { x: foot.x, z: foot.z, dx: (next.x - foot.x) / len, dz: (next.z - foot.z) / len, w: foot.w };
+    // No upstream drop on sea maps, so no spray either.
+    this.spray.visible = samples[0].y > 0.1;
     const pts = samples.flatMap(p => [p.x, p.z]);
     const widths = samples.map(p => p.w);
+    // Where the channel runs through open sea there is no bank to draw, only more water.
+    const atSea = samples.map((p, i) => {
+      const next = samples[Math.min(samples.length - 1, i + 1)], prev = samples[Math.max(0, i - 1)];
+      const dx = next.x - prev.x, dz = next.z - prev.z, len = Math.hypot(dx, dz) || 1;
+      const reach = p.w + 1.4;
+      return [-1, 1].every(side => {
+        // Clamped, so the stretches drawn past the map edge inherit the coast they run out from.
+        const x = Math.max(0, Math.min(GRID - 1, Math.floor(p.x + 40 - dz / len * reach * side)));
+        const z = Math.max(0, Math.min(GRID - 1, Math.floor(p.z + 40 + dx / len * reach * side)));
+        return t.water[z * GRID + x] === 1;
+      });
+    });
     this.lead = 110;
     const count = samples.length;
     const elevate = (geometry: THREE.BufferGeometry, offset: number): void => {
       const p = geometry.getAttribute('position');
       for (let i = 0; i < samples.length; i++) {
-        p.setY(i * 2, samples[i].y + offset); p.setY(i * 2 + 1, samples[i].y + offset);
+        // Offshore stretches sink below the sea surface, which then draws them as open water.
+        const y = samples[i].y + (atSea[i] ? Math.min(offset, 0.004) : offset);
+        p.setY(i * 2, y); p.setY(i * 2 + 1, y);
       }
       geometry.computeVertexNormals(); geometry.computeBoundingSphere();
     };
 
     const bb = new MeshBuilder();
-    bb.ribbon(pts, count, widths.map((w, i) => w + 0.85 + Math.sin(i * 0.73) * 0.16), 0.006, 0xcdbf8f);
+    bb.ribbon(pts, count, widths.map((w, i) => atSea[i] ? w + 0.05 : w + 0.85 + Math.sin(i * 0.73) * 0.16), 0.006, 0xcdbf8f);
     this.bank.geometry.dispose();
     this.bank.geometry = bb.build();
     elevate(this.bank.geometry, 0.006);

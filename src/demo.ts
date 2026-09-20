@@ -45,6 +45,31 @@ export function demoCity(expanded = false): SaveData {
     if (dd < bd) { bd = dd; best = j; }
   });
   if (best >= 0) {
+    // Dry within half a road width plus a margin, so the drive never ends up lying on the water.
+    const dry = (x: number, z: number): boolean => {
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const tx = Math.floor(x + dx * 0.9), tz = Math.floor(z + dz * 0.9);
+        if (!inBounds(tx, tz) || terrain.water[idx(tx, tz)]) return false;
+      }
+      return true;
+    };
+    // Split a polyline into the runs that stay on dry land the whole way.
+    const dryRuns = (points: { x: number; z: number }[]): { x: number; z: number }[][] => {
+      const runs: { x: number; z: number }[][] = [];
+      let run: { x: number; z: number }[] = [];
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const reachable = i === 0 || (() => {
+          const q = points[i - 1], steps = Math.ceil(Math.hypot(p.x - q.x, p.z - q.z) / 0.25);
+          for (let k = 0; k <= steps; k++) if (!dry(q.x + (p.x - q.x) * k / steps, q.z + (p.z - q.z) * k / steps)) return false;
+          return true;
+        })();
+        if (dry(p.x, p.z) && reachable) run.push(p);
+        else { if (run.length >= 2) runs.push(run); run = dry(p.x, p.z) ? [p] : []; }
+      }
+      if (run.length >= 2) runs.push(run);
+      return runs;
+    };
     const bank: { x: number; z: number }[] = [];
     for (let j = best - 16; j <= best + 16; j += 4) {
       const a = terrain.river[Math.max(0, Math.min(terrain.river.length - 2, j))];
@@ -54,14 +79,18 @@ export function demoCity(expanded = false): SaveData {
       nx /= l; nz /= l;
       // Pick the bank on the city side.
       if ((anchor.x - a.x) * nx + (anchor.z - a.z) * nz < 0) { nx = -nx; nz = -nz; }
-      const p = { x: a.x + nx * (a.w + 2.1), z: a.z + nz * (a.w + 2.1) };
-      if (p.x > 2 && p.z > 2 && p.x < GRID - 2 && p.z < GRID - 2) bank.push(p);
+      const p = clampP({ x: Math.floor(a.x + nx * (a.w + 2.6)) + 0.5, z: Math.floor(a.z + nz * (a.w + 2.6)) + 0.5 });
+      if (!bank.length || Math.hypot(p.x - bank.at(-1)!.x, p.z - bank.at(-1)!.z) > 0.6) bank.push(p);
     }
-    if (bank.length >= 2) {
-      net.insertPath(bank, KIND_ROAD);
-      const mid = bank[Math.floor(bank.length / 2)];
-      const from = P(49, 0);
-      net.insertPath([clampP(from), { x: (from.x + mid.x) / 2 + e.dz * 3, z: (from.z + mid.z) / 2 + e.dx * 3 }, mid].map(clampP), KIND_ROAD);
+    const runs = dryRuns(bank);
+    for (const run of runs) net.insertPath(run, KIND_ROAD);
+    // Join the longest dry stretch to the end of the avenue, again only over dry land.
+    const drive = runs.sort((a, b) => b.length - a.length)[0];
+    if (drive) {
+      const mid = drive[Math.floor(drive.length / 2)];
+      const from = clampP(P(49, 0));
+      const link = dryRuns([from, mid]);
+      if (link.length === 1 && link[0].length === 2) net.insertPath(link[0], KIND_ROAD);
     }
   }
 
@@ -80,6 +109,30 @@ export function demoCity(expanded = false): SaveData {
     const p = P(along, 0);
     const n = net.nearestNode(p.x, p.z, 1.0);
     if (n && net.degree(n.id) >= 3) n.light = true;
+  }
+
+  // Curved pieces can still bow across a bank, so drop any surface road left standing on water.
+  for (const seg of [...net.segs.values()]) {
+    if (seg.structure) continue;
+    let wet = false;
+    for (let i = 0; i <= seg.n && !wet; i++) {
+      const x = Math.floor(seg.pts[i * 2]), z = Math.floor(seg.pts[i * 2 + 1]);
+      wet = inBounds(x, z) && terrain.water[idx(x, z)] === 1;
+    }
+    if (wet) net.removeSeg(seg.id);
+  }
+
+  // Removing a span can strand a stretch of road; drop anything the highway can no longer reach.
+  const entryNode = [...net.nodes.values()].find(n => n.entry) ?? [...net.nodes.values()][0];
+  if (entryNode) {
+    const seen = new Set<number>([entryNode.id]), queue = [entryNode.id];
+    for (let head = 0; head < queue.length; head++) {
+      for (const seg of net.segsAt(queue[head])) {
+        const other = seg.a === queue[head] ? seg.b : seg.a;
+        if (!seen.has(other)) { seen.add(other); queue.push(other); }
+      }
+    }
+    for (const seg of [...net.segs.values()]) if (!seen.has(seg.a) && !seen.has(seg.b)) net.removeSeg(seg.id);
   }
 
   // Zoning from the rasterized network.

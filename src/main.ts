@@ -10,6 +10,7 @@ import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
 import { RoadLayer } from './render/roads';
 import { RiverLayer } from './render/river';
+import { WaterLayer } from './render/water';
 import { BuildingLayer } from './render/buildings';
 import { OverlayLayer } from './render/overlay';
 import { CarLayer } from './render/cars';
@@ -17,6 +18,11 @@ import { Input } from './input';
 import { Hud } from './ui/hud';
 import { demoCity } from './demo';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
+import { MainMenu, loadSettings, saveSettings } from './ui/menu';
+import type { Settings } from './ui/menu';
+import { setDayLength } from './render/daylight';
+import { RES_POP } from './constants';
+import type { MapKind } from './maps';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
@@ -25,6 +31,7 @@ const { renderer, scene, camera, controls, grid, update: updateScene } = createS
 const landscape = new LandscapeLayer();
 const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
+const water = new WaterLayer();
 const structures = new StructureLayer();
 const roads = new RoadLayer();
 const buildings = new BuildingLayer();
@@ -34,7 +41,7 @@ const transport = new TransportLayer();
 const subway = new SubwayLayer();
 const incidents = new IncidentLayer();
 let showTraffic = false;
-scene.add(structures.group, landscape.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
+scene.add(structures.group, landscape.group, water.group, streetlights.group, river.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -83,7 +90,8 @@ const hud = new Hud(uiRoot, {
   },
   toggleInfiniteMoney: () => {
     game.setInfiniteMoney(!game.infiniteMoney);
-    try { localStorage.setItem('gridburg.cheat.money', game.infiniteMoney ? '1' : ''); } catch { /* storage may be blocked */ }
+    settings.infiniteMoney = game.infiniteMoney;
+    saveSettings(settings);
     hud.toast(game.infiniteMoney ? 'Infinite money on' : 'Infinite money off');
     return game.infiniteMoney;
   },
@@ -105,7 +113,7 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+game.onTerrain = () => { transport.reset(); landscape.rebuild(game.terrain); water.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
@@ -134,6 +142,11 @@ game.onFrame = () => {
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  if (e.key === 'Escape' && playing && input.tool === 'none' && !menu.open) {
+    e.preventDefault();
+    openMenu();
+    return;
+  }
   if (e.key === ' ' || e.code === 'Space') {
     e.preventDefault();
     const v = game.speed === 0 ? 1 : 0;
@@ -142,24 +155,69 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Boot: URL link > local save > a fresh random map with the help open.
+// ---- main menu, settings and boot -----------------------------------------------------
+const settings = loadSettings();
+let playing = false;
+let resumeSpeed = 1;
+
+function applySettings(s: Settings): void {
+  renderer.shadowMap.enabled = s.shadows;
+  scene.traverse(o => { const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material; if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true; });
+  setDayLength(s.dayLength);
+  if (s.infiniteMoney !== game.infiniteMoney) game.setInfiniteMoney(s.infiniteMoney);
+  hud.setCheatLabel(s.infiniteMoney);
+}
+
+function startCity(data: Parameters<typeof game.load>[0], message?: string): void {
+  game.load(data);
+  hud.setTax(game.tax);
+  game.setTax(game.tax);
+  applySettings(settings);
+  focusCity(false);
+  playing = true;
+  menu.setOpen(false);
+  resumeSpeed = 1;
+  game.setSpeed(1);
+  if (message) hud.toast(message);
+}
+
+const savedCity = (): { mapKind: MapKind; population: number; day: number } | null => {
+  const save = loadLocal();
+  if (!save) return null;
+  let population = 0;
+  for (let i = 0; i < save.kind.length; i++) if (save.kind[i] === 2) population += RES_POP[save.level[i]];
+  return { mapKind: save.mapKind ?? 'river', population, day: Math.floor(save.tick / 480) + 1 };
+};
+
+const menu: MainMenu = new MainMenu(uiRoot, {
+  continueCity: () => { const save = loadLocal(); if (save) startCity(save); },
+  newCity: (kind, seed) => { clearLocal(); history.replaceState(null, '', location.pathname); startCity(newCity(seed, kind)); hud.setTax(10); },
+  demoCity: () => { history.replaceState(null, '', location.pathname); startCity(demoCity(true), 'Demo city loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
+  resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
+  help: () => { menu.setOpen(false); hud.showWelcome(); },
+  apply: (s) => applySettings(s),
+}, settings);
+
+function openMenu(): void {
+  resumeSpeed = game.speed;
+  game.setSpeed(0);
+  hud.setSpeed(0);
+  menu.setSave(savedCity(), playing);
+  menu.setOpen(true);
+}
+
+// A shared link opens its city straight away; otherwise the menu leads the way in.
 const fromHash = loadFromHash();
-const fromLocal = fromHash ? null : loadLocal();
 if (fromHash) {
-  game.load(fromHash);
-  hud.toast('Loaded shared city');
-} else if (fromLocal) {
-  game.load(fromLocal);
+  startCity(fromHash, 'Loaded shared city');
 } else {
   if (location.hash.startsWith('#c=')) hud.toast('That link is from an older version and cannot be loaded');
   game.load(newCity(randomSeed()));
-
+  applySettings(settings);
+  game.setSpeed(0);
+  menu.setSave(savedCity(), false);
+  menu.setOpen(true);
 }
-hud.setTax(game.tax);
-game.setTax(game.tax);
-try { if (localStorage.getItem('gridburg.cheat.money')) { game.setInfiniteMoney(true); hud.setCheatLabel(true); } } catch { /* storage may be blocked */ }
-game.setSpeed(1);
-try { if (!localStorage.getItem('gridburg.welcome.v1')) hud.showWelcome(); } catch { hud.showWelcome(); }
 
 // Frame newly loaded maps and the demo around their own highway, even after changing seeds.
 function focusCity(center: boolean): void {
@@ -172,10 +230,10 @@ function focusCity(center: boolean): void {
 }
 focusCity(false);
 
-setInterval(() => saveLocal(game.snapshot()), 5000);
-window.addEventListener('beforeunload', () => saveLocal(game.snapshot()));
+setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
+window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, water, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 const clock = document.createElement('div');
@@ -196,6 +254,7 @@ renderer.setAnimationLoop((now: number) => {
   streetlights.update(light.night);
   cars.setNight(light.night);
   river.update(now / 1000);
+  water.update(now / 1000);
   const hour = Math.floor(light.hour), minute = Math.floor(light.hour % 1 * 60);
   const label = `${light.night > 0.5 ? '☾' : '☀'} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} · Day ${Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1}`;
   if (label !== lastClock) { clock.textContent = label; lastClock = label; }

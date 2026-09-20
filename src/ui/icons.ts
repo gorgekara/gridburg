@@ -14,6 +14,7 @@ const I: Record<string, string> = {
   recycling: '<path d="m8 6 4-4 5 7M13 8l4 1 1-4M19 12l3 6H12M14 15l-3 3 3 3M8 19H2l5-9M3 11l4-2 2 4"/>',
   solar: '<circle cx="18" cy="5" r="3"/><path d="m5 10-3 10h18l-3-10zM11 10v10M4 15h14"/>',
   money: '<circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.6-1-1.7-1.5-3-1.5-1.8 0-3 1-3 2.4 0 3.2 6 1.6 6 4.8 0 1.5-1.3 2.4-3 2.4-1.4 0-2.6-.6-3.2-1.7M12 5.5v13"/>',
+  play: '<path d="M8 5v14l11-7z"/>',
   caret: '<path d="m6 9 6 6 6-6"/>',
   people: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6"/><circle cx="17.5" cy="9" r="2.4"/><path d="M16 14.3c3 .1 5 2.3 5 5.2"/>',
   jobs: '<rect x="3" y="7.5" width="18" height="12" rx="2"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M3 13h18"/>',

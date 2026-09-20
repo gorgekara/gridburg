@@ -288,3 +288,38 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
   pointer-events: auto; backdrop-filter: blur(8px);
 }
 @media (max-width: 1100px) { .city-clock { top: auto; bottom: 158px; left: auto; right: 12px; transform: none; } }
+
+/* ---- main menu ------------------------------------------------------------------------ */
+.menu-screen { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: #0f2226ee; backdrop-filter: blur(10px); pointer-events: auto; }
+.menu-screen[hidden] { display: none; }
+.menu-card { width: min(620px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto; background: #f2efdf; color: #23403b; padding: 32px; border-radius: 24px; box-shadow: 0 24px 80px #0006; }
+.menu-title h1 { font-size: 40px; margin: 0; letter-spacing: -1.2px; }
+.menu-sub { margin: 6px 0 24px; color: #52705f; font-size: 14px; }
+.menu-page { display: grid; gap: 10px; }
+.menu-page[hidden], .menu-item[hidden], .menu-screen[hidden] { display: none; }
+.menu-heading { font-size: 18px; margin: 0 0 6px; }
+.menu-item { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit; padding: 14px 16px; border: 1px solid #0000; border-radius: 12px; background: #e3e7d4; }
+.menu-item:hover { background: #d8dfc7; }
+.menu-item.primary { background: #315e4c; color: #f4f7ef; }
+.menu-item.primary:hover { background: #3b6d59; }
+.menu-item[hidden] { display: none; }
+.menu-label { display: grid; gap: 2px; }
+.menu-label strong { font-size: 15px; font-weight: 650; }
+.menu-note { font-size: 12px; color: #55705f; }
+.menu-item.primary .menu-note { color: #cfe0d3; }
+.menu-maps { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.map-card { display: grid; gap: 4px; text-align: left; cursor: pointer; font: inherit; color: inherit; padding: 14px; border-radius: 12px; border: 2px solid #0000; background: #e3e7d4; }
+.map-card:hover { background: #d8dfc7; }
+.map-card.active { border-color: #315e4c; background: #dbe6cf; }
+.map-card strong { font-size: 15px; }
+.menu-row { display: flex; align-items: center; gap: 10px; }
+.menu-row.end { justify-content: flex-end; margin-top: 6px; }
+.menu-seed { flex: 1; font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid #c3c9b4; background: #faf8ee; color: inherit; }
+.menu-mini { cursor: pointer; font: inherit; padding: 10px 14px; border-radius: 9px; border: 0; background: #dfe4d2; color: #23403b; }
+.menu-mini:hover { background: #d2dac2; }
+.menu-mini.primary { background: #315e4c; color: #fff; }
+.menu-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-radius: 12px; background: #e9ecdd; cursor: pointer; }
+.menu-setting input[type="checkbox"] { width: 20px; height: 20px; accent-color: #315e4c; cursor: pointer; }
+.menu-select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #c3c9b4; background: #faf8ee; color: inherit; }
+.menu-card button:focus-visible, .menu-card input:focus-visible, .menu-card select:focus-visible { outline: 3px solid #b17c28; outline-offset: 2px; }
+@media (max-width: 700px) { .menu-card { padding: 22px; } .menu-title h1 { font-size: 30px; } .menu-maps { grid-template-columns: 1fr; } }

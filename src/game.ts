@@ -13,6 +13,7 @@ import { emptyStats } from './sim/messages';
 import type { EditPayload, MainToWorker, Stats, WorkerToMain, TileReport } from './sim/messages';
 
 import type { SaveData } from './save';
+import type { MapKind } from './maps';
 
 const CHEAT_FLOOR = 1_000_000;
 
@@ -99,6 +100,9 @@ export class Game {
     this.worker.postMessage(m);
   }
 
+  /** Which kind of map the current city sits on. */
+  mapKind: MapKind = 'river';
+
   /** Cheat: building is free and the treasury is topped up to CHEAT_FLOOR on every edit. */
   infiniteMoney = false;
 
@@ -173,7 +177,8 @@ export class Game {
     this.incidentSave = d.incidents;
     this.incidents = { fires: d.incidents?.fires ?? [], crashes: [], crime: [], patrol: [] };
     this.seed = d.seed;
-    this.terrain = generateTerrain(d.seed);
+    this.mapKind = d.mapKind ?? 'river';
+    this.terrain = generateTerrain(d.seed, this.mapKind);
     this.net = Network.fromPlain(d.net);
     this.rasterVersion = -1;
     this.kind.set(d.kind);
@@ -197,14 +202,14 @@ export class Game {
     this.carsPrev = new Float32Array(MAX_CARS * 4);
     this.carsNext = new Float32Array(MAX_CARS * 4);
     const payload = this.payload();
-    this.send({ type: 'load', incidents: d.incidents, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
+    this.send({ type: 'load', incidents: d.incidents, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, mapKind: this.mapKind, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
     this.onTerrain?.();
     this.onEdit?.();
   }
 
   snapshot(): SaveData {
     return {
-      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(),
+      incidents: this.incidentSave, seed: this.seed, mapKind: this.mapKind, kind: this.kind, level: this.level, net: this.net.toPlain(),
       funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
   }
@@ -240,8 +245,8 @@ export class Game {
 }
 
 /** A fresh map: a seeded river and the fixed highway stub that connects the city to the outside. */
-export function newCity(seed: number): SaveData {
-  const terrain = generateTerrain(seed);
+export function newCity(seed: number, mapKind: MapKind = 'river'): SaveData {
+  const terrain = generateTerrain(seed, mapKind);
   const net = new Network();
   const e = terrain.entry;
   const a = net.addNode(e.x, e.z);
@@ -255,7 +260,7 @@ export function newCity(seed: number): SaveData {
   b.fixed = true;
   net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_AVENUE, false, true);
   return {
-    seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
+    seed, mapKind, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
     money: START_MONEY, tick: 0, tax: 10,
   };
 }

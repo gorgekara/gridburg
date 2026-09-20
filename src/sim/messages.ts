@@ -1,3 +1,4 @@
+import type { MapKind } from '../maps';
 import type { IncidentSnapshot, IncidentView } from './incidents';
 import { defaultFunding } from '../management';
 import type { Funding, FundingKey } from '../management';
@@ -60,7 +61,7 @@ export interface EditPayload {
 }
 
 export type MainToWorker =
-  | ({ type: 'load'; incidents?: IncidentSnapshot; funding?: Funding; debt?: number; neglect?: Uint8Array; cityLevel: number; seed: number; level: Uint8Array; money: number; tick: number; tax: number } & EditPayload)
+  | ({ type: 'load'; mapKind?: MapKind; incidents?: IncidentSnapshot; funding?: Funding; debt?: number; neglect?: Uint8Array; cityLevel: number; seed: number; level: Uint8Array; money: number; tick: number; tax: number } & EditPayload)
   | ({ type: 'edit'; spent: number } & EditPayload)
   | { type: 'speed'; value: number }
   | { type: 'tax'; value: number }

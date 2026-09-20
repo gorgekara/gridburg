@@ -5,6 +5,9 @@ import type { Funding } from './management';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
+import type { MapKind } from './maps';
+import { mapFromSave, mapToSave } from './maps';
+
 export interface SaveData {
   incidents?: IncidentSnapshot;
   funding?: Funding;
@@ -12,6 +15,8 @@ export interface SaveData {
   neglect?: Uint8Array;
   cityLevel?: number;
   seed: number;
+  /** Which kind of map the seed was generated as; older saves are all river valleys. */
+  mapKind?: MapKind;
   kind: Uint8Array;
   level: Uint8Array;
   net: PlainNet;
@@ -22,7 +27,7 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 7;
+const VERSION = 8;
 const HEAD = 28;
 const C_OFF = 40; // coordinates are stored as (value + 40) * 256 in a uint16
 const C_SCALE = 256;
@@ -73,6 +78,8 @@ export function encode(d: SaveData): string {
   const incidentBytes = new TextEncoder().encode(JSON.stringify(d.incidents ?? { fires: [], crime: [], patrol: [] }));
   bytes.push((incidentBytes.length >>> 24) & 255, (incidentBytes.length >>> 16) & 255, (incidentBytes.length >>> 8) & 255, incidentBytes.length & 255);
   for (const byte of incidentBytes) bytes.push(byte);
+  // v8 tail: the map kind, appended so every earlier layout still reads the same.
+  bytes.push(mapToSave(d.mapKind ?? 'river'));
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -92,7 +99,7 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, VERSION].includes(version)) return null;
+    if (![3, 4, 5, 6, 7, VERSION].includes(version)) return null;
     const header = legacy ? 14 : version === 4 ? 15 : HEAD;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
@@ -141,18 +148,22 @@ export function decode(str: string): SaveData | null {
     let incidents: IncidentSnapshot | undefined;
     if (version >= 6) {
       const length = dv.getUint32(p); p += 4;
-      if (length > 1000000 || p + length !== bytes.length) return null;
+      if (length > 1000000 || (p + length !== bytes.length && p + length + 1 !== bytes.length)) return null;
       const data = JSON.parse(new TextDecoder().decode(bytes.subarray(p, p + length)));
       const tile = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < N_TILES;
       const pairs = (list: unknown, max: number): boolean => Array.isArray(list) && list.length <= N_TILES && list.every(v => Array.isArray(v) && v.length === 2 && tile(v[0]) && Number.isInteger(v[1]) && v[1] >= 0 && v[1] <= max);
       if (!data || !Array.isArray(data.fires) || data.fires.length > N_TILES || !data.fires.every((f: { tile: unknown; age: number }) => f && tile(f.tile) && Number.isInteger(f.age) && f.age >= 0 && f.age < 120) || !pairs(data.crime, 100) || !pairs(data.patrol, 180)) return null;
       incidents = { fires: data.fires, crime: data.crime, patrol: data.patrol }; p += length;
     }
+    // v8 appends the map kind. Accepting it whatever the version byte says keeps saves
+    // readable both ways round, since every older layout ends exactly here.
+    let mapKind: MapKind = 'river';
+    if (bytes.length - p === 1) { mapKind = mapFromSave(bytes[p]); p += 1; }
     if (p !== bytes.length) return null;
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
+    return { seed, mapKind, kind, level, net, money, tick, tax, cityLevel, funding, debt, neglect, incidents };
   } catch {
     return null;
   }

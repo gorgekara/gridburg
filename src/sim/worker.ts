@@ -1106,7 +1106,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   const m = ev.data;
   switch (m.type) {
     case 'load': {
-      terrain = generateTerrain(m.seed);
+      terrain = generateTerrain(m.seed, m.mapKind ?? 'river');
       riverPollution = new Float32Array(terrain.river.length);
       clearCars();
       segs = [];
