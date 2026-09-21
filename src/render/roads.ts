@@ -1,9 +1,9 @@
-import { roadHeight } from '../roads/structures';
+import { roadHeight, PORTAL_AT } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, signalPhase } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, signalPhase } from '../roads/network';
 import type { Pose } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
@@ -152,6 +152,24 @@ export class RoadLayer {
       this.ranges.set(s.id, b.ribbon(pts, s.n + 1, HALF_WIDTH[s.kind], 0.045, ASPHALT));
     }
     b.heightAt = null;
+    // A tunnel's approaches are ordinary street up to the portal, so draw them as such, running a
+    // little way into the mouth where the dark bore takes over.
+    for (const s of net.segs.values()) {
+      if (s.structure !== 2) continue;
+      const hw = HALF_WIDTH[s.kind], reach = Math.min(s.len / 2, PORTAL_AT + 0.45);
+      for (const [from, to] of [[0, reach], [s.len - reach, s.len]]) {
+        const steps = Math.max(2, Math.ceil((to - from) / 0.3));
+        const pts = new Float32Array((steps + 1) * 2);
+        for (let k = 0; k <= steps; k++) {
+          Network.poseAt(s, from + ((to - from) * k) / steps, pose);
+          pts[k * 2] = pose.x - half;
+          pts[k * 2 + 1] = pose.z - half;
+        }
+        b.ribbon(pts, steps + 1, hw + 0.09, 0.03, CURB);
+        b.ribbon(pts, steps + 1, hw, 0.045, ASPHALT);
+        if (s.kind !== KIND_LANE) b.ribbon(pts, steps + 1, 0.022, 0.056, s.kind === KIND_ROAD ? DASH : LINE);
+      }
+    }
     for (const n of net.nodes.values()) {
       let hw = 0;
       for (const s of net.segsAt(n.id)) hw = Math.max(hw, HALF_WIDTH[s.kind]);

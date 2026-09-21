@@ -1,6 +1,6 @@
 import { roadHeight, STRUCTURE_COST } from '../roads/structures';
 import { Incidents } from './incidents';
-import { T_FIRE, T_POLICE } from '../constants';
+import { T_FIRE, T_POLICE, T_POLICE_HQ } from '../constants';
 import { TrafficSpace, vehicleLength } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TREATMENT } from '../constants';
@@ -1130,7 +1130,8 @@ function stepIncidents(): void {
 
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
-    if ((k !== T_FIRE && k !== T_POLICE) || flags[i] || !tileConnected(i) || dispatchCooldown.has(i) || slots.some(c => c?.mission?.origin === i)) continue;
+    const police = k === T_POLICE || k === T_POLICE_HQ;
+    if ((k !== T_FIRE && !police) || flags[i] || !tileConnected(i) || dispatchCooldown.has(i) || slots.filter(c => c?.mission?.origin === i).length >= (k === T_POLICE_HQ ? 2 : 1)) continue;
     let mission: Mission | undefined;
     if (k === T_FIRE) {
       const targets = [...incidents.fires.keys()].filter(tile => !slots.some(c => c?.mission?.kind === 'fire' && c.mission.tile === tile)).sort((a, b) => distance(a, i) - distance(b, i));
@@ -1144,7 +1145,7 @@ function stepIncidents(): void {
         if (near !== undefined && distance(near, crash.tile) < 6) mission = { kind: 'crash', origin: i, tile: near, crash: crash.id, work: 4 };
       }
       if (!mission) {
-        const targets = [...resTiles, ...jobTiles].filter(t => distance(t, i) < SERVICES[T_POLICE].radius!);
+        const targets = [...resTiles, ...jobTiles].filter(t => distance(t, i) < SERVICES[k].radius!);
         const tile = targets[Math.floor(Math.random() * targets.length)];
         if (tile !== undefined) mission = { kind: 'patrol', origin: i, tile, work: 4 };
       }
@@ -1208,6 +1209,8 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       effects = policyEffects(policies);
       debt = m.debt ?? 0;
       incidents.load(m.incidents); dispatchCooldown.clear(); robbedSeen = 0; raceUntil = -1;
+      // A loaded city starts its own clock: signal phases should not depend on what ran before it.
+      simTime = 0;
       inspected = -1;
       post({ type: 'inspection', report: null });
       pollution.fill(0);
@@ -1332,6 +1335,7 @@ function postInspection(): void {
       if (spec.transport === 'rail') report.details.push('120 passenger capacity per connection; elevated tracks connect stations automatically.');
     } else report.details.push(`Capacity: ${Math.round((spec.power || spec.water || spec.sewage) * efficiency)} ${spec.power ? 'power' : spec.water ? 'water' : 'sewage'}`);
   }
+  if (k === T_POLICE_HQ) report.details.push('Runs two patrol cars at once across a wider district, and answers robberies first.');
   if (k === T_POLICE) report.details.push('Dispatches patrol cars to nearby buildings. Completed visits deter crime for three minutes; cars also respond to collisions.');
   if (k === T_FIRE) report.details.push('Dispatches one fire engine at a time to reachable fires. After arrival, firefighting takes eight seconds.');
   if (spec?.treatment) report.details.push('Filters 95% of effluent with full electricity. Power shortages reduce filtration.');

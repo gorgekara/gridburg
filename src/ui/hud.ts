@@ -95,7 +95,7 @@ const CATEGORIES: Category[] = [
   },
   {
     id: 'services', label: 'Services',
-    tools: (['park', 'playground', 'sports', 'garden', 'clinic', 'school', 'fire', 'police', 'recycling', 'university'] as Tool[]).map(id => {
+    tools: (['park', 'playground', 'sports', 'garden', 'clinic', 'hospital', 'cityhospital', 'school', 'fire', 'police', 'policehq', 'recycling', 'university'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: `Base $${spec.upkeep}/s · ${spec.radius} cell radius`,
         hint: `${spec.name}: serves ${spec.capacity?.toLocaleString()} residents within ${spec.radius} cells. Both building and homes need highway-connected roads. Unlocks at ${MILESTONES[spec.unlock ?? 0].name}` };

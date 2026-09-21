@@ -48,11 +48,13 @@ export class HelicopterLayer {
       tail.position.set(0.06, 0.22, -1.08);
 
       body.add(rotor, tail);
+      // Small against the city: a helicopter is about the size of a bus, not of a house.
+      body.scale.setScalar(0.45);
       this.group.add(body);
       this.fleet.push({
         body, rotor, tail,
-        x: (n - 1) * 12, z: (n % 2 ? 1 : -1) * 10, radius: 7 + n * 3, speed: 0.12 + n * 0.03,
-        phase: n * 2.1, height: 9 + n * 2.5,
+        x: (n - 1) * 12, z: (n % 2 ? 1 : -1) * 10, radius: 6 + n * 2.5, speed: 0.14 + n * 0.03,
+        phase: n * 2.1, height: 6.5 + n * 1.5,
       });
     }
   }

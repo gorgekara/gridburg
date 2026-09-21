@@ -12,7 +12,7 @@ const C = await import('../src/constants.ts');
 const { advanceCity, levelForPopulation, MILESTONES } = await import('../src/progression.ts');
 const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
-const { buildingGeometry, BANNER_COLORS } = await import('../src/render/buildingGeo.ts');
+const { buildingGeometry, BANNER_COLORS, VARIANTS } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const { newCity } = await import('../src/game.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
@@ -76,7 +76,7 @@ test('malformed save streams are rejected', () => {
   assert.equal(decode(bytes.toString('base64url')), null);
 });
 test('each new service has finite nonempty visible geometry inside its footprint', () => {
-  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN]) {
+  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN, C.T_HOSPITAL, C.T_CITY_HOSPITAL, C.T_POLICE_HQ]) {
     const geo = buildingGeometry(k, 1, 0);
     assert.ok(geo.attributes.position.count > 30, `kind ${k}`);
     assert.ok([...geo.attributes.position.array].every(Number.isFinite), `kind ${k}`);
@@ -880,6 +880,55 @@ test('some shops hang banners, and not all of them', () => {
   assert.ok(shops.filter(Boolean).length >= 2, 'Most shops carry a sign');
   assert.ok(blocks.includes(false), 'Some frontages stay plain');
   assert.ok(!wearing(3, 0), 'Glass towers do not hang banners');
+});
+test('hospitals heal and police headquarters patrol like the smaller buildings they replace', () => {
+  const city = demoCity(true);
+  const net = Network.fromPlain(city.net); ensureApproaches(net);
+  const r = rasterize(net), terrain = generateTerrain(city.seed), owners = siteOwners(city.kind);
+  // Swap every clinic and police station for the big versions, on free land by a road.
+  for (let i = 0; i < C.N_TILES; i++) if (city.kind[i] === C.T_CLINIC || city.kind[i] === C.T_POLICE) { city.kind[i] = 0; city.level[i] = 0; }
+  // Closest free site to the middle of the homes, so both buildings serve the neighbourhoods.
+  const homes = Array.from(city.kind, (k, i) => k === C.T_RES ? i : -1).filter(i => i >= 0);
+  const mx = homes.reduce((n, i) => n + i % C.GRID, 0) / homes.length, mz = homes.reduce((n, i) => n + Math.floor(i / C.GRID), 0) / homes.length;
+  const order = Array.from({ length: C.N_TILES }, (_, i) => i).sort((a, b) => Math.hypot(a % C.GRID - mx, Math.floor(a / C.GRID) - mz) - Math.hypot(b % C.GRID - mx, Math.floor(b / C.GRID) - mz));
+  const place = (k) => {
+    for (const i of order) {
+      const cells = footprint(i, k);
+      if (!cells.length || r.accSeg[i] < 0) continue;
+      if (cells.some(t => city.kind[t] || r.cover[t] || terrain.water[t] || terrain.shore[t] || owners[t] >= 0)) continue;
+      city.kind[i] = k; city.level[i] = 1; return i;
+    }
+    return -1;
+  };
+  const hospital = place(C.T_HOSPITAL), hq = place(C.T_POLICE_HQ);
+  assert.ok(hospital >= 0 && hq >= 0, 'Both fit somewhere in the demo');
+  load(city);
+  send({ type: 'warm', ticks: 120 });
+  send({ type: 'speed', value: 1 });
+  let patrols = 0, stats = latest().stats;
+  for (let f = 0; f < 30 * C.SIM_HZ; f++) {
+    simulateFrame();
+    const state = latest();
+    if (state) { stats = state.stats; patrols = Math.max(patrols, stats.incidents.patrols); }
+    // Keep the newest state when trimming, or there is nothing left to read.
+    if (messages.length > 60) { const keep = latest(); messages.length = 0; if (keep) messages.push(keep); }
+  }
+  assert.ok(stats.civic.health > 0, 'The hospital covers the city');
+  assert.ok(stats.civic.safety > 0, `The headquarters covers the city (at ${hq % C.GRID},${Math.floor(hq / C.GRID)}, flags ${latest()?.flags?.[hq]})`);
+  assert.ok(patrols > 0, 'And sends patrol cars out');
+  console.log(`  Hospital + HQ: ${stats.civic.health}% health, ${stats.civic.safety}% safety, up to ${patrols} patrols out`);
+});
+test('every building variant is painted: no colour table runs out before the variants do', () => {
+  // A missing entry becomes three's default colour, pure white, which also lights up at night.
+  for (const kind of [C.T_RES, C.T_COM, C.T_IND, C.T_OFFICE]) for (const level of [1, 2, 3]) {
+    for (let v = 0; v < VARIANTS; v++) {
+      const geo = buildingGeometry(kind, level, v), c = geo.attributes.color.array;
+      for (let i = 0; i < c.length; i += 3) {
+        assert.ok(!(c[i] === 1 && c[i + 1] === 1 && c[i + 2] === 1), `kind ${kind} level ${level} variant ${v} has an unpainted part`);
+      }
+      geo.dispose();
+    }
+  }
 });
 test('a robbery calls the police, and getting away costs the city', () => {
   const events = new Incidents(), kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES);

@@ -30,6 +30,9 @@ export const T_SUBWAY = 23;
 export const T_PLAYGROUND = 24;
 export const T_SPORTS = 25;
 export const T_GARDEN = 26;
+export const T_HOSPITAL = 27;
+export const T_CITY_HOSPITAL = 28;
+export const T_POLICE_HQ = 29;
 export const OFFICE_UNLOCK = 3;
 export const ENTRY_UNLOCK = 2;
 export const COST_ENTRY = 3500;
@@ -96,6 +99,10 @@ Object.assign(SERVICES, {
   [T_PLAYGROUND]: civic('Playground', 900, 0.6, 1, 'leisure', 800, 12),
   [T_SPORTS]: { ...civic('Sports field', 2600, 1.8, 3, 'leisure', 2000, 18), footprint: [2, 2] as [number, number] },
   [T_GARDEN]: { ...civic('City park', 6000, 3.2, 4, 'leisure', 4000, 26), footprint: [3, 3] as [number, number] },
+  // The clinic and the police station grow up with the city.
+  [T_HOSPITAL]: { ...civic('Hospital', 5200, 2.6, 3, 'health', 2200, 24), footprint: [2, 2] as [number, number] },
+  [T_CITY_HOSPITAL]: { ...civic('City hospital', 11000, 5, 5, 'health', 5000, 34), footprint: [3, 2] as [number, number] },
+  [T_POLICE_HQ]: { ...civic('Police headquarters', 6800, 3.2, 4, 'safety', 3200, 28), footprint: [2, 2] as [number, number] },
   [T_SOLAR]: { name: 'Solar farm', cost: 4800, upkeep: 1.5, unlock: 3, power: 1800, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });
 

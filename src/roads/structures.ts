@@ -9,12 +9,25 @@ export const STRUCTURE_COST = [1, 3, 4];
 /** Deck height at the middle of a span: enough to clear traffic underneath without towering over it. */
 export const BRIDGE_RISE = 1.5;
 export const TUNNEL_DROP = 2.4;
+/**
+ * Where a tunnel's portal stands, measured in from each end. The approach up to it stays at street
+ * level, so the road visibly runs into the portal mouth instead of sinking under the grass. The
+ * ground is not excavated, so a ramp that started diving at the junction simply vanished.
+ */
+export const PORTAL_AT = 2.2;
+/** How long the dip from the portal down to full depth is. */
+const TUNNEL_RAMP = 3.2;
 /** Both portals/abutments meet the ground. The central span crosses without a junction. */
 export function roadHeight(seg: Pick<RSeg, 'structure' | 'len'>, distance: number): number {
   if (!seg.structure) return 0;
+  if (seg.structure === 2) {
+    const inside = Math.min(distance, seg.len - distance) - PORTAL_AT;
+    const u = Math.max(0, Math.min(1, inside / TUNNEL_RAMP));
+    return -TUNNEL_DROP * u * u * (3 - 2 * u);
+  }
   const ramp = Math.min(6, seg.len / 2);
   const u = Math.max(0, Math.min(1, distance / ramp, (seg.len - distance) / ramp));
-  return (seg.structure === 1 ? BRIDGE_RISE : -TUNNEL_DROP) * u * u * (3 - 2 * u);
+  return BRIDGE_RISE * u * u * (3 - 2 * u);
 }
 /** Clearance rules are written against the deck, so they scale with it. */
 const CLEAR = BRIDGE_RISE / 2.4;

@@ -46,7 +46,10 @@ export class BuildingLayer {
       shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         // Only the warm window glass emits; walls and roofs retain their lighting.
         float windowMask = step(0.95, vColor.r) * step(0.68, vColor.g) * (1.0 - step(0.5, vColor.b));
-        totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * cityNight * 1.8;`);
+        totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * cityNight * 1.8;
+        // Office floors: the cool white panes on commercial and office facades.
+        float officeMask = step(0.88, vColor.r) * step(0.88, vColor.g) * step(0.95, vColor.b);
+        totalEmissiveRadiance += vec3(0.82, 0.88, 1.0) * officeMask * cityNight * 1.5;`);
     };
     const add = (k: number, l: number, v: number, cap: number): void => {
       const mesh = new THREE.InstancedMesh(buildingGeometry(k, l, v), mat, cap);

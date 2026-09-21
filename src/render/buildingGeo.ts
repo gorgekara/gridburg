@@ -1,16 +1,20 @@
 import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
+/** Office lighting: a cool white pane. By day it reads as bright glass; after dark the shader lights it. */
+export const OFFICE_LIT = 0xf4f6ff;
 const GLASS = 0x7fb6d6;
 
 /** Accumulates colored parts and merges them into one vertex-colored geometry. */
 export class Builder {
   private parts: THREE.BufferGeometry[] = [];
   rnd: () => number;
+  /** Where the model's own centre sits; lets a multi-tile site be authored around its middle. */
+  shift = { x: 0, z: 0 };
 
   constructor(seed: number) {
     this.rnd = mulberry32(seed);
@@ -20,6 +24,7 @@ export class Builder {
     // Merge needs every part indexed the same way; ExtrudeGeometry is non-indexed, so flatten all.
     const g = src.index ? src.toNonIndexed() : src;
     if (g !== src) src.dispose();
+    if (this.shift.x || this.shift.z) g.translate(this.shift.x, 0, this.shift.z);
     const c = new THREE.Color(color);
     const n = g.attributes.position.count;
     const arr = new Float32Array(n * 3);
@@ -102,6 +107,25 @@ export class Builder {
     }
   }
 
+  /**
+   * Lit offices on a glass facade: panes on every floor, a share of them bright, so a commercial block
+   * reads as occupied after dark instead of going black above the shopfronts.
+   */
+  litPanes(w: number, h: number, d: number, y0: number, floors: number, perSide: number, lit: number, bandY = 0.3): void {
+    const fh = (h - y0) / floors;
+    const pw = Math.min(0.12, (w * 0.8) / perSide - 0.03), ph = Math.min(0.1, fh * 0.34);
+    for (let f = 0; f < floors; f++) {
+      const y = y0 + f * fh + fh * bandY - ph * 0.1;
+      for (let j = 0; j < perSide; j++) {
+        const t = -0.5 + (j + 0.5) / perSide;
+        if (this.rnd() < lit) this.box(pw, ph, 0.02, t * w * 0.82, y, d / 2 + 0.018, OFFICE_LIT);
+        if (this.rnd() < lit) this.box(pw, ph, 0.02, t * w * 0.82, y, -d / 2 - 0.018, OFFICE_LIT);
+        if (this.rnd() < lit) this.box(0.02, ph, pw, w / 2 + 0.018, y, t * d * 0.82, OFFICE_LIT);
+        if (this.rnd() < lit) this.box(0.02, ph, pw, -w / 2 - 0.018, y, t * d * 0.82, OFFICE_LIT);
+      }
+    }
+  }
+
   /** Continuous glass bands per floor on all four sides. */
   bands(w: number, h: number, d: number, y0: number, floors: number, color: number, thickness = 0.1): void {
     const fh = (h - y0) / floors;
@@ -124,7 +148,7 @@ export class Builder {
 const RES_WALLS = [0xf3e2c4, 0xe6c7a1, 0xf2d3cc, 0xcfdcd0, 0xdcd8c6, 0xeadbb6];
 const RES_ROOFS = [0xa8453a, 0x5c4a3d, 0x4a5b6b, 0x7a4b3f, 0x64764f, 0x8f5b39];
 const APT_WALLS = [0xd9c3a5, 0xc9a98a, 0xe3d6c4, 0xb9b5a8, 0xcdb79b, 0xd6cab6];
-const TOWER_WALLS = [0xd8d2c6, 0xc3b8a6, 0xbfc7cc, 0xe0d9cf];
+const TOWER_WALLS = [0xd8d2c6, 0xc3b8a6, 0xbfc7cc, 0xe0d9cf, 0xc9b9a2, 0xb7c0bc];
 // Shops and mid-rise blocks carry the street's colour: brick, stucco, painted render and tile.
 const SHOP_WALLS = [0xe8dcc8, 0xc0674a, 0xcfd6dc, 0xe2d2d2, 0xd8b271, 0x9fb59b];
 const BLOCK_WALLS = [0xb9603f, 0xd9c09a, 0x8fa9bb, 0xc7b49a, 0xa8b49c, 0xd3cbbd];
@@ -165,6 +189,36 @@ function banners(b: Builder, w: number, h: number, d: number, v: number, seed: n
     const depth = d * (0.4 + rnd() * 0.4);
     b.box(0.03, height, depth, side * (w / 2 + 0.02), top, (rnd() - 0.5) * (d - depth) * 0.6, color);
     b.box(0.012, height * 0.22, depth * 0.7, side * (w / 2 + 0.035), top + height * 0.38, 0, 0xf4efe2);
+  }
+}
+
+export const LOGO_COLORS = [0xc8382f, 0x2f6fb7, 0x2e9d6a, 0x7a4fb5, 0xd98f1c, 0x1f8a99];
+
+/**
+ * A company mark near the top of the facade: a coloured plate carrying a simple white emblem, lit
+ * after dark like a real sign. The emblem is one of a few box patterns chosen by the variant.
+ */
+function logo(b: Builder, w: number, h: number, d: number, v: number): void {
+  const size = Math.min(0.3, w * 0.42), y = h - size - 0.12, z = d / 2 + 0.02;
+  if (y < 0.4) return; // a low building has no room for a sign above its windows
+  const brand = LOGO_COLORS[v % LOGO_COLORS.length];
+  b.box(size, size, 0.03, 0, y, z, brand);
+  const m = size * 0.62, f = z + 0.02;
+  switch (v % 4) {
+    case 0: // stacked bars
+      for (const k of [-1, 0, 1]) b.box(m, m * 0.16, 0.02, 0, y + size / 2 + k * m * 0.3 - m * 0.08, f, OFFICE_LIT);
+      break;
+    case 1: // a ring, drawn as a square frame
+      b.box(m, m * 0.16, 0.02, 0, y + size / 2 + m * 0.42 - m * 0.08, f, OFFICE_LIT);
+      b.box(m, m * 0.16, 0.02, 0, y + size / 2 - m * 0.42 - m * 0.08, f, OFFICE_LIT);
+      for (const k of [-1, 1]) b.box(m * 0.16, m, 0.02, k * m * 0.42, y + size / 2 - m / 2, f, OFFICE_LIT);
+      break;
+    case 2: // three rising columns
+      for (const k of [-1, 0, 1]) b.box(m * 0.2, m * (0.5 + (k + 1) * 0.25), 0.02, k * m * 0.34, y + (size - m) / 2, f, OFFICE_LIT);
+      break;
+    default: // a solid block with a notch
+      b.box(m, m, 0.02, 0, y + (size - m) / 2, f, OFFICE_LIT);
+      b.box(m * 0.36, m * 0.36, 0.022, m * 0.2, y + (size - m) / 2 + m * 0.5, f + 0.002, brand);
   }
 }
 
@@ -252,6 +306,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(w, h, d, 0, 0, 0, BLOCK_WALLS[v]);
       b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257);
       b.bands(w, h, d, 0.3, floors, v % 2 ? 0x3d6a85 : 0x4a4139, 0.1);
+      b.litPanes(w, h, d, 0.3, floors, 4, 0.42);
       if (v === 1 || v === 4) b.box(w * 0.7, 0.34, d * 0.7, 0, h, 0, BLOCK_WALLS[v]); // setback top floor
       b.box(w + 0.03, 0.05, d + 0.03, 0, h + (v === 1 || v === 4 ? 0.34 : 0), 0, 0x46525c);
       banners(b, w, h, d, v, 27);
@@ -265,6 +320,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       for (let f = 1; f < floors; f++) {
         b.box(w + 0.02, 0.035, d + 0.02, 0, (h / floors) * f, 0, 0x2a3a4a);
       }
+      b.litPanes(w, h, d, 0, floors, 5, 0.38, 0.35);
+      logo(b, w, h, d, v + 2);
       b.box(0.55, 0.5, 0.55, 0, h, 0, GLASS_TOWERS[v]);
       b.box(0.58, 0.04, 0.58, 0, h + 0.5, 0, 0x2a3a4a);
       roofDetail(b, h + 0.54, v);
@@ -275,6 +332,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     const w = [0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v], d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
     b.box(w, h, d, 0, 0, 0, OFFICE_WALLS[v]);
     b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16);
+    b.litPanes(w, h, d, 0.18, floors, 4, 0.48, 0.28);
+    logo(b, w, h, d, v + level);
     for (const x of [-w * 0.3, w * 0.3]) b.box(0.035, h, d + 0.035, x, 0, 0, 0xc9d2d9);
     b.box(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270);
     b.box(0.3, 0.23, 0.03, 0, 0, d / 2 + 0.02, GLASS);
@@ -409,6 +468,59 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     }
     b.box(0.36, 0.5, 0.36, 2.25, 0.05, 1.7, 0xd6d2c4);
     b.taper(0.3, 0.04, 0.22, 2.25, 0.55, 1.7, 0x8fae9c, 8);
+  } else if (kind === T_HOSPITAL || kind === T_CITY_HOSPITAL) {
+    // A white clinical block with a red cross, an ambulance bay under a canopy and a roof helipad.
+    // The city hospital adds a second ward wing on its 3 x 2 site. Authored around the site centre.
+    const big = kind === T_CITY_HOSPITAL;
+    b.shift = { x: big ? 1 : 0.5, z: 0.5 };
+    const w = big ? 2.7 : 1.7, d = 1.5;
+    b.box(w + 0.18, 0.05, d + 0.3, 0, 0, 0.05, 0xb9bcb6); // forecourt
+    const low = 1.0;
+    b.box(w, low, d * 0.88, 0, 0.05, -0.05, 0xeef0ec);
+    b.windows(w, low + 0.05, d * 0.88, 0.2, 3, big ? 7 : 5, 0.35, 0.11);
+    const towerW = big ? 1.1 : 0.85, towerH = big ? 2.6 : 1.85, tx = big ? -0.6 : 0;
+    b.shift = { x: b.shift.x + tx, z: b.shift.z - 0.2 };
+    b.box(towerW, towerH, 0.85, 0, 0.05, 0, 0xf6f7f4);
+    b.windows(towerW, towerH + 0.05, 0.85, low + 0.1, big ? 5 : 3, 4, 0.4, 0.1);
+    for (const side of [-1, 1]) b.box(0.04, towerH - low, 0.87, side * towerW / 2, low + 0.05, 0, 0x3f86b8);
+    const crossY = low + (towerH - low) * 0.5;
+    b.box(0.28, 0.08, 0.02, 0, crossY, 0.44, 0xd23a32);
+    b.box(0.08, 0.28, 0.02, 0, crossY - 0.1, 0.44, 0xd23a32);
+    b.box(towerW * 0.8, 0.04, 0.7, 0, towerH + 0.05, 0, 0x5b6167); // helipad
+    b.box(towerW * 0.45, 0.012, 0.06, 0, towerH + 0.09, 0, 0xf2f2ea);
+    for (const side of [-1, 1]) b.box(0.06, 0.012, 0.34, side * towerW * 0.2, towerH + 0.09, 0, 0xf2f2ea);
+    b.shift = { x: big ? 1 : 0.5, z: 0.5 };
+    // Ambulance bay: a red canopy on posts at the front corner.
+    const bayX = big ? 0.8 : 0.4;
+    b.box(0.6, 0.05, 0.36, bayX, 0.62, d * 0.44 + 0.02, 0xd23a32);
+    for (const side of [-1, 1]) b.box(0.04, 0.6, 0.04, bayX + side * 0.25, 0.02, d * 0.44 + 0.16, 0xb9bcb6);
+    if (big) {
+      b.box(0.9, 1.5, 1.15, 0.85, 0.05, -0.12, 0xe6e9e4);
+      b.shift = { x: 1.85, z: 0.38 };
+      b.windows(0.9, 1.55, 1.15, 0.2, 4, 3, 0.4, 0.1);
+      roofDetail(b, 1.55, 1);
+    }
+    b.shift = { x: 0, z: 0 };
+  } else if (kind === T_POLICE_HQ) {
+    // A blue-grey block with a glazed stair tower, a flagpole, antennas and a row of patrol bays.
+    b.shift = { x: 0.5, z: 0.5 };
+    const w = 1.55, d = 1.2, h = 1.9;
+    b.box(w + 0.2, 0.05, 1.8, 0, 0, 0.1, 0x9da3a8);
+    b.shift = { x: 0.5, z: 0.35 };
+    b.box(w, h, d, 0, 0.05, 0, 0x8793a0);
+    b.bands(w, h, d, 0.25, 5, 0x2c4a6e, 0.12);
+    b.litPanes(w, h, d, 0.25, 5, 4, 0.5, 0.3);
+    b.box(w + 0.04, 0.1, d + 0.04, 0, h + 0.05, 0, 0x3a4a5c);
+    b.box(0.34, h + 0.35, 0.34, -0.55, 0.05, 0.36, 0x9fc2d8); // stair tower
+    b.box(w * 1.01, 0.14, 0.03, 0, h - 0.35, d / 2 + 0.02, 0x2f5fa8); // blue band
+    b.box(0.5, 0.14, 0.02, 0.3, h - 0.35, d / 2 + 0.035, 0xf2f2f2);
+    b.cyl(0.02, 0.9, 0.6, h + 0.15, -0.3, 0xd6dadd, 6); // antennas
+    b.cyl(0.015, 0.65, 0.42, h + 0.15, -0.45, 0xd6dadd, 6);
+    b.shift = { x: 0.5, z: 0.5 };
+    b.cyl(0.018, 1.1, -0.68, 0.05, 0.78, 0xdadde0, 6); // flagpole
+    b.box(0.26, 0.16, 0.012, -0.55, 0.95, 0.78, 0x2f5fa8);
+    for (let k = 0; k < 3; k++) b.box(0.24, 0.012, 0.36, -0.05 + k * 0.28, 0.06, 0.78, 0xe8e8e0); // patrol bays
+    b.shift = { x: 0, z: 0 };
   } else if (kind === T_SOLAR) {
     b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x8d9a82);
     for (const z of [-0.3, 0, 0.3]) {
@@ -536,8 +648,8 @@ function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeomet
   if (kind !== T_RES && kind !== T_COM && kind !== T_OFFICE) return null;
   const b = new Builder(kind * 31 + level * 7 + v), e = 0.47;
   if (kind === T_RES && level === 1) {
-    b.box(0.96, 0.012, 0.96, 0, 0, 0, [0x7fa35f, 0x86a864, 0x7a9d5c, 0x8aab68][v]);
-    const fence = [0xefebe0, 0x9a7650, 0xefebe0, 0x6f5a45][v], top = 0.1;
+    b.box(0.96, 0.012, 0.96, 0, 0, 0, [0x7fa35f, 0x86a864, 0x7a9d5c, 0x8aab68, 0x829f5a, 0x7ba566][v]);
+    const fence = [0xefebe0, 0x9a7650, 0xefebe0, 0x6f5a45, 0x8a6b4b, 0xe6e1d4][v], top = 0.1;
     // Back and side fences; the house itself closes the front of the lot.
     for (const side of [-1, 1]) {
       b.box(0.018, 0.018, 2 * e, side * e, top - 0.03, 0, fence);
@@ -557,7 +669,7 @@ function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeomet
     return b.build();
   }
   // Concrete plaza with a kerb and a tree pit.
-  b.box(0.96, 0.014, 0.96, 0, 0, 0, [0xb4b2aa, 0xaaa9a3, 0xbcb8ae, 0xa7a8a4][v]);
+  b.box(0.96, 0.014, 0.96, 0, 0, 0, [0xb4b2aa, 0xaaa9a3, 0xbcb8ae, 0xa7a8a4, 0xb0ada3, 0xa9aca6][v]);
   b.box(0.96, 0.024, 0.03, 0, 0, -0.465, 0x8f8e88);
   for (const side of [-1, 1]) b.box(0.03, 0.024, 0.96, side * 0.465, 0, 0, 0x8f8e88);
   for (const x of [-0.25, 0, 0.25]) b.box(0.004, 0.0165, 0.96, x, 0, 0, 0x97968f);

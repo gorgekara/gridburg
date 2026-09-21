@@ -15,7 +15,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   infinite money cheat, and they persist in the browser.
 - **Six silhouettes per building type.** Shops, blocks, offices and towers come in six shapes and
   palettes each, from two-storey brick parades to glass towers, so a commercial street is a mix of
-  heights and colours rather than a wall of the same block.
+  heights and colours rather than a wall of the same block. Offices and towers carry a company logo,
+  and after dark their floors light up in cool white alongside the warm windows of homes.
 - **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
   can type a seed in when starting a city.
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
@@ -52,6 +53,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **City policies.** Six standing decisions — recycling, smoke alarms, neighborhood watch, study grants,
   free public transport and a congestion charge — each paid for every second, with a bill that grows with
   the city. They change pollution, incidents, school reach, transit ridership and how many people drive.
+- **Bigger services as the city grows.** A 2 x 2 hospital at Thriving town and a 3 x 2 city hospital at
+  Regional capital extend healthcare well past a clinic's reach; police headquarters at City covers a
+  wider district and keeps two patrol cars out at once.
 - **Parks for every size of city.** Neighborhood parks from the start, playgrounds at Growing village,
   a two-cell sports field at Thriving town and a three-cell city park with a pond at City.
 - **Railways that connect themselves.** Two stations link up by elevated track along the road

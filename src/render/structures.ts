@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Network, HALF_WIDTH } from '../roads/network';
 import type { RSeg } from '../roads/network';
-import { roadHeight } from '../roads/structures';
+import { roadHeight, PORTAL_AT } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { MeshBuilder } from './meshBuilder';
 import { SweepBuilder, straightPath } from './sweep';
@@ -97,19 +97,39 @@ function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Buil
   }
 }
 
-/** Tunnel portals: an abutment wall and headwall at each end of the bore. */
+/**
+ * Tunnel portals, one at each end, standing on the ground where the approach road meets the mouth.
+ * Built in portal space: +z points out along the approach, so the face is at z = 0 and the body of
+ * the portal runs back over the bore. Heights are box bases, which is what Builder.box expects.
+ */
 function buildPortals(seg: RSeg, material: THREE.Material): THREE.Mesh[] {
   const hw = HALF_WIDTH[seg.kind], pose = { x: 0, z: 0, tx: 0, tz: 0 }, out: THREE.Mesh[] = [];
+  const clear = 0.72; // headroom inside the mouth
+  const wall = 0.2, span = hw + 0.14; // inner face of each side wall
   for (const end of [0, seg.len]) {
-    Network.poseAt(seg, end, pose);
-    const dir = end === 0 ? 1 : -1, b = new Builder(seg.id);
-    for (const side of [-1, 1]) b.box(0.19, 0.85, 1.5, side * (hw + 0.1), 0.425, 0.5, 0x999f9b);
-    b.box(hw * 2 + 0.39, 0.23, 1.6, 0, 0.86, 0.5, 0xb4b9af);
-    b.box(hw * 2, 0.73, 0.04, 0, 0.365, 1.22, 0x101c23);
-    for (const side of [-1, 1]) b.box(0.06, 0.14, 0.025, side * (hw - 0.04), 0.61, -0.31, 0xffd688);
+    const at = end === 0 ? PORTAL_AT : seg.len - PORTAL_AT;
+    Network.poseAt(seg, at, pose);
+    // Facing out of the tunnel: towards the start for the first portal, towards the end for the last.
+    const out_ = end === 0 ? -1 : 1;
+    const b = new Builder(seg.id + (end ? 7 : 0));
+    // Side walls, sunk slightly into the ground so no seam shows at grade.
+    for (const side of [-1, 1]) b.box(wall, clear + 0.36, 1.1, side * (span + wall / 2), -0.08, -0.45, 0x9aa09c);
+    // Wing walls splaying out along the approach, stepping down towards the road.
+    for (const side of [-1, 1]) {
+      b.box(wall * 0.8, 0.5, 0.55, side * (span + wall * 0.6 + 0.06), -0.08, 0.3, 0x8f9591);
+      b.box(wall * 0.7, 0.28, 0.45, side * (span + wall * 0.7 + 0.12), -0.08, 0.78, 0x8f9591);
+    }
+    // Headwall over the mouth, a coping on top, and the dark bore behind the opening.
+    b.box(span * 2 + wall * 2, 0.3, 0.26, 0, clear, -0.05, 0xb4b9af);
+    b.box(span * 2 + wall * 2 + 0.08, 0.06, 0.34, 0, clear + 0.3, -0.05, 0x8a8f89);
+    b.box(span * 2, clear + 0.02, 0.9, 0, -0.02, -0.62, 0x0d151b);
+    // A roof slab over the first stretch of bore, flush with the ground behind the headwall.
+    b.box(span * 2 + wall * 2, 0.12, 0.8, 0, clear - 0.02, -0.75, 0x7c827e);
+    // Lamps either side of the mouth.
+    for (const side of [-1, 1]) b.box(0.06, 0.12, 0.04, side * (span - 0.08), clear - 0.2, 0.09, 0xffd688);
     const mesh = new THREE.Mesh(b.build(), material);
-    mesh.position.set(pose.x - OFFSET + pose.tx * dir * 0.8, 0, pose.z - OFFSET + pose.tz * dir * 0.8);
-    mesh.rotation.y = Math.atan2(pose.tx * dir, pose.tz * dir);
+    mesh.position.set(pose.x - OFFSET, 0, pose.z - OFFSET);
+    mesh.rotation.y = Math.atan2(pose.tx * out_, pose.tz * out_);
     mesh.castShadow = true; mesh.receiveShadow = true;
     out.push(mesh);
   }
@@ -187,7 +207,7 @@ export class StructureLayer {
         const hw = HALF_WIDTH[seg.kind];
         const step = 0.4;
         // Start past the portal mouth: the ramps are real road, and the band belongs over the bore.
-        const from = Math.min(2.2, seg.len * 0.2), to = seg.len - from;
+        const from = PORTAL_AT + 0.9, to = seg.len - from;
         const pts: number[] = [];
         for (let d = from; d <= to + 1e-6; d = Math.min(to, d + step)) {
           Network.poseAt(seg, d, pose);
