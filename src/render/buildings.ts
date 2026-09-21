@@ -6,6 +6,7 @@ import type { Raster } from '../roads/raster';
 import { buildingGeometry, rotorGeometry, VARIANTS } from './buildingGeo';
 
 const m4 = new THREE.Matrix4();
+const pivot = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const q2 = new THREE.Quaternion();
 const pos = new THREE.Vector3();
@@ -85,7 +86,7 @@ export class BuildingLayer {
 
   showZones(show: boolean): void { this.zones.visible = show; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
@@ -95,6 +96,7 @@ export class BuildingLayer {
       const zone = isZone(k);
       if (!zone && !isService(k)) continue;
       const multi = SERVICES[k]?.footprint;
+      const turn = isService(k) ? (rot?.[i] ?? 0) & 3 : 0;
       const tx = multi ? i % GRID + 0.5 : raster.lotX[i];
       const tz = multi ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
       pos.set(tx - half, 0, tz - half);
@@ -114,14 +116,23 @@ export class BuildingLayer {
       const n = counts.get(kk) ?? 0;
       if (n >= mesh.instanceMatrix.count) continue;
       counts.set(kk, n + 1);
-      // Face the nearest point of the road that serves this tile.
-      let rot = 0;
-      if (!multi && raster.accSeg[i] >= 0) rot = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
-      q.setFromAxisAngle(yAxis, rot);
-      m4.compose(pos, q, one);
+      // A placed building faces the quarter turn it was given; a grown one faces its road.
+      let facing = turn * Math.PI / 2;
+      if (!turn && !multi && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
+      q.setFromAxisAngle(yAxis, facing);
+      if (multi) {
+        // Turn the block about the middle of its site, so a rotated footprint still covers its tiles.
+        const [w, d] = multi;
+        const [rw, rd] = turn % 2 ? [d, w] : [w, d];
+        pos.set(tx - half + (rw - 1) / 2, 0, tz - half + (rd - 1) / 2);
+        m4.compose(pos, q, one);
+        m4.multiply(pivot.makeTranslation(-(w - 1) / 2, 0, -(d - 1) / 2));
+      } else {
+        m4.compose(pos, q, one);
+      }
       mesh.setMatrixAt(n, m4);
       mesh.userData.tileIds[n] = i;
-      if (k === T_WIND) this.rotorSites.push({ x: pos.x, z: pos.z, rot, phase: tileHash(i) * 6.28 });
+      if (k === T_WIND) this.rotorSites.push({ x: pos.x, z: pos.z, rot: facing, phase: tileHash(i) * 6.28 });
     }
     for (const [kk, mesh] of this.meshes) {
       mesh.count = counts.get(kk) ?? 0;

@@ -8,6 +8,8 @@ import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
 export interface SaveData {
+  /** Quarter turns for placed buildings, sparse: most tiles face their road. */
+  rot?: Uint8Array;
   incidents?: IncidentSnapshot;
   policies?: Policies;
   funding?: Funding;
@@ -25,9 +27,10 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 9;
-// v9 appends a two-byte policy mask to the v8 header. v10 cities, which stored drawn railway
-// lines after the incidents, still load; their lines are ignored now that railways pair up again.
+const VERSION = 11;
+// v9 appends a two-byte policy mask to the v8 header. v10 cities, which stored drawn railway lines
+// after the incidents, still load; their lines are ignored now that railways pair up again. v11 puts
+// the quarter turn of every rotated building in that spot instead.
 const HEAD_V8 = 28;
 const HEAD = 30;
 const C_OFF = 40; // coordinates are stored as (value + 40) * 256 in a uint16
@@ -79,6 +82,11 @@ export function encode(d: SaveData): string {
   const incidentBytes = new TextEncoder().encode(JSON.stringify(d.incidents ?? { fires: [], crime: [], patrol: [] }));
   bytes.push((incidentBytes.length >>> 24) & 255, (incidentBytes.length >>> 16) & 255, (incidentBytes.length >>> 8) & 255, incidentBytes.length & 255);
   for (const byte of incidentBytes) bytes.push(byte);
+  // Rotated buildings: a count, then each one's tile and quarter turn. Most cities have none.
+  const turned: number[] = [];
+  for (let t = 0; t < N_TILES && turned.length < 3 * 2000; t++) if (d.rot?.[t]) turned.push(t, d.rot[t] & 3);
+  bytes.push((turned.length / 2 >> 8) & 255, (turned.length / 2) & 255);
+  for (let k = 0; k < turned.length; k += 2) bytes.push((turned[k] >> 8) & 255, turned[k] & 255, turned[k + 1]);
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -99,7 +107,7 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, 7, 8, VERSION, 10].includes(version)) return null;
+    if (![3, 4, 5, 6, 7, 8, 9, 10, VERSION].includes(version)) return null;
     const header = legacy ? 14 : version === 4 ? 15 : version >= 9 ? HEAD : HEAD_V8;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
@@ -160,11 +168,22 @@ export function decode(str: string): SaveData | null {
     }
     // A v10 city carries a block of drawn railway lines here. Railways connect themselves again,
     // so the block is validated for length and then skipped.
-    if (version >= 10) {
+    if (version === 10) {
       if (p >= bytes.length) return null;
       const count = bytes[p]; p += 1;
       if (p + count * 4 !== bytes.length) return null;
       p += count * 4;
+    }
+    const rot = new Uint8Array(N_TILES);
+    if (version >= 11) {
+      if (p + 1 >= bytes.length) return null;
+      const count = dv.getUint16(p); p += 2;
+      if (p + count * 3 !== bytes.length) return null;
+      for (let k = 0; k < count; k++, p += 3) {
+        const tile = dv.getUint16(p);
+        if (tile >= N_TILES) return null;
+        rot[tile] = bytes[p + 2] & 3;
+      }
     }
     // Cities saved while the map kinds existed carry one extra byte; skip it.
     if (bytes.length - p === 1) p += 1;
@@ -172,7 +191,7 @@ export function decode(str: string): SaveData | null {
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
+    return { seed, kind, level, rot, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
   } catch {
     return null;
   }

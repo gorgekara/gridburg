@@ -140,6 +140,32 @@ export function buildingHeight(kind: number, level: number, variant: number): nu
   return heights.get(key)!;
 }
 
+export const BANNER_COLORS = [0xc4463a, 0x2f6f9e, 0xd8a13c, 0x3f8a63, 0x8c5aa8, 0xd1683c];
+
+/**
+ * A shop sign hung on the wall: a cloth panel with a lettering stripe, standing just proud of the
+ * facade. Only some buildings carry one, and which sides they use comes from the tile's own variant,
+ * so a street gets a mix rather than a uniform row of billboards.
+ */
+function banners(b: Builder, w: number, h: number, d: number, v: number, seed: number): void {
+  const rnd = mulberry32(seed * 2654435761 + v);
+  if (rnd() < 0.35) return; // plenty of plain frontages
+  const height = Math.min(0.42, h * 0.3);
+  const top = Math.min(h - 0.08, 0.35 + rnd() * (h * 0.5));
+  const color = BANNER_COLORS[Math.floor(rnd() * BANNER_COLORS.length)];
+  const front = rnd() < 0.8, side = rnd() < 0.55 ? (rnd() < 0.5 ? -1 : 1) : 0;
+  if (front) {
+    const width = w * (0.45 + rnd() * 0.4);
+    b.box(width, height, 0.03, (rnd() - 0.5) * (w - width) * 0.6, top, d / 2 + 0.02, color);
+    b.box(width * 0.7, height * 0.22, 0.012, (rnd() - 0.5) * 0.05, top + height * 0.38, d / 2 + 0.035, 0xf4efe2);
+  }
+  if (side) {
+    const depth = d * (0.4 + rnd() * 0.4);
+    b.box(0.03, height, depth, side * (w / 2 + 0.02), top, (rnd() - 0.5) * (d - depth) * 0.6, color);
+    b.box(0.012, height * 0.22, depth * 0.7, side * (w / 2 + 0.035), top + height * 0.38, 0, 0xf4efe2);
+  }
+}
+
 /** Distinct roof silhouettes, all contained inside the building footprint. */
 function roofDetail(b: Builder, y: number, variant: number): void {
   if (variant === 0) {
@@ -214,6 +240,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.14, 0.38, 0.03, 0.3, 0, d / 2 + 0.005, 0x3d2c22);
       b.box(0.8, 0.04, 0.24, 0, 0.44, d / 2 + 0.1, AWNINGS[v]);
       b.box(0.5, 0.12, 0.05, -0.1, h, d / 2 - 0.03, 0xfff4dc);
+      banners(b, w, h, d, v, 11);
       roofDetail(b, h + 0.12, v);
       b.box(0.02, 0.18, 0.3, w / 2 + 0.005, 0.15, 0, WINDOW_DARK);
     } else if (level === 2) {
@@ -223,6 +250,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x5c6a75);
       b.bands(w, h, d, 0.3, floors, 0x3d6a85, 0.1);
       b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x46525c);
+      banners(b, w, h, d, v, 27);
       roofDetail(b, h + 0.05, v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
     } else {

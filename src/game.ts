@@ -6,7 +6,7 @@ import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
 import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
-import { Network, KIND_AVENUE } from './roads/network';
+import { Network, KIND_HIGHWAY } from './roads/network';
 import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
 import type { Raster } from './roads/raster';
@@ -21,13 +21,15 @@ const CHEAT_FLOOR = 1_000_000;
 
 /** Main-thread mirror of the city plus the bridge to the simulation worker. */
 export class Game {
-  incidents: IncidentView = { fires: [], crashes: [], crime: [], patrol: [] };
+  incidents: IncidentView = { fires: [], heists: [], crashes: [], crime: [], patrol: [] };
   incidentSave?: IncidentSnapshot;
   seed = 1;
   terrain: Terrain = generateTerrain(1);
   net = new Network();
   raster: Raster = rasterize(this.net);
   kind = new Uint8Array(N_TILES);
+  /** Quarter turns for placed buildings: which way each one faces. */
+  rot = new Uint8Array(N_TILES);
   owners: Int32Array = new Int32Array(N_TILES).fill(-1);
   level = new Uint8Array(N_TILES);
   neglect = new Uint8Array(N_TILES);
@@ -131,12 +133,13 @@ export class Game {
     return bank || !this.terrain.shore[i];
   }
 
-  /** Change a tile's kind. Returns false if unchanged. */
-  setKind(i: number, k: number, cost: number): boolean {
+  /** Change a tile's kind, optionally facing a given quarter turn. Returns false if unchanged. */
+  setKind(i: number, k: number, cost: number, rot = 0): boolean {
     if (this.owners[i] >= 0) i = this.owners[i];
-    if (this.kind[i] === k) return false;
+    if (this.kind[i] === k && this.rot[i] === rot) return false;
     this.kind[i] = k;
-    this.owners = siteOwners(this.kind);
+    this.rot[i] = k ? rot & 3 : 0;
+    this.owners = siteOwners(this.kind, this.rot);
     this.level[i] = isService(k) ? 1 : 0;
     this.pendingSpent += cost;
     this.dirty = true;
@@ -149,13 +152,14 @@ export class Game {
       this.rasterVersion = this.net.version;
       // Roads pave over whatever was on the tile.
       for (let i = 0; i < N_TILES; i++) {
-        if ((isZone(this.kind[i]) || isService(this.kind[i])) && footprint(i, this.kind[i]).some(t => this.raster.cover[t])) {
+        if ((isZone(this.kind[i]) || isService(this.kind[i])) && footprint(i, this.kind[i], this.rot[i]).some(t => this.raster.cover[t])) {
           this.kind[i] = 0;
           this.level[i] = 0;
+          this.rot[i] = 0;
         }
       }
     }
-    this.owners = siteOwners(this.kind);
+    this.owners = siteOwners(this.kind, this.rot);
     const net = this.net.toPlain();
     this.segOrder = net.segs.map((s) => s[0]);
     this.serial++;
@@ -180,13 +184,14 @@ export class Game {
 
   load(d: SaveData): void {
     this.incidentSave = d.incidents;
-    this.incidents = { fires: d.incidents?.fires ?? [], crashes: [], crime: [], patrol: [] };
+    this.incidents = { fires: d.incidents?.fires ?? [], heists: [], crashes: [], crime: [], patrol: [] };
     this.seed = d.seed;
     this.terrain = generateTerrain(d.seed);
     this.net = Network.fromPlain(d.net);
     ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
     this.kind.set(d.kind);
+    this.rot.set(d.rot ?? new Uint8Array(N_TILES));
     this.level.set(d.level);
     this.neglect.set(d.neglect ?? new Uint8Array(N_TILES));
     this.flags = new Uint8Array(N_TILES);
@@ -215,7 +220,7 @@ export class Game {
 
   snapshot(): SaveData {
     return {
-      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, net: this.net.toPlain(),
+      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, rot: this.rot, net: this.net.toPlain(),
       funding: this.stats.funding, policies: this.stats.policies, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
   }
@@ -270,7 +275,7 @@ export function newCity(seed: number): SaveData {
   const bz = Math.max(0.5, Math.min(GRID - 0.5, e.z + e.dz * len));
   const b = net.addNode(bx, bz);
   b.fixed = true;
-  net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_AVENUE, false, true);
+  net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_HIGHWAY, false, true);
   ensureApproaches(net);
   return {
     seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),

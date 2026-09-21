@@ -9,8 +9,11 @@ import { CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
-import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
+import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
+
+/** One line of city trouble, with an id the game can turn into a place to look. */
+export interface CityMessage { id: string; text: string }
 
 export interface HudActions {
   setTool(t: Tool): void;
@@ -19,6 +22,9 @@ export interface HudActions {
   setTax(v: number): void;
   setFunding(key: FundingKey, value: number): void;
   loan(action: 'take' | 'repay'): void;
+  rotatePlacement(): void;
+  /** Move the camera to whatever a message is about; false when there is nothing to show. */
+  focusOn(id: string): boolean;
   closeInspection(): void;
   openMenu(): void;
   setPolicy(id: PolicyId, on: boolean): void;
@@ -57,7 +63,9 @@ const CATEGORIES: Category[] = [
     tools: [
       { id: 'roundabout', label: 'Roundabout', key: 'O', price: money(COST_ROUNDABOUT), note: 'Never stops', hint: 'Click a junction. Traffic circulates one way and nobody has to wait' },
       { id: 'light', label: 'Signal', key: 'T', price: money(COST_LIGHT), note: 'Busy crossings', hint: 'Click a junction to add or remove traffic lights. Best where two busy roads cross' },
+      { id: 'stopsign', label: 'Stop signs', key: 'K', price: money(COST_STOP), note: 'All-way halt', hint: 'Click a junction to make every approach stop before entering. Slower than lights, but it keeps a quiet crossing orderly and needs no signal' },
       { id: 'oneway', label: 'One-way', key: 'Y', price: 'Free', note: 'Click to cycle', hint: 'Click a road to cycle: one-way, reversed, two-way' },
+      { id: 'calm', label: 'Calm street', key: 'J', price: `${money(COST_CALM)} / cell`, note: 'Slower, safer', hint: 'Click a street to add traffic calming: drivers run at about half speed and collisions become rare. Click again to remove it. Expressways cannot be calmed' },
     ],
   },
   {
@@ -168,6 +176,7 @@ export class Hud {
   private panels = new Map<string, HTMLElement>();
   private panel = el('div', 'panel');
   private panelTitle = el('span', 'ptitle');
+  private rotateBtn = el('button', 'rotate-btn');
   private openCat: string | null = null;
   private tool: Tool = 'road';
   private mode: RoadMode = 'straight';
@@ -188,6 +197,14 @@ export class Hud {
   private help: HTMLElement;
   private about = el('div', 'help about');
   private clock = el('div', 'city-clock');
+  /** Which way the building in hand is facing, and whether that control applies at all. */
+  setRotation(quarter: number, placing: boolean): void {
+    this.rotateBtn.classList.toggle('shown', placing);
+    this.rotateBtn.style.setProperty('--turn', `${quarter * 90}deg`);
+    const facing = ['north', 'east', 'south', 'west'][quarter & 3];
+    this.rotateBtn.setAttribute('aria-label', `Rotate: facing ${facing}`);
+  }
+
   /** The city clock, written by the render loop. */
   setClock(label: string): void {
     if (this.clock.textContent !== label) this.clock.textContent = label;
@@ -206,6 +223,7 @@ export class Hud {
 
   constructor(root: HTMLElement, actions: HudActions) {
     this.tutorialActions = actions;
+    this.messageActions = actions;
     this.welcome.setAttribute('role', 'dialog');
     this.welcome.setAttribute('aria-modal', 'true');
     this.welcome.setAttribute('aria-label', 'Welcome to Gridburg');
@@ -439,7 +457,10 @@ export class Hud {
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
     const head = el('div', 'phead');
-    head.append(this.panelTitle, this.hint);
+    this.rotateBtn.append(icon('rotate', 16), el('span', undefined, 'Rotate'));
+    this.rotateBtn.title = 'Turn the building before placing it (G, or right-click)';
+    this.rotateBtn.addEventListener('click', () => actions.rotatePlacement());
+    head.append(this.panelTitle, this.hint, this.rotateBtn);
     this.panel.append(head);
     for (const c of CATEGORIES) {
       if (c.id === 'bulldoze' || c.id === 'inspect') continue;
@@ -554,7 +575,8 @@ export class Hud {
           <li><b>Budget</b> — click your treasury to adjust service funding, review expenses or take a repayable recovery loan. Private development continues while the city is in debt</li>
           <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
-          <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and the count tells you how much is outstanding</li>
+          <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and clicking a message takes you to it</li>
+          <li><b>Placing</b> — right-click, press <b>G</b> or use Rotate in the panel to turn a building before you put it down</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
           <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>
@@ -726,7 +748,7 @@ export class Hud {
     }
     this.milestoneRows.forEach((row, i) => { row.classList.toggle('earned', i <= s.cityLevel); row.classList.toggle('next', i === s.cityLevel + 1); });
     this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.railLines} rail lines · ${s.transport.intercityLines} intercity lines · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · ${s.transport.railPassengers} intercity rail passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
-    this.incidentStats.textContent = `${s.incidents.patrols} police cars · ${s.incidents.fireEngines} fire engines · ${s.incidents.extinguished} fires extinguished · ${s.incidents.prevented} crimes prevented`;
+    this.incidentStats.textContent = `${s.incidents.patrols} police cars · ${s.incidents.fireEngines} fire engines · ${s.incidents.extinguished} fires extinguished · ${s.incidents.prevented} crimes prevented · ${s.incidents.foiled} robberies foiled · ${s.incidents.robbed} got away`;
     this.treatmentStats.textContent = `${s.treatedSewage} sewage units filtered`;
     for (const id of ['office', 'entry'] as Tool[]) {
       const button = this.toolBtns.get(id)!;
@@ -774,27 +796,30 @@ export class Hud {
       b.classList.toggle('negd', d < 0);
     }
 
-    const a: string[] = [];
-    if (s.incidents.fires) a.push(`${s.incidents.fires} building fires: fire engines need working stations and clear road access`);
-    if (s.incidents.crashes) a.push(`${s.incidents.crashes} traffic collisions: blocked vehicles await police or recovery`);
-    if (s.incidents.crime) a.push(`${s.incidents.crime} crime hotspots: police visits deter crime and restore tax revenue`);
-    if (s.buildings === 0 && s.roadLength < 12) a.push('Draw a road from the end of the highway, then zone beside it');
-    if (s.money < 0) a.push('Treasury in debt: open Budget to reduce funding or take a recovery loan. Existing zones can still grow.');
-    if (s.declining > 0) a.push(`${s.declining} homes losing services: inspect the amber markers before they downgrade`);
+    const a: CityMessage[] = [];
+    const say = (id: string, text: string): number => a.push({ id, text });
+    if (s.incidents.fires) say('fires', `${s.incidents.fires} building fires: fire engines need working stations and clear road access`);
+    if (s.incidents.heists) say('heists', `${s.incidents.heists} robbery in progress: the nearest police station is on its way`);
+    if (s.incidents.racers) say('racers', `${s.incidents.racers} street racers are out: calmed streets and signals slow them down`);
+    if (s.incidents.crashes) say('crashes', `${s.incidents.crashes} traffic collisions: blocked vehicles await police or recovery`);
+    if (s.incidents.crime) say('crime', `${s.incidents.crime} crime hotspots: police visits deter crime and restore tax revenue`);
+    if (s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the end of the highway, then zone beside it');
+    if (s.money < 0) say('budget', 'Treasury in debt: open Budget to reduce funding or take a recovery loan. Existing zones can still grow.');
+    if (s.declining > 0) say('declining', `${s.declining} homes losing services: inspect the amber markers before they downgrade`);
     if (s.buildings > 0) {
-      if (s.power[1] === 0) a.push('No power: build a wind turbine or a coal plant next to a road');
-      else if (s.power[0] > s.power[1]) a.push('Power shortage');
-      if (s.water[1] === 0) a.push('No water: build a water tower, or a pump on the river');
-      else if (s.water[0] > s.water[1]) a.push('Water shortage');
-      if (s.sewage[1] === 0) a.push('No sewage: build an outlet on the river, downstream of any pump');
-      else if (s.sewage[0] > s.sewage[1]) a.push('Sewage is backing up');
+      if (s.power[1] === 0) say('power', 'No power: build a wind turbine or a coal plant next to a road');
+      else if (s.power[0] > s.power[1]) say('power', 'Power shortage');
+      if (s.water[1] === 0) say('water', 'No water: build a water tower, or a pump on the river');
+      else if (s.water[0] > s.water[1]) say('water', 'Water shortage');
+      if (s.sewage[1] === 0) say('sewage', 'No sewage: build an outlet on the river, downstream of any pump');
+      else if (s.sewage[0] > s.sewage[1]) say('sewage', 'Sewage is backing up');
     }
-    if (s.dirtyWater) a.push('Dirty drinking water: move pumps upstream of outlets and towers off polluted ground');
-    if (s.resPollution > 2) a.push('Pollution is reaching homes');
-    if (s.gaveUp > 0 || s.commute > 45) a.push('Gridlock: try buses, rail, avenues or another city entrance');
-    if (s.cityLevel >= 1 && s.civic.health < 35) a.push('Homes need healthcare: place a clinic near residents');
-    if (s.cityLevel >= 1 && s.civic.education < 35) a.push('Education limits growth: place schools near homes');
-    if (s.cityLevel >= 2 && s.civic.waste < 50) a.push('Waste coverage is low: build a recycling center');
+    if (s.dirtyWater) say('water', 'Dirty drinking water: move pumps upstream of outlets and towers off polluted ground');
+    if (s.resPollution > 2) say('pollution', 'Pollution is reaching homes');
+    if (s.gaveUp > 0 || s.commute > 45) say('gridlock', 'Gridlock: try buses, rail, avenues or another city entrance');
+    if (s.cityLevel >= 1 && s.civic.health < 35) say('health', 'Homes need healthcare: place a clinic near residents');
+    if (s.cityLevel >= 1 && s.civic.education < 35) say('education', 'Education limits growth: place schools near homes');
+    if (s.cityLevel >= 2 && s.civic.waste < 50) say('waste', 'Waste coverage is low: build a recycling center');
     this.setMessages(a);
   }
 
@@ -803,22 +828,33 @@ export class Hud {
    * started going wrong also pops out for a few seconds, so trouble is noticed without the screen
    * filling up with red boxes that never leave.
    */
-  private setMessages(messages: string[]): void {
-    const fresh = messages.filter(m => !this.showing.has(m));
-    this.showing = new Set(messages);
+  private setMessages(messages: CityMessage[]): void {
+    const fresh = messages.filter(m => !this.showing.has(m.text));
+    this.showing = new Set(messages.map(m => m.text));
     this.messageList.replaceChildren(...(messages.length
-      ? messages.map(t => el('div', 'message', t))
+      ? messages.map(m => this.messageRow(m))
       : [el('p', 'pnote', 'Nothing needs your attention.')]));
     this.messageDot.textContent = messages.length ? String(messages.length) : '';
     this.messageDot.classList.toggle('on', messages.length > 0);
     this.messageBtn.classList.toggle('attention', messages.length > 0);
     if (!fresh.length) return;
-    this.messagePop.replaceChildren(...fresh.slice(0, 3).map(t => el('div', 'message', t)));
+    this.messagePop.replaceChildren(...fresh.slice(0, 3).map(m => this.messageRow(m)));
     this.messagePop.classList.add('show');
     clearTimeout(this.popTimer);
     this.popTimer = window.setTimeout(() => this.messagePop.classList.remove('show'), 5200);
   }
 
+  /** A message that can be looked at takes you there; the rest just read. */
+  private messageRow(m: CityMessage): HTMLElement {
+    const row = el('button', 'message', m.text);
+    row.addEventListener('click', () => {
+      if (this.messageActions.focusOn(m.id)) this.messagePop.classList.remove('show');
+      else this.toast('Nothing to show for that one yet');
+    });
+    return row;
+  }
+
+  private messageActions!: HudActions;
   private toastTimer = 0;
   toast(msg: string): void {
     this.toastEl.textContent = msg;

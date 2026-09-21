@@ -35,6 +35,7 @@ export class RoadLayer {
   readonly mesh: THREE.Mesh;
   private poles: THREE.InstancedMesh;
   private lamps: THREE.InstancedMesh;
+  private stopSigns: THREE.InstancedMesh;
   private lampInfo: { node: number; group: number }[] = [];
   private ranges = new Map<number, [number, number]>();
   private builtNet: Network | null = null;
@@ -67,6 +68,18 @@ export class RoadLayer {
       this.group.add(m);
     }
     this.poles.castShadow = true;
+
+    // Stop signs: a small octagonal plate on a post, one per approach.
+    const signBody = new Builder(2);
+    signBody.box(0.03, 0.62, 0.03, 0, 0, 0, 0x8d949a);
+    signBody.box(0.26, 0.26, 0.022, 0, 0.5, 0.01, 0xc0392b);
+    signBody.box(0.19, 0.19, 0.028, 0, 0.5, 0.015, 0xd9503f);
+    signBody.box(0.13, 0.035, 0.032, 0, 0.5, 0.02, 0xf6f2ea);
+    this.stopSigns = new THREE.InstancedMesh(signBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
+    this.stopSigns.count = 0;
+    this.stopSigns.frustumCulled = false;
+    this.stopSigns.castShadow = true;
+    this.group.add(this.stopSigns);
 
     // Highway sign at the entry.
     const board = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 0.06), new THREE.MeshStandardMaterial({ color: 0x1f7a4d }));
@@ -165,7 +178,9 @@ export class RoadLayer {
       if (to - from < 0.5) continue;
       const avenue = s.kind === KIND_AVENUE, highway = s.kind === KIND_HIGHWAY, lane = s.kind === KIND_LANE;
       const wide = avenue || highway;
-      const edge = highway ? 1.55 : 0.7, divider = highway ? 0.11 : 0.075;
+      // Lane lines sit between carriageway lanes: two each way on an avenue, three on an expressway.
+      const lanes = highway ? [0.44, 0.88] : [0.43];
+      const divider = highway ? 0.1 : 0.07;
       const strip = (s0: number, s1: number, halfW: number, offset: number, color: number): void => {
         const steps = Math.max(1, Math.ceil((s1 - s0) / 0.35));
         const arr = new Float32Array((steps + 1) * 2);
@@ -176,24 +191,31 @@ export class RoadLayer {
         }
         b.ribbon(arr, steps + 1, halfW, 0.056, color, offset);
       };
+      if (s.calm) {
+        // Ladders of white bars across the carriageway read as a calmed street.
+        const hw = HALF_WIDTH[s.kind];
+        for (let d = from + 0.4; d + 0.25 < to; d += 1.5) {
+          for (const off of [-hw * 0.55, 0, hw * 0.55]) strip(d, d + 0.25, hw * 0.3, off, WHITE);
+        }
+      }
       if (s.oneway) {
         for (let d = from + 0.3; d < to; d += 1.6) {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);
         }
-        if (wide) for (let d = from; d + 0.5 < to; d += 1.1) { strip(d, d + 0.5, 0.02, edge - 0.23, WHITE); strip(d, d + 0.5, 0.02, -(edge - 0.23), WHITE); }
+        if (wide) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of lanes) { strip(d, d + 0.5, 0.018, l - 0.22, WHITE); strip(d, d + 0.5, 0.018, -(l - 0.22), WHITE); }
       } else if (wide) {
-        // A divider down the middle, dashed lane lines either side, and on an expressway a hard shoulder.
-        strip(from, to, 0.025, -divider, LINE);
-        strip(from, to, 0.025, divider, LINE);
-        for (let d = from; d + 0.5 < to; d += 1.1) {
-          strip(d, d + 0.5, 0.02, edge, WHITE);
-          strip(d, d + 0.5, 0.02, -edge, WHITE);
+        // A divider down the middle, a dashed line between each pair of lanes, and an edge line
+        // along the shoulder so an expressway reads as three lanes each way.
+        strip(from, to, 0.022, -divider, LINE);
+        strip(from, to, 0.022, divider, LINE);
+        for (let d = from; d + 0.5 < to; d += 1.1) for (const l of lanes) {
+          strip(d, d + 0.5, 0.018, l, WHITE);
+          strip(d, d + 0.5, 0.018, -l, WHITE);
         }
-        if (highway) {
-          strip(from, to, 0.022, HALF_WIDTH[KIND_HIGHWAY] - 0.12, WHITE);
-          strip(from, to, 0.022, -(HALF_WIDTH[KIND_HIGHWAY] - 0.12), WHITE);
-        }
+        const shoulder = HALF_WIDTH[s.kind] - 0.07;
+        strip(from, to, 0.02, shoulder, WHITE);
+        strip(from, to, 0.02, -shoulder, WHITE);
       } else if (lane) {
         // A lane is a single shared carriageway: no centre line, just a worn edge.
         for (let d = from; d + 0.2 < to; d += 1.4) strip(d, d + 0.2, 0.016, 0, DASH);
@@ -238,6 +260,28 @@ export class RoadLayer {
 
     this.mesh.geometry.dispose();
     this.mesh.geometry = b.build();
+
+    // Stop signs stand on the right-hand kerb of every approach to an all-way stop.
+    let signCount = 0;
+    q.identity();
+    for (const node of net.nodes.values()) {
+      if (!node.stop || net.degree(node.id) < 3) continue;
+      for (const seg of net.segsAt(node.id)) {
+        if (signCount >= MAX_LAMPS) break;
+        const atA = seg.a === node.id;
+        const along = Math.min(1.0, seg.len * 0.4);
+        Network.poseAt(seg, atA ? along : seg.len - along, pose);
+        const dir = atA ? -1 : 1;
+        const tx = pose.tx * dir, tz = pose.tz * dir;
+        const off = HALF_WIDTH[seg.kind] + 0.2;
+        v3.set(pose.x - tz * off - half, 0, pose.z + tx * off - half);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-tx, -tz));
+        m4.compose(v3, q, one);
+        this.stopSigns.setMatrixAt(signCount++, m4);
+      }
+    }
+    this.stopSigns.count = signCount;
+    this.stopSigns.instanceMatrix.needsUpdate = true;
 
     // Traffic signals: one lamp per approach, on the right-hand side at the stop line.
     this.lampInfo = [];

@@ -64,6 +64,9 @@ let transit: TransitNetwork = { lines: [], airports: [], intercity: [] };
 let transitSignature = '';
 let transitTokens: number[] = [], transitDepartures: number[] = [];
 let riders = 0, airPassengers = 0, railPassengers = 0, fareIncome = 0, treatedSewage = 0;
+/** Street racing: a few cars tearing across town after dark, and the clock until they disperse. */
+let raceUntil = -1;
+let robbedSeen = 0;
 let policies: Policies = noPolicies();
 let effects: PolicyEffects = policyEffects(policies);
 let policyCost = 0;
@@ -79,7 +82,9 @@ let unservedRes = 0;
 let pendingMoveIns: number[] = [];
 
 // ---- road graph snapshot --------------------------------------------------------------------
-const J_PLAIN = 0, J_YIELD = 1, J_LIGHT = 2, J_RING = 3;
+const J_PLAIN = 0, J_YIELD = 1, J_LIGHT = 2, J_RING = 3, J_STOP = 4;
+/** How long a driver must actually stand at a stop line before pulling away. */
+const STOP_WAIT = 0.55;
 interface Edge { seg: number; to: number; fwd: boolean }
 let serial = 0;
 let segs: RSeg[] = [];
@@ -106,8 +111,8 @@ let roadLength = 0;
 
 // ---- cars ---------------------------------------------------------------------------------------
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
-interface Mission { kind: 'fire' | 'patrol' | 'crash'; origin: number; tile: number; crash?: number; work: number }
-interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; lock: number; lockLi: number; lockStop: number; vehicle: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
+interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist'; origin: number; tile: number; crash?: number; work: number }
+interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
 let carSequence = 0;
@@ -166,7 +171,7 @@ function applyNetwork(p: EditPayload): void {
     nodeEdges.push([]);
     nodeGroups.push(new Map());
     const deg = net.degree(n.id);
-    nodeType.push(n.ring ? J_RING : deg >= 3 ? (n.light ? J_LIGHT : J_YIELD) : J_PLAIN);
+    nodeType.push(n.ring ? J_RING : deg >= 3 ? (n.light ? J_LIGHT : n.stop ? J_STOP : J_YIELD) : J_PLAIN);
     if (n.entry) entryNodes.push(nodeIds.length - 1);
   }
   // Keep surviving segments at stable indices where possible is not needed: cars are remapped by id below.
@@ -319,7 +324,7 @@ function heapPop(): number {
 }
 
 function segTime(i: number): number {
-  return (segs[i].len / SPEED[segs[i].kind]) * (1 + 2.5 * segCong[i]);
+  return (segs[i].len / segSpeed(segs[i])) * (1 + 2.5 * segCong[i]);
 }
 
 /** Fastest route between two road positions as a list of legs, or null. */
@@ -346,7 +351,7 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null
   const GOAL = n; // virtual node
   const gx = G.pts[0], gz = G.pts[1];
   const h = (node: number): number => Math.hypot(nodeX[node] - gx, nodeZ[node] - gz) / 4.5 * 0.8;
-  const vS = SPEED[S.kind];
+  const vS = segSpeed(S);
   const relax = (node: number, g: number, from: number, seg: number, fwd: boolean): void => {
     if (closedStamp[node] === gen) return;
     if (stamp[node] === gen && gScore[node] <= g) return;
@@ -359,7 +364,7 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null
   };
   relax(segB[sSeg], (S.len - sS) / vS, -1, sSeg, true);
   if (!S.oneway) relax(segA[sSeg], sS / vS, -1, sSeg, false);
-  const vG = SPEED[G.kind];
+  const vG = segSpeed(G);
 
   while (heapN.length) {
     const cur = heapPop();
@@ -386,7 +391,7 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null
     if (cur === segB[gSeg] && !G.oneway) relax(GOAL, g + (G.len - gS) / vG, cur, gSeg, false);
     for (const e of nodeEdges[cur]) {
       const t = nodeType[e.to];
-      const penalty = t === J_LIGHT ? 2.5 : t === J_YIELD ? 0.8 : 0;
+      const penalty = t === J_LIGHT ? 2.5 : t === J_STOP ? 1.4 : t === J_YIELD ? 0.8 : 0;
       relax(e.to, g + segTime(e.seg) + penalty, cur, e.seg, e.fwd);
     }
   }
@@ -484,6 +489,22 @@ function byIntercityRail(tile: number): boolean {
   return true;
 }
 
+/** Whether the city clock says it is late enough for the racers to come out. */
+const nightTime = (): boolean => { const h = (tick / 20) % 24; return h > 22 || h < 4; };
+
+/**
+ * Street racers: a handful of cars that run a long route across the city at speed once the streets
+ * are quiet. They are ordinary traffic in every other way, so they queue and crash like anyone else.
+ */
+function startRace(): void {
+  if (!resTiles.length || !jobTiles.length) return;
+  for (let n = 0; n < 3; n++) {
+    const o = pickWeighted(resTiles, resW), d = pickWeighted(jobTiles, jobW);
+    if (distance(o, d) < 20) continue;
+    spawnTrip(accSeg[o], accS[o], accSeg[d], accS[d], 7);
+  }
+}
+
 function spawn(dt: number): void {
   airTokens = Math.min(transit.airports.length * 240, airTokens + transit.airports.length * 4 * dt);
   const intercityCapacity = transit.intercity.length * SERVICES[T_STATION].capacity!;
@@ -497,6 +518,11 @@ function spawn(dt: number): void {
       if (spawnTrip(accSeg[line.a], accS[line.a], accSeg[line.b], accS[line.b], 4, i)) transitDepartures[i] = 0;
     }
   });
+  // After dark, and only in a city big enough to have a scene, the racers come out for a while.
+  if (cityLevel >= 3 && raceUntil < simTime && nightTime() && Math.random() < 0.0016 * dt * SIM_HZ) {
+    raceUntil = simTime + 45;
+    startRace();
+  }
   spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
   extBudget = Math.min(4, extBudget + extRate * dt);
   let n = 0;
@@ -544,12 +570,20 @@ function spawn(dt: number): void {
  * measured in, so inner-lane cars close up until their bodies overlap, and an outer lane wide enough
  * for an avenue reaches out across the mouth of every entry arm.
  */
+/** Travel speed on a road, slowed where the street has been calmed. */
+function segSpeed(seg: RSeg): number {
+  return SPEED[seg.kind] * (seg.calm ? 0.55 : 1);
+}
+
 function laneOffset(segIndex: number, seg: RSeg, slot: number): number {
   if (ringArc[segIndex]) return 0;
-  const wide = seg.kind === KIND_AVENUE || seg.kind === KIND_HIGHWAY;
-  const outer = seg.kind === KIND_HIGHWAY ? 1.45 : 1.05, inner = seg.kind === KIND_HIGHWAY ? 0.5 : 0.35;
-  if (seg.oneway) return wide ? (slot & 1 ? outer - 0.35 : -(outer - 0.35)) : (slot & 1 ? 0.17 : -0.17);
-  return wide ? (slot & 1 ? inner : outer) : seg.kind === KIND_LANE ? 0.12 : 0.2;
+  // Three lanes each way on an expressway, two on an avenue, one on anything narrower.
+  if (seg.kind === KIND_HIGHWAY) {
+    return seg.oneway ? ((slot % 3) - 1) * 0.86 : 0.22 + (slot % 3) * 0.44;
+  }
+  if (seg.kind === KIND_AVENUE) return seg.oneway ? (slot & 1 ? 0.43 : -0.43) : (slot & 1 ? 0.22 : 0.64);
+  if (seg.oneway) return seg.kind === KIND_LANE ? 0 : (slot & 1 ? 0.18 : -0.18);
+  return seg.kind === KIND_LANE ? 0.1 : 0.18;
 }
 
 function carPose(leg: Leg, progress: number, slot: number, type: number): VehiclePose {
@@ -604,7 +638,7 @@ function stepCars(dt: number): void {
       const c = slots[slot]!;
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
-      const v = SPEED[seg.kind];
+      const v = segSpeed(seg) * (c.vehicle === 7 ? 1.55 : 1);
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
       if (c.crash !== undefined && incidents.crashes.has(c.crash)) {
@@ -615,6 +649,7 @@ function stepCars(dt: number): void {
         c.mission.work -= dt;
         if (c.mission.work <= 0) {
           if (c.mission.kind === 'fire') incidents.extinguish(c.mission.tile);
+          else if (c.mission.kind === 'heist') incidents.foil(c.mission.tile);
           else if (c.mission.kind === 'patrol') incidents.visit(c.mission.tile);
           else if (c.mission.crash !== undefined) incidents.crashes.delete(c.mission.crash);
           freeCar(slot);
@@ -655,6 +690,11 @@ function stepCars(dt: number): void {
         if (type === J_LIGHT && !pastStop) {
           const g = nodeGroups[node].get(leg.seg) ?? 0;
           if (!isGreen(simTime, nodeIds[node], g)) canGo = false;
+        }
+        // An all-way stop: come to a halt at the line, then take your turn like any other junction.
+        if (type === J_STOP && !pastStop && c.stopAt !== node) {
+          if (c.p >= stopP - 0.25 && c.stuck >= STOP_WAIT) c.stopAt = node;
+          else canGo = false;
         }
         // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
         // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
@@ -1022,6 +1062,11 @@ function grow(): void {
       level[i] = l - 1; age[i] = 0;
     }
   }
+  if (incidents.robbed > robbedSeen) {
+    money -= 1200 * (incidents.robbed - robbedSeen);
+    robbedSeen = incidents.robbed;
+    post({ type: 'notice', message: 'A robbery got away with $1,200. Police stations respond to alarms nearby.' });
+  }
   const progress = advanceCity(cityLevel, pop);
   cityLevel = progress.level;
   money += netIncome + progress.reward;
@@ -1031,7 +1076,13 @@ function grow(): void {
 
 function stats(): Stats {
   return {
-    incidents: { fires: incidents.fires.size, crashes: incidents.crashes.size, crime: incidents.view().crime.length, patrols: slots.filter(c => c?.vehicle === 5).length, fireEngines: slots.filter(c => c?.vehicle === 6).length, prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged },
+    incidents: {
+      fires: incidents.fires.size, heists: incidents.heists.size, racers: slots.filter(c => c?.vehicle === 7).length,
+      crashes: incidents.crashes.size, crime: incidents.view().crime.length,
+      patrols: slots.filter(c => c?.vehicle === 5).length, fireEngines: slots.filter(c => c?.vehicle === 6).length,
+      prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged,
+      robbed: incidents.robbed, foiled: incidents.foiled,
+    },
     transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, intercityLines: transit.intercity.length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, railPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
     funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
     cityLevel, happiness, civic: civicState.average,
@@ -1068,7 +1119,8 @@ function stepIncidents(): void {
       if (b !== undefined) pairs.push([a, b]);
     }
     const pair = pairs[Math.floor(Math.random() * pairs.length)];
-    if (pair) {
+    // A calmed street rarely produces a collision: that is what the drivers slowed down for.
+    if (pair && !(slots[pair[0]] && segs[slots[pair[0]]!.legs[slots[pair[0]]!.li].seg]?.calm && Math.random() < 0.8)) {
       const [a, second] = pair, first = trafficSpace.poses.get(a)!;
       const tile = Math.max(0, Math.min(N_TILES - 1, Math.floor(first.z) * GRID + Math.floor(first.x)));
       const crash = incidents.crash(first.x, first.z, [a, second], tile, first.y ?? 0);
@@ -1084,8 +1136,10 @@ function stepIncidents(): void {
       const targets = [...incidents.fires.keys()].filter(tile => !slots.some(c => c?.mission?.kind === 'fire' && c.mission.tile === tile)).sort((a, b) => distance(a, i) - distance(b, i));
       for (const tile of targets) if (tileConnected(tile) && route(accSeg[i], accS[i], accSeg[tile], accS[tile])) { mission = { kind: 'fire', origin: i, tile, work: 8 }; break; }
     } else {
-      const crash = [...incidents.crashes.values()].find(c => !slots.some(car => car?.mission?.crash === c.id));
-      if (crash) {
+      const robbery = [...incidents.heists.keys()].find(tile => tileConnected(tile) && !slots.some(car => car?.mission?.kind === 'heist' && car.mission.tile === tile));
+      if (robbery !== undefined && route(accSeg[i], accS[i], accSeg[robbery], accS[robbery])) mission = { kind: 'heist', origin: i, tile: robbery, work: 5 };
+      const crash = mission ? undefined : [...incidents.crashes.values()].find(c => !slots.some(car => car?.mission?.crash === c.id));
+      if (!mission && crash) {
         const near = [...resTiles, ...jobTiles].filter(t => tileConnected(t)).sort((a, b) => distance(a, crash.tile) - distance(b, crash.tile))[0];
         if (near !== undefined && distance(near, crash.tile) < 6) mission = { kind: 'crash', origin: i, tile: near, crash: crash.id, work: 4 };
       }
@@ -1153,7 +1207,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       policies = { ...noPolicies(), ...m.policies };
       effects = policyEffects(policies);
       debt = m.debt ?? 0;
-      incidents.load(m.incidents); dispatchCooldown.clear();
+      incidents.load(m.incidents); dispatchCooldown.clear(); robbedSeen = 0; raceUntil = -1;
       inspected = -1;
       post({ type: 'inspection', report: null });
       pollution.fill(0);

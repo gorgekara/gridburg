@@ -16,6 +16,7 @@ export class IncidentLayer {
   private smoke = new THREE.MeshBasicMaterial({ color: 0x55545a, transparent: true, opacity: 0.62 });
   private crash = new THREE.MeshBasicMaterial({ color: 0xf3c645 });
   private crime = new THREE.MeshBasicMaterial({ color: 0xca77df });
+  private heist = new THREE.MeshBasicMaterial({ color: 0x4fc3f7 });
   rebuild(view: IncidentView, kind: Uint8Array, level: Uint8Array, raster: Raster): void {
     this.group.clear(); this.flames = [];
     for (const { tile } of view.fires) {
@@ -26,6 +27,11 @@ export class IncidentLayer {
         mesh.position.set(raster.lotX[tile] - GRID / 2 + (i % 3 - 1) * 0.14, height + (i < 3 ? 0.18 : 0.55 + (i - 3) * 0.25), raster.lotZ[tile] - GRID / 2);
         this.group.add(mesh); this.flames.push({ mesh, phase: tile + i });
       }
+    }
+    for (const { tile } of view.heists) {
+      const mesh = new THREE.Mesh(this.shared.warning, this.heist);
+      mesh.position.set(raster.lotX[tile] - GRID / 2, buildingHeight(kind[tile], Math.max(1, level[tile]), Math.floor(tileHash(tile) * VARIANTS) % VARIANTS) + 0.5, raster.lotZ[tile] - GRID / 2);
+      this.group.add(mesh);
     }
     for (const crash of view.crashes) {
       const mesh = new THREE.Mesh(this.shared.warning, this.crash);

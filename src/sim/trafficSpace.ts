@@ -1,6 +1,6 @@
 export const VEHICLE_SCALE = 0.68;
 export interface VehiclePose { y?: number; x: number; z: number; angle: number; type: number }
-export const vehicleLength = (type: number): number => (type === 3 || type === 4 || type === 6 ? 0.82 : type === 2 ? 0.58 : 0.5) * VEHICLE_SCALE;
+export const vehicleLength = (type: number): number => (type === 3 || type === 4 || type === 6 ? 0.82 : type === 2 ? 0.58 : type === 7 ? 0.48 : 0.5) * VEHICLE_SCALE;
 
 /** Separating-axis test for oriented vehicle bodies, with a small safety margin. */
 export function vehiclesOverlap(a: VehiclePose, b: VehiclePose, margin = 0.025): boolean {

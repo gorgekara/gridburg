@@ -1,13 +1,13 @@
 import { structurePlan, roadHeight, BRIDGE_RISE, STRUCTURE_COST } from './roads/structures';
 import type { Structure } from './roads/structures';
-import { footprint } from './sites';
+import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from './constants';
 import { gridPoint, roadPoint } from './placement';
 import * as THREE from 'three';
 import {
   T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
-  ROAD_COST, COST_ZONE, COST_LIGHT, COST_ROUNDABOUT, SERVICES, idx, isService,
+  ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
@@ -19,7 +19,7 @@ import type { Game } from './game';
 export type Tool =
   | 'none' | 'inspect'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade' | 'bridge' | 'tunnel'
-  | 'roundabout' | 'light' | 'oneway'
+  | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'school' | 'fire' | 'police' | 'recycling' | 'university' | 'solar'
@@ -32,7 +32,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   office: 0xb791e0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
-  road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff,
+  road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a,
   bulldoze: 0xe04b3a,
@@ -58,6 +58,9 @@ export class Input {
   mode: RoadMode = 'straight';
   onInspect: ((tile: number) => void) | null = null;
   onToolChange: ((t: Tool) => void) | null = null;
+  onRotate: ((quarter: number) => void) | null = null;
+  /** Quarter turns applied to the next building placed, cleared when the tool changes. */
+  placeRotation = 0;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
   /** Live label next to the cursor; null hides it. */
@@ -140,6 +143,8 @@ export class Input {
 
   setTool(t: Tool): void {
     this.cancel();
+    this.placeRotation = 0;
+    this.onRotate?.(0);
     this.tool = t;
     this.rectMat.color.setHex(TOOL_COLOR[t]);
     this.onToolChange?.(t);
@@ -162,12 +167,13 @@ export class Input {
   private onKey = (e: KeyboardEvent): void => {
     if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
     const map: Record<string, Tool> = {
-      i: 'inspect', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway',
+      i: 'inspect', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
       '1': 'res', '2': 'com', '3': 'ind', b: 'bulldoze',
     };
     const key = e.key.toLowerCase();
     const t = map[key];
     if (t) this.setTool(t);
+    if (key === 'g' && SERVICE_TOOL[this.tool] !== undefined) this.rotatePlacement();
     if (key === 'c') {
       const order: RoadMode[] = ['straight', 'curve', 'smooth'];
       this.setMode(order[(order.indexOf(this.mode) + 1) % order.length]);
@@ -271,7 +277,14 @@ export class Input {
       // A right click that did not turn into a camera drag cancels the road being laid.
       const d = this.rightDown;
       this.rightDown = null;
-      if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6 && this.chain.length) this.cancel();
+      if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 6) return;
+      if (this.chain.length) { this.cancel(); return; }
+      // Right-clicking with a building in hand turns it, like Cities: Skylines.
+      if (SERVICE_TOOL[this.tool] !== undefined) {
+        this.rotatePlacement();
+        const p = this.pick(e);
+        if (p) this.updateHover(p, e);
+      }
       return;
     }
     if (e.button !== 0) return;
@@ -590,8 +603,29 @@ export class Input {
       if (n.ring) { this.onToast?.('Roundabouts do not need lights'); return; }
       if (!n.light && !g.canAfford(COST_LIGHT)) { this.onToast?.('Not enough money'); return; }
       n.light = !n.light;
+      if (n.light) n.stop = false;
       net.version++;
       g.spend(n.light ? COST_LIGHT : 0);
+      g.flush();
+    } else if (this.tool === 'stopsign') {
+      const n = net.nearestNode(p.x, p.z, 1.4);
+      if (!n || net.degree(n.id) < 3) { this.onToast?.('Stop signs go on junctions of three or more roads'); return; }
+      if (n.ring) { this.onToast?.('Roundabouts already give way'); return; }
+      if (!n.stop && !g.canAfford(COST_STOP)) { this.onToast?.('Not enough money'); return; }
+      n.stop = !n.stop;
+      if (n.stop) n.light = false; // a junction is controlled one way or the other
+      net.version++;
+      g.spend(n.stop ? COST_STOP : 0);
+      g.flush();
+    } else if (this.tool === 'calm') {
+      const h = this.roadHit(p, 0.9);
+      if (!h || h.seg.fixed) { this.onToast?.('Pick a street to calm'); return; }
+      if (h.seg.kind === KIND_HIGHWAY) { this.onToast?.('Expressways cannot be calmed'); return; }
+      const cost = h.seg.calm ? 0 : Math.round(COST_CALM * h.seg.len);
+      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
+      h.seg.calm = !h.seg.calm;
+      net.version++;
+      g.spend(cost);
       g.flush();
     } else if (this.tool === 'oneway') {
       const h = this.roadHit(p, 0.9);
@@ -617,9 +651,15 @@ export class Input {
       const t = this.tileOf(p);
       const why = this.serviceProblem(t, k);
       if (why) { this.onToast?.(why); return; }
-      g.setKind(t, k, SERVICES[k].cost);
+      g.setKind(t, k, SERVICES[k].cost, this.placeRotation);
       g.flush();
     }
+  }
+
+  /** Turn the building waiting to be placed a quarter turn clockwise. */
+  rotatePlacement(): void {
+    this.placeRotation = (this.placeRotation + 1) & 3;
+    this.onRotate?.(this.placeRotation);
   }
 
   /** Avenue rings need a wider island to fit the four-lane corridor. */
@@ -637,7 +677,7 @@ export class Input {
     const g = this.game;
     const spec = SERVICES[k];
     if (g.stats.cityLevel < (spec.unlock ?? 0)) return `Unlocks at ${MILESTONES[spec.unlock!].name} (${MILESTONES[spec.unlock!].population} residents)`;
-    const cells = footprint(t, k);
+    const cells = footprint(t, k, this.placeRotation);
     if (!cells.length || cells.some(i => !g.buildable(i, spec.needsWater))) return 'Cannot build on water or roads';
     if (spec.footprint && cells.some(i => g.kind[i] !== T_EMPTY)) return 'Clear the whole building footprint first';
     if (isService(g.kind[t])) return 'There is already a service building here';
@@ -681,15 +721,21 @@ export class Input {
       const s = this.snap(p);
       hx = s.x; hz = s.z; size = 0.6;
       label = 'Click to start';
-    } else if (this.tool === 'light') {
+    } else if (this.tool === 'light' || this.tool === 'stopsign') {
       const n = this.game.net.nearestNode(p.x, p.z, 1.4);
-      if (n && this.game.net.degree(n.id) >= 3 && !n.ring) { hx = n.x; hz = n.z; size = 1.4; label = n.light ? 'Remove signal' : `$${COST_LIGHT}`; }
-      else { size = 0.5; color = BAD; }
-    } else if (['oneway', 'upgrade'].includes(this.tool)) {
+      const sign = this.tool === 'stopsign';
+      if (n && this.game.net.degree(n.id) >= 3 && !n.ring) {
+        hx = n.x; hz = n.z; size = 1.4;
+        label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Remove signal' : `$${COST_LIGHT}`;
+      } else { size = 0.5; color = BAD; }
+    } else if (['oneway', 'upgrade', 'calm'].includes(this.tool)) {
       const h = this.roadHit(p, 0.9);
       if (h && !h.seg.fixed) {
         hx = h.x; hz = h.z; size = 0.8;
-        if (this.tool === 'upgrade') {
+        if (this.tool === 'calm') {
+          label = h.seg.kind === KIND_HIGHWAY ? 'Expressways cannot be calmed'
+            : h.seg.calm ? 'Remove calming' : `$${Math.round(COST_CALM * h.seg.len).toLocaleString()}`;
+        } else if (this.tool === 'upgrade') {
           const next = nextRoadKind(h.seg.kind);
           const change = Math.round((ROAD_COST[next] - ROAD_COST[h.seg.kind]) * h.seg.len * STRUCTURE_COST[h.seg.structure ?? 0]);
           label = `${ROAD_LABEL[next]}${change > 0 ? ` $${change.toLocaleString()}` : ''}`;
@@ -702,7 +748,7 @@ export class Input {
         const tile = this.tileOf(p);
         hx = this.game.raster.lotX[tile]; hz = this.game.raster.lotZ[tile];
         if (spec.footprint) {
-          [size, depth] = spec.footprint;
+          [size, depth] = footprintSize(k, this.placeRotation);
           hx = tile % GRID + size / 2; hz = Math.floor(tile / GRID) + depth / 2;
         }
         if (spec.radius) {

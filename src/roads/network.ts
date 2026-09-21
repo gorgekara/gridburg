@@ -5,12 +5,12 @@ export const KIND_AVENUE = 1;
 export const KIND_LANE = 2;
 export const KIND_HIGHWAY = 3;
 /**
- * Four kinds of road, in the order the upgrade tool walks them. A lane is a single narrow carriageway,
- * a street fills one tile, an avenue a three-tile corridor, and an expressway a four-tile one; all
- * leave a 0.09 curb strip. An expressway carries traffic fast but has no frontage: nothing can be
- * zoned or built off it, so cities need ordinary streets behind it.
+ * Four kinds of road, in the order the upgrade tool walks them. A lane is a single shared track, a
+ * street carries two lanes, an avenue four and an expressway six; each sits inside its corridor with
+ * a verge either side rather than paving it kerb to kerb. An expressway carries traffic fast but has
+ * no frontage: nothing can be zoned or built off it, so cities need ordinary streets behind it.
  */
-export const HALF_WIDTH = [0.41, 1.41, 0.28, 1.92];
+export const HALF_WIDTH = [0.36, 0.86, 0.24, 1.32];
 export const SPEED = [3, 4.5, 2.4, 6.8]; // units per second
 export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway'];
 /** Whether buildings may use this kind of road as their access. */
@@ -28,6 +28,7 @@ export interface RNode {
   ring: boolean; // part of a roundabout
   fixed: boolean; // cannot be bulldozed
   entry: boolean; // the highway connection at the map edge
+  stop: boolean; // an all-way stop: every approach halts before entering
 }
 
 export interface RSeg {
@@ -40,6 +41,7 @@ export interface RSeg {
   kind: number;
   oneway: boolean; // traffic flows a -> b only
   fixed: boolean;
+  calm: boolean; // traffic calming: slower, but collisions are rarer
   // derived
   n: number; // number of polyline pieces
   pts: Float32Array; // (n+1) x,z pairs, uniform in t
@@ -142,7 +144,7 @@ export class Network {
 
   // ---- basic construction ------------------------------------------------------------
   addNode(x: number, z: number): RNode {
-    const n: RNode = { id: this.nextId++, x, z, light: false, ring: false, fixed: false, entry: false };
+    const n: RNode = { id: this.nextId++, x, z, light: false, ring: false, fixed: false, entry: false, stop: false };
     this.nodes.set(n.id, n);
     this.adj.set(n.id, []);
     return n;
@@ -162,7 +164,7 @@ export class Network {
       if ((o.a === b || o.b === b) && Math.hypot(o.cx - cx, o.cz - cz) < 0.6) return null;
     }
     const s = {
-      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed, structure,
+      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed, structure, calm: false,
       n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
     } as RSeg;
     this.resample(s);
@@ -531,13 +533,13 @@ export class Network {
   toPlain(): PlainNet {
     const nodes: number[][] = [];
     for (const n of this.nodes.values()) {
-      nodes.push([n.id, n.x, n.z, (n.light ? 1 : 0) | (n.ring ? 2 : 0) | (n.fixed ? 4 : 0) | (n.entry ? 8 : 0)]);
+      nodes.push([n.id, n.x, n.z, (n.light ? 1 : 0) | (n.ring ? 2 : 0) | (n.fixed ? 4 : 0) | (n.entry ? 8 : 0) | (n.stop ? 16 : 0)]);
     }
     const segs: number[][] = [];
     for (const s of this.segs.values()) {
       // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
       // the extra kinds set bit 5 as well.
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4)]);
+      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.calm ? 128 : 0)]);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -545,13 +547,13 @@ export class Network {
   static fromPlain(p: PlainNet): Network {
     const net = new Network();
     for (const [id, x, z, f] of p.nodes) {
-      net.nodes.set(id, { id, x, z, light: !!(f & 1), ring: !!(f & 2), fixed: !!(f & 4), entry: !!(f & 8) });
+      net.nodes.set(id, { id, x, z, light: !!(f & 1), ring: !!(f & 2), fixed: !!(f & 4), entry: !!(f & 8), stop: !!(f & 16) });
       net.adj.set(id, []);
     }
     for (const [id, a, b, cx, cz, f] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       net.resample(s);

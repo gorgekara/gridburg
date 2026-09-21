@@ -1,4 +1,4 @@
-import { Network, HALF_WIDTH } from './network';
+import { Network, HALF_WIDTH, KIND_HIGHWAY } from './network';
 import type { RSeg } from './network';
 import type { Raster } from './raster';
 import { GRID, SERVICES, T_STATION } from '../constants';
@@ -195,11 +195,19 @@ export function intercityTrack(net: Network, raster: Raster, station: number, st
   if (target < 0) return [];
   const track = railTrack(net, raster, station, target, step);
   if (track.length < 2) return [];
-  // Carry on off the map, following the direction the entrance faces.
+  // Carry on off the map, alongside the entrance road rather than over it: the track swings out to
+  // the side of the corridor over the first few cells, then runs straight past the edge.
   const last = track.at(-1)!;
+  const clear = HALF_WIDTH[KIND_HIGHWAY] + 0.9; // outside the expressway's shoulder
+  const side = -gate.dz, sideZ = gate.dx; // left of the direction of travel out of town
   const run = APPROACH + 6;
   for (let d = step; d <= run; d += step) {
-    track.push({ x: last.x - gate.dx * d, z: last.z - gate.dz * d, tx: -gate.dx, tz: -gate.dz, hw: last.hw, s: last.s + d });
+    const out = Math.min(1, d / 3) * clear;
+    track.push({
+      x: last.x - gate.dx * d + side * out,
+      z: last.z - gate.dz * d + sideZ * out,
+      tx: -gate.dx, tz: -gate.dz, hw: last.hw, s: last.s + d,
+    });
   }
   return track;
 }

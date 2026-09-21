@@ -88,19 +88,39 @@ export class OverlayLayer {
     this.tex.needsUpdate = true;
   }
 
-  /** Paint how well the service being placed already covers the map, or clear it with null. */
+  /**
+   * Paint how well the service being placed already covers the map, or clear it with null. The
+   * per-tile circles are blurred first: a hard staircase along the edge of a radius reads as an
+   * artefact, and the wash is kept light so the city stays the thing you are looking at.
+   */
   setCoverage(cover: Uint8Array | null): void {
     this.coverPlane.visible = !!cover;
     if (!cover) return;
+    let field = Float32Array.from(cover);
+    const blurred = new Float32Array(GRID * GRID);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
+        let sum = 0, n = 0;
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const sx = x + dx, sz = z + dz;
+          if (sx < 0 || sz < 0 || sx >= GRID || sz >= GRID) continue;
+          const weight = dx && dz ? 1 : 2;
+          sum += field[sz * GRID + sx] * weight; n += weight;
+        }
+        blurred[z * GRID + x] = sum / n;
+      }
+      field = Float32Array.from(blurred);
+    }
     for (let z = 0; z < GRID; z++) {
       const row = GRID - 1 - z; // texture rows run bottom-up, tiles top-down
       for (let x = 0; x < GRID; x++) {
-        const n = cover[z * GRID + x];
+        const v = field[z * GRID + x];
         const o = (row * GRID + x) * 4;
-        this.coverData[o] = n > 1 ? 90 : 40;
-        this.coverData[o + 1] = 235;
-        this.coverData[o + 2] = n > 1 ? 120 : 190;
-        this.coverData[o + 3] = n ? Math.min(180, 95 + n * 30) : 0;
+        const deep = Math.min(1, Math.max(0, v - 1));
+        this.coverData[o] = 40 + deep * 30;
+        this.coverData[o + 1] = 230;
+        this.coverData[o + 2] = 180 - deep * 50;
+        this.coverData[o + 3] = Math.min(72, v * 52);
       }
     }
     this.coverTex.needsUpdate = true;

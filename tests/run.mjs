@@ -12,7 +12,7 @@ const C = await import('../src/constants.ts');
 const { advanceCity, levelForPopulation, MILESTONES } = await import('../src/progression.ts');
 const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
-const { buildingGeometry } = await import('../src/render/buildingGeo.ts');
+const { buildingGeometry, BANNER_COLORS } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const { newCity } = await import('../src/game.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
@@ -388,8 +388,8 @@ test('regular clock publishes population matching rendered building levels', () 
 });
 
 const { transitNetwork, transitLineForTrip, intercityStations } = await import('../src/sim/transit.ts');
-const { footprint, siteOwners } = await import('../src/sites.ts');
-const { entrancePlan } = await import('../src/roads/entries.ts');
+const { footprint, footprintSize, siteOwners } = await import('../src/sites.ts');
+const { entrancePlan, entrySite } = await import('../src/roads/entries.ts');
 const { railPath } = await import('../src/roads/rail.ts');
 const { signalPhase, isGreen } = await import('../src/roads/network.ts');
 const { vehicleGeometry } = await import('../src/render/cars.ts');
@@ -491,6 +491,67 @@ test('external traffic drives in from off the map without stalling the entrance'
   assert.ok(inCity > offMap, 'Most traffic still belongs to the city itself');
   assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
   console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
+});
+test('stop signs make every approach halt, and calming slows a street', () => {
+  const net = new Network();
+  net.insertPath([{ x: 10.5, z: 30.5 }, { x: 60.5, z: 30.5 }], KIND_ROAD);
+  net.insertPath([{ x: 35.5, z: 10.5 }, { x: 35.5, z: 50.5 }], KIND_ROAD);
+  const junction = net.nearestNode(35.5, 30.5, 0.2);
+  assert.ok(junction && net.degree(junction.id) === 4);
+  junction.stop = true;
+  const calmed = [...net.segs.values()][0];
+  calmed.calm = true;
+  const restored = Network.fromPlain(JSON.parse(JSON.stringify(net.toPlain())));
+  assert.equal(restored.nodes.get(junction.id).stop, true, 'Stop signs survive a round trip');
+  assert.equal([...restored.segs.values()].filter(s => s.calm).length, 1, 'So does calming');
+
+  // Traffic crosses a stopped junction, just more slowly than a free one.
+  const city = demoCity(); city.kind.fill(0); city.level.fill(0); city.cityLevel = 1;
+  [...net.nodes.values()].find(n => n.x === 10.5).entry = true;
+  const r = rasterize(net);
+  for (let i = 0; i < C.N_TILES; i++) {
+    if (r.cover[i] || r.accSeg[i] < 0) continue;
+    const x = i % C.GRID;
+    city.kind[i] = x < 35 ? C.T_RES : C.T_COM; city.level[i] = 2;
+  }
+  const run = (stop) => {
+    Math.random = C.mulberry32(4);
+    junction.stop = stop;
+    city.net = net.toPlain();
+    const raster = rasterize(Network.fromPlain(city.net));
+    send({ type: 'load', ...city, serial: 1, cover: raster.cover, accSeg: raster.accSeg, accS: raster.accS });
+    send({ type: 'speed', value: 1 });
+    for (let f = 0; f < 60 * C.SIM_HZ; f++) { simulateFrame(); if (messages.length > 40) messages.splice(0, messages.length - 10); }
+    return latest().stats;
+  };
+  const free = run(false), stopped = run(true);
+  assert.ok(stopped.cars > 0, 'Traffic still flows through an all-way stop');
+  assert.ok(stopped.gaveUp <= free.gaveUp + 2, 'And nobody is trapped by it');
+  console.log(`  All-way stop: ${stopped.commute.toFixed(1)}s average commute against ${free.commute.toFixed(1)}s uncontrolled`);
+});
+test('buildings can be turned before placing, and their facing is saved', () => {
+  const tile = C.idx(20, 20);
+  assert.deepEqual(footprintSize(C.T_STATION, 0), [3, 2]);
+  assert.deepEqual(footprintSize(C.T_STATION, 1), [2, 3], 'A quarter turn swaps the site');
+  assert.deepEqual(footprintSize(C.T_STATION, 2), [3, 2]);
+  const upright = footprint(tile, C.T_STATION, 0), turned = footprint(tile, C.T_STATION, 1);
+  assert.equal(upright.length, 6); assert.equal(turned.length, 6);
+  assert.ok(turned.includes(tile + 2 * C.GRID), 'A turned station reaches further south');
+  assert.ok(!upright.includes(tile + 2 * C.GRID));
+
+  const rot = new Uint8Array(C.N_TILES); rot[tile] = 1;
+  const kind = new Uint8Array(C.N_TILES); kind[tile] = C.T_STATION;
+  const owners = siteOwners(kind, rot);
+  assert.ok(turned.every(t => owners[t] === tile), 'The turned site is reserved');
+  assert.equal(owners[tile + 2], -1, 'And the cells it no longer uses are free');
+
+  const city = demoCity(true);
+  const station = city.kind.findIndex(k => k === C.T_STATION);
+  assert.ok(station >= 0);
+  city.rot = new Uint8Array(C.N_TILES); city.rot[station] = 3;
+  const restored = decode(encode(city));
+  assert.equal(restored.rot[station], 3, 'Facing survives a save');
+  assert.equal(restored.rot.reduce((n, v) => n + (v ? 1 : 0), 0), 1, 'Only turned buildings are stored');
 });
 test('nothing but waterside works stands where the river is drawn', () => {
   const city = demoCity(true), terrain = generateTerrain(city.seed);
@@ -660,12 +721,19 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   assert.equal([...net.nodes.values()].filter(n => n.entry).length, 1, 'Original network is unchanged');
   assert.equal([...planned.nodes.values()].filter(n => n.entry).length, 2);
   assert.equal(typeof entrancePlan(net, terrain, city.kind, 40, 40), 'string');
-  const r = rasterize(planned);
+  // The entrance itself is expressway, which carries no frontage, so a street picks the traffic up.
   const newNode = [...planned.nodes.values()].filter(n => n.entry).at(-1);
   const approach = planned.segsAt(newNode.id)[0];
   const gate = approach.a === newNode.id ? approach.b : approach.a;
-  const newSeg = planned.segsAt(gate).find(s => s.id !== approach.id);
-  const tile = Array.from(r.accSeg).findIndex((id, i) => id === newSeg.id && !r.cover[i] && !terrain.water[i]);
+  const stub = planned.segsAt(gate).find(s => s.id !== approach.id);
+  assert.equal(stub.kind, KIND_HIGHWAY, 'City entrances arrive on an expressway');
+  const inner = planned.nodes.get(stub.a === gate ? stub.b : stub.a);
+  const e = entrySite(inner.x, inner.z);
+  const street = planned.insertPath([{ x: inner.x, z: inner.z }, { x: inner.x + e.dz * 9, z: inner.z + e.dx * 9 }], KIND_ROAD);
+  assert.ok(street.length, 'A street can join the entrance');
+  const r = rasterize(planned);
+  const served = new Set(street);
+  const tile = Array.from(r.accSeg).findIndex((id, i) => served.has(id) && !r.cover[i] && !terrain.water[i] && !terrain.shore[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
   assert.equal(latest().stats.entries, 2);
@@ -737,7 +805,7 @@ test('transport placement enforces unlocks and clearing a site removes its whole
   input.game = { stats: { cityLevel: 0 } };
   for (const k of [C.T_BUS, C.T_STATION, C.T_AIRPORT, C.T_TREATMENT]) assert.match(input.serviceProblem(100, k), /Unlocks at/);
   const game = Object.create(Game.prototype);
-  game.kind = new Uint8Array(C.N_TILES); game.level = new Uint8Array(C.N_TILES);
+  game.kind = new Uint8Array(C.N_TILES); game.level = new Uint8Array(C.N_TILES); game.rot = new Uint8Array(C.N_TILES);
   const tile = C.idx(10, 10); game.kind[tile] = C.T_AIRPORT; game.level[tile] = 1;
   game.owners = siteOwners(game.kind); game.pendingSpent = 0;
   assert.equal(game.setKind(tile + C.GRID + 3, C.T_EMPTY, 0), true);
@@ -746,7 +814,7 @@ test('transport placement enforces unlocks and clearing a site removes its whole
 });
 
 const { TrafficSpace, vehiclesOverlap } = await import('../src/sim/trafficSpace.ts');
-const { Incidents } = await import('../src/sim/incidents.ts');
+const { Incidents, HEIST_LIMIT } = await import('../src/sim/incidents.ts');
 test('vehicle reservations prevent occupied spawns and swept crossing movements', () => {
   const space = new TrafficSpace();
   space.set(1, { x: 10, z: 10, angle: 0, type: 3 });
@@ -761,11 +829,55 @@ test('fires and patrol protection persist while old v5 saves still migrate', () 
   const city = demoCity(); city.incidents = { fires: [{ tile: 100, age: 48 }], crime: [[101, 50]], patrol: [[102, 150]] };
   const restored = decode(encode(city)); assert.deepEqual(restored.incidents, city.incidents);
   const empty = demoCity(); const bytes = Buffer.from(encode(empty), 'base64url');
-  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4;
+  // Strip the incident block and the empty rotation block that follows it.
+  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2;
   // A v5 stream has no policy mask: keep the first 28 header bytes and the body that follows the v9 header.
   const v5 = Buffer.concat([bytes.subarray(0, 28), bytes.subarray(30, bytes.length - tail)]); v5[0] = 5;
   const migrated = decode(v5.toString('base64url')); assert.ok(migrated); assert.equal(migrated.incidents, undefined);
   city.incidents.fires[0].age = 120; assert.equal(decode(encode(city)), null);
+});
+test('some shops hang banners, and not all of them', () => {
+  const wearing = (level, v) => {
+    const geo = buildingGeometry(C.T_COM, level, v);
+    const colors = geo.attributes.color.array;
+    const found = BANNER_COLORS.some(hex => {
+      // three converts hex colours into its working space, so compare the same way.
+      const { r, g, b } = new THREE.Color(hex);
+      for (let i = 0; i < colors.length; i += 3) {
+        if (Math.abs(colors[i] - r) < 0.02 && Math.abs(colors[i + 1] - g) < 0.02 && Math.abs(colors[i + 2] - b) < 0.02) return true;
+      }
+      return false;
+    });
+    geo.dispose();
+    return found;
+  };
+  const shops = [0, 1, 2, 3].map(v => wearing(1, v));
+  const blocks = [0, 1, 2, 3].map(v => wearing(2, v));
+  assert.ok(shops.filter(Boolean).length >= 2, 'Most shops carry a sign');
+  assert.ok(blocks.includes(false), 'Some frontages stay plain');
+  assert.ok(!wearing(3, 0), 'Glass towers do not hang banners');
+});
+test('a robbery calls the police, and getting away costs the city', () => {
+  const events = new Incidents(), kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES);
+  const shop = C.idx(20, 20);
+  kind[shop] = C.T_COM; level[shop] = 2;
+  const normal = { fire: 1, crime: 1 };
+  events.rob(shop);
+  assert.equal(events.heists.size, 1);
+  events.foil(shop);
+  assert.equal(events.foiled, 1, 'The police reaching the scene ends it');
+  assert.equal(events.heists.size, 0);
+  events.rob(shop);
+  for (let i = 0; i < HEIST_LIMIT; i++) events.step(kind, level, 400, 3, () => 1, normal, () => {});
+  assert.equal(events.robbed, 1, 'Left alone, the crew gets away');
+  assert.equal(events.heists.size, 0);
+
+  // A robbery in the running city pulls a patrol car out and shows up in the stats.
+  const city = demoCity(true);
+  load(city);
+  send({ type: 'warm', ticks: 150 });
+  assert.equal(latest().stats.incidents.heists, 0);
+  assert.ok('robbed' in latest().stats.incidents && 'foiled' in latest().stats.incidents);
 });
 test('patrol visits prevent crime and unattended fires damage buildings', () => {
   const events = new Incidents(), kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES), tile = C.idx(20, 20);
@@ -876,8 +988,8 @@ const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/st
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const current = Buffer.from(encode(demoCity()), 'base64url');
-  // Versions before 9 carry no policy mask, so drop those two header bytes.
-  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30)]); legacy[0] = 6;
+  // Versions before 9 carry no policy mask and no rotation block: drop both.
+  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 2)]); legacy[0] = 6;
   assert.ok(decode(legacy.toString('base64url')), 'Version 6 cities remain readable');
   const net = new Network();
   net.insertPath([{ x: 30, z: 10 }, { x: 30, z: 65 }], 0);

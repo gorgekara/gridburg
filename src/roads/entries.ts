@@ -1,5 +1,5 @@
 import { GRID } from '../constants';
-import { Network, KIND_AVENUE } from './network';
+import { Network, KIND_HIGHWAY } from './network';
 import type { Terrain } from '../terrain';
 import { rasterize } from './raster';
 import { siteOwners } from '../sites';
@@ -32,7 +32,7 @@ export function ensureApproaches(net: Network): void {
     outer.fixed = true;
     node.entry = false;
     node.fixed = true;
-    net.addSeg(outer.id, node.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, KIND_AVENUE, false, true);
+    net.addSeg(outer.id, node.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, KIND_HIGHWAY, false, true);
   }
 }
 
@@ -43,7 +43,7 @@ export function entrancePlan(net: Network, terrain: Terrain, kind: Uint8Array, x
   const gates = [...net.nodes.values()].filter(n => n.entry).map(entryGate);
   if (gates.some(g => Math.hypot(g.x - e.x, g.z - e.z) < 10)) return 'Too close to an existing city entrance';
   const copy = Network.fromPlain(net.toPlain());
-  copy.insertPath([{ x: e.x, z: e.z }, { x: e.x + e.dx * 7, z: e.z + e.dz * 7 }], KIND_AVENUE);
+  copy.insertPath([{ x: e.x, z: e.z }, { x: e.x + e.dx * 7, z: e.z + e.dz * 7 }], KIND_HIGHWAY);
   const node = copy.nearestNode(e.x, e.z, 0.2);
   if (!node) return 'No room for an entrance';
   node.entry = true; node.fixed = true;

@@ -94,13 +94,17 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 .popover.messages { top: 62px; right: 12px; width: 340px; max-height: calc(100vh - 80px); overflow-y: auto; }
 .message-list { display: flex; flex-direction: column; gap: 5px; }
 .message {
+  display: block; width: 100%; text-align: left; font: inherit; cursor: pointer;
   background: rgba(120, 40, 20, 0.5); color: #ffe9d6; font-size: 12px; line-height: 1.35;
-  padding: 7px 10px; border-radius: 8px; border-left: 3px solid #d8452e;
+  padding: 7px 10px; border: none; border-radius: 8px; border-left: 3px solid #d8452e;
 }
+.message:hover { background: rgba(150, 55, 30, 0.7); }
+.msgpop .message { cursor: pointer; }
 .msgpop {
   position: absolute; top: 56px; right: 12px; width: 340px; display: flex; flex-direction: column; gap: 5px;
-  opacity: 0; transform: translateY(-6px); transition: opacity .25s, transform .25s; pointer-events: none !important;
+  opacity: 0; transform: translateY(-6px); transition: opacity .25s, transform .25s; pointer-events: none;
 }
+.msgpop.show { pointer-events: auto; }
 .msgpop.show { opacity: 1; transform: none; }
 .msgpop .message { background: rgba(120, 40, 20, 0.92); box-shadow: 0 8px 22px rgba(0,0,0,0.35); }
 
@@ -166,7 +170,14 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
   min-width: 420px; max-width: 98vw;
 }
 .panel.open { display: flex; }
-.phead { display: flex; align-items: baseline; gap: 12px; }
+.phead { display: flex; align-items: center; gap: 12px; }
+.rotate-btn {
+  display: none; align-items: center; gap: 6px; margin-left: auto; padding: 5px 10px; border-radius: 8px;
+  background: rgba(255,255,255,0.08); color: var(--fg); border: 1px solid var(--line); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.rotate-btn.shown { display: inline-flex; }
+.rotate-btn:hover { background: rgba(255,255,255,0.16); }
+.rotate-btn svg { transform: rotate(var(--turn, 0deg)); transition: transform .18s; color: var(--accent); }
 .ptitle { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
 .hint { font-size: 11.5px; color: var(--dim); flex: 1; }
 .pbody { display: none; gap: 8px; align-items: stretch; }

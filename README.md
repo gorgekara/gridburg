@@ -18,16 +18,27 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
   end) or Smooth (every click continues the road as a flowing curve). Crossings become junctions
   automatically, endpoints snap to existing roads, and roads over water become bridges.
-- **Four road types.** Lanes ($14/cell, one shared carriageway), streets ($25), avenues ($180) and
-  expressways ($430, fastest, but nothing can be zoned along them). Upgrade widens a road one step and
-  charges the difference; keep clicking and it wraps back to a lane.
+- **Four road types.** Lanes ($14/cell, one shared carriageway), streets ($25, two lanes), avenues
+  ($180, four lanes) and expressways ($430, six lanes, fastest, but nothing can be zoned along them).
+  Every kind sits inside its corridor with a verge either side. Upgrade widens a road one step and
+  charges the difference; keep clicking and it wraps back to a lane. City entrances arrive on
+  expressway, so the first street has to be drawn from the end of it.
+- **More traffic control.** Signals and roundabouts, plus all-way stop signs ($60 a junction) and
+  traffic calming ($45/cell) that halves a street's speed and all but ends collisions on it.
+- **Turn a building before you place it.** Right-click, press G, or use the Rotate button in the tool
+  panel. Rectangular sites like the railway station turn with it, and the facing is saved.
+- **Robberies, street racing and helicopters.** From City level a robbery occasionally hits a shop or
+  office; the nearest police station answers the alarm, and a crew that is left alone for ninety
+  seconds gets away with $1,200. After dark, street racers run long routes across town at speed.
+  Helicopters circle overhead and drift across to whatever is going on.
 - **Alleys.** A building standing behind the row that fronts the street gets a service alley out to the
   curb, threaded between its neighbours. Fire engines and patrol cars answer calls there as usual.
 - **Dry land only.** The river is drawn a little wider than the tile mask that decides what is water, so
   the strip either side counts as shore: nothing may be zoned or built there and no empty lot fills in.
   Waterside works are the exception — a pump, an outlet or a treatment plant belongs on the bank.
 - **City messages.** Problems gather behind the bell in the top-right corner with a count; each new one
-  pops out for a few seconds, and clicking the bell lists everything outstanding.
+  pops out for a few seconds, clicking the bell lists everything outstanding, and clicking a message
+  takes the camera to what it is about.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.

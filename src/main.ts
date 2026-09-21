@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { StructureLayer } from './render/structures';
 import { LandscapeLayer } from './render/landscape';
 import { StreetlightLayer } from './render/streetlights';
@@ -7,6 +8,7 @@ import { TransportLayer } from './render/transport';
 import { SubwayLayer } from './render/subway';
 import { TransitLineLayer } from './render/transitLines';
 import { AlleyLayer } from './render/alleys';
+import { HelicopterLayer } from './render/helicopters';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -22,7 +24,7 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { RES_POP } from './constants';
+import { MAX_CARS, RES_POP } from './constants';
 import { serviceCoverage } from './coverage';
 import { entryGate } from './roads/entries';
 import { SERVICE_TOOL } from './input';
@@ -43,9 +45,10 @@ const transport = new TransportLayer();
 const subway = new SubwayLayer();
 const transitLines = new TransitLineLayer();
 const alleys = new AlleyLayer();
+const helicopters = new HelicopterLayer();
 const incidents = new IncidentLayer();
 let showTraffic = false;
-scene.add(structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(helicopters.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -60,6 +63,32 @@ const hud = new Hud(uiRoot, {
   setFunding: (key, value) => game.setFunding(key, value),
   setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
+  rotatePlacement: () => input.rotatePlacement(),
+  focusOn: (id) => {
+    // Take the camera to whatever the message is about.
+    const tileAt = (): { x: number; z: number } | null => {
+      if (id === 'fires' && game.incidents.fires.length) return tileCentre(game.incidents.fires[0].tile);
+      if (id === 'crashes' && game.incidents.crashes.length) return { x: game.incidents.crashes[0].x, z: game.incidents.crashes[0].z };
+      if (id === 'crime' && game.incidents.crime.length) return tileCentre(game.incidents.crime[0]);
+      if (id === 'heists' && game.incidents.heists.length) return tileCentre(game.incidents.heists[0].tile);
+      if (id === 'racers') {
+        for (let n = 0; n < MAX_CARS; n++) if (Math.round(game.carsNext[n * 4 + 3]) === 7) return { x: game.carsNext[n * 4] + 40, z: game.carsNext[n * 4 + 1] + 40 };
+        return null;
+      }
+      if (id === 'declining') { const t = game.neglect.findIndex(v => v > 0); return t >= 0 ? tileCentre(t) : null; }
+      if (id === 'start') { const e = game.terrain.entry; return { x: e.x + e.dx * 7, z: e.z + e.dz * 7 }; }
+      if (id === 'pollution') {
+        let worst = -1, peak = 0;
+        for (let i = 0; i < game.pollution.length; i++) if (game.pollution[i] > peak) { peak = game.pollution[i]; worst = i; }
+        return worst >= 0 ? tileCentre(worst) : null;
+      }
+      return null;
+    };
+    const spot = tileAt();
+    if (!spot) return false;
+    flyTo(spot.x, spot.z);
+    return true;
+  },
   closeInspection: () => game.inspect(-1),
   openMenu: () => openMenu(),
   newCity: () => {
@@ -112,6 +141,13 @@ input.onInspect = (tile) => game.inspect(tile);
 game.onInspection = (report) => hud.showInspection(report);
 game.onNotice = (message) => hud.toast(message);
 
+const tileCentre = (tile: number): { x: number; z: number } => ({ x: tile % 80 + 0.5, z: Math.floor(tile / 80) + 0.5 });
+/** Glide the camera to a place on the map, keeping its current height and angle. */
+let flight: { x: number; z: number; time: number } | null = null;
+function flyTo(x: number, z: number): void {
+  flight = { x: x - 40, z: z - 40, time: 0 };
+}
+
 const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].includes(t); };
 // Reaching for a service shows what the city already covers, so the gap is visible before placing.
 // A transport tool in hand opens that mode's route map, the way the metro tool opens the tunnels.
@@ -125,7 +161,8 @@ const showCoverage = (): void => {
   const k = SERVICE_TOOL[input.tool];
   overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
 };
-input.onToolChange = (t) => { showCoverage(); showTransitLines(t); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+input.onRotate = (quarter) => hud.setRotation(quarter, SERVICE_TOOL[input.tool] !== undefined);
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
@@ -140,7 +177,7 @@ game.onEdit = () => {
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
-  buildings.rebuild(game.kind, game.level, game.raster);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
@@ -149,10 +186,11 @@ game.onEdit = () => {
 game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
-  buildings.rebuild(game.kind, game.level, game.raster);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
+  helicopters.watch(game.incidents);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
@@ -259,6 +297,15 @@ renderer.setAnimationLoop((now: number) => {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   dbg.frames++;
+  if (flight) {
+    // Ease the camera across rather than cutting, so it stays obvious where the map moved to.
+    flight.time = Math.min(1, flight.time + dt * 1.6);
+    const ease = 1 - (1 - flight.time) ** 3;
+    const offset = camera.position.clone().sub(controls.target);
+    controls.target.lerp(new THREE.Vector3(flight.x, 0, flight.z), ease * 0.35);
+    camera.position.copy(controls.target).add(offset);
+    if (flight.time >= 1 && controls.target.distanceTo(new THREE.Vector3(flight.x, 0, flight.z)) < 0.4) flight = null;
+  }
   updateScene(dt, game.cityTime);
   landscape.update(camera.position);
   const light = daylight(game.cityTime);
@@ -272,6 +319,7 @@ renderer.setAnimationLoop((now: number) => {
   const span = Math.max(1, game.nextTime - game.prevTime);
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
   incidents.update(game.simTime);
+  helicopters.update(now / 1000);
   transport.update(game.simTime);
   subway.update(game.simTime);
   transitLines.update(game.simTime);

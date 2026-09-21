@@ -3,14 +3,14 @@ import * as THREE from 'three';
 import { MAX_CARS } from '../constants';
 import { Builder } from './buildingGeo';
 
-/** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus. */
+/** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer. */
 export function vehicleGeometry(type: number): THREE.BufferGeometry {
   const emergency = type === 5 || type === 6;
   const b = new Builder(type);
-  const model = type === 5 ? 1 : type === 6 ? 3 : type;
+  const model = type === 5 || type === 7 ? 1 : type === 6 ? 3 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   // Cars and vans are painted white and tinted per vehicle, so the palette lives in CarLayer.
-  const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434][type];
+  const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434, 0x2a2f36][type];
   b.box(0.25, 0.11, length, 0, 0.1, 0, body);
   if (model === 1) {
     b.box(0.22, 0.1, 0.25, 0, 0.21, -0.01, body);
@@ -43,6 +43,13 @@ export function vehicleGeometry(type: number): THREE.BufferGeometry {
     b.box(0.035, 0.025, 0.03, x * 1.7, 0.25, length * 0.22, 0x687b86);
   }
   b.box(0.23, 0.025, 0.018, 0, 0.105, length / 2 + 0.009, 0xa9b3b5);
+  if (type === 7) {
+    // A racer: low, striped, with a spoiler across the back.
+    b.box(0.26, 0.03, 0.1, 0, 0.2, -length / 2 + 0.03, 0xd9d4c8);
+    for (const x of [-0.11, 0.11]) b.box(0.02, 0.06, 0.05, x, 0.16, -length / 2 + 0.05, 0x3c434b);
+    b.box(0.05, 0.02, length * 0.8, 0, 0.215, 0, 0xe06a2e);
+    b.box(0.26, 0.05, 0.03, 0, 0.09, length / 2 - 0.02, 0xe06a2e);
+  }
   if (emergency) {
     const y = type === 6 ? 0.43 : 0.32;
     b.box(0.19, 0.025, 0.045, 0, y, 0.08, 0x263947);
@@ -95,7 +102,7 @@ export class CarLayer {
   private lights: THREE.InstancedMesh[] = [];
   private lightMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
   constructor() {
-    for (let type = 1; type <= 6; type++) {
+    for (let type = 1; type <= 7; type++) {
       const mesh = new THREE.InstancedMesh(vehicleGeometry(type), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }), MAX_CARS);
       if (type === 1 || type === 2) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_CARS * 3).fill(1), 3);
       mesh.castShadow = true; mesh.count = 0; mesh.frustumCulled = false;
@@ -112,10 +119,10 @@ export class CarLayer {
     for (const m of this.lights) m.visible = on;
   }
   update(prev: Float32Array, next: Float32Array, alpha: number, prevIds?: Uint32Array, nextIds?: Uint32Array, heights?: Float32Array, prevHeights?: Float32Array, pitch?: Float32Array): void {
-    const counts = [0, 0, 0, 0, 0, 0];
+    const counts = [0, 0, 0, 0, 0, 0, 0];
     for (let i = 0; i < MAX_CARS; i++) {
       const o = i * 4, type = Math.round(next[o + 3]);
-      if (type < 1 || type > 6) continue;
+      if (type < 1 || type > 7) continue;
       let y = heights?.[i] ?? 0;
       let x = next[o], z = next[o + 1], a = next[o + 2];
       if ((!prevIds || !nextIds || prevIds[i] === nextIds[i]) && prev[o + 3] === type && Math.abs(prev[o] - x) + Math.abs(prev[o + 1] - z) < 1.5) {
