@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, N_TILES, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, isZone, tileHash, T_FARM } from '../constants';
 import type { Raster } from '../roads/raster';
 import { MeshBuilder } from './meshBuilder';
 
@@ -47,7 +47,7 @@ export class AlleyLayer {
       if (!k || raster.accSeg[i] < 0) continue;
       // Only houses, shops, workshops and offices back onto a lane. A service building has its own
       // forecourt, and a pump or an outlet stands on the river bank with nowhere for an alley to go.
-      if (!isZone(k) || !level[i]) continue;
+      if (!isZone(k) || !level[i] || k === T_FARM) continue;
       const lx = raster.lotX[i], lz = raster.lotZ[i];
       const dx = raster.accX[i] - lx, dz = raster.accZ[i] - lz;
       const distance = Math.hypot(dx, dz);
@@ -59,7 +59,14 @@ export class AlleyLayer {
       const x = i % GRID, z = Math.floor(i / GRID);
       const side = r < 0.5 ? 0 : 1;
       const lateral = alongX ? z + side : x + side;
-      const back = (alongX ? x + 0.5 : z + 0.5) - toward * (0.5 + 0.35 * r);
+      // Stop short of the back of the building's own cell, so the lane never runs out past the last
+      // row into open ground. The raggedness comes from where it stops, not from overshooting.
+      const back = (alongX ? x + 0.5 : z + 0.5) - toward * (0.45 - 0.3 * r);
+      // Only between buildings: a lane needs a built lot on each side of it at its back end.
+      const flank = (l: number): number => { const tx = alongX ? x : l, tz = alongX ? l : z; return tx >= 0 && tz >= 0 && tx < GRID && tz < GRID ? tz * GRID + tx : -1; };
+      const left = flank(lateral - 1), right = flank(lateral);
+      const built = (t: number): boolean => t >= 0 && isZone(kind[t]) && level[t] > 0;
+      if (!built(left) || !built(right)) continue;
       const curb = alongX ? raster.accX[i] : raster.accZ[i];
       // Never pave the bank or the river: skip an alley that would cross either.
       if (terrain) {

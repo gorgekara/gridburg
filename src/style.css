@@ -387,5 +387,6 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 .walk-hint.open { display: flex; }
 .walk-hint strong { color: var(--accent); font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase; }
 .walk-hint span { color: var(--dim); }
+.walk-hint .speedo { font-size: 20px; font-variant-numeric: tabular-nums; color: var(--fg); }
 /* At street level the build bar, tool panels and city card only get in the way. */
 body.walking .bottombar, body.walking .dock, body.walking .city-overview, body.walking .chips { display: none; }

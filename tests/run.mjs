@@ -76,7 +76,7 @@ test('malformed save streams are rejected', () => {
   assert.equal(decode(bytes.toString('base64url')), null);
 });
 test('each new service has finite nonempty visible geometry inside its footprint', () => {
-  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN, C.T_HOSPITAL, C.T_CITY_HOSPITAL, C.T_POLICE_HQ]) {
+  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN, C.T_HOSPITAL, C.T_CITY_HOSPITAL, C.T_POLICE_HQ, C.T_GAS, C.T_NUCLEAR]) {
     const geo = buildingGeometry(k, 1, 0);
     assert.ok(geo.attributes.position.count > 30, `kind ${k}`);
     assert.ok([...geo.attributes.position.array].every(Number.isFinite), `kind ${k}`);
@@ -775,6 +775,34 @@ test('offices provide clean jobs, obey unlocks and explain education requirement
   city.level[office] = 0; city.cityLevel = 0; load(city);
   assert.equal(latest().stats.demand[3], -1);
 });
+test('farmland and leisure zones grow, employ, share demand and stay on their lots', () => {
+  for (const kind of [C.T_FARM, C.T_LEISURE]) for (const level of [1, 2, 3]) for (let v = 0; v < VARIANTS; v++) {
+    const g = buildingGeometry(kind, level, v); g.computeBoundingBox();
+    const box = g.boundingBox;
+    assert.ok(box.min.x >= -0.501 && box.max.x <= 0.501 && box.min.z >= -0.501 && box.max.z <= 0.501, `kind ${kind} level ${level} variant ${v} spills off its lot`);
+    assert.ok([...g.attributes.position.array].every(Number.isFinite));
+    g.dispose();
+  }
+  const city = demoCity();
+  const shops = [...city.kind.keys()].filter(i => city.kind[i] === C.T_COM);
+  const works = [...city.kind.keys()].filter(i => city.kind[i] === C.T_IND);
+  const cafe = shops[0], field = works[0];
+  city.kind[cafe] = C.T_LEISURE; city.kind[field] = C.T_FARM; city.level[field] = 2; city.cityLevel = 0;
+  load(city);
+  assert.equal(latest().stats.demand.length, 4, 'The new zones share the four demand meters');
+  send({ type: 'inspect', tile: field });
+  let report = messages.filter(m => m.type === 'inspection').at(-1).report;
+  assert.equal(report.name, 'Farmland');
+  assert.equal(report.occupants, C.FARM_JOBS[2]);
+  send({ type: 'inspect', tile: cafe });
+  report = messages.filter(m => m.type === 'inspection').at(-1).report;
+  assert.ok(report.blockers.some(s => s.includes('Small town')), 'Leisure waits for its unlock');
+  city.cityLevel = C.LEISURE_UNLOCK; city.level[cafe] = 2; load(city);
+  send({ type: 'inspect', tile: cafe });
+  report = messages.filter(m => m.type === 'inspection').at(-1).report;
+  assert.equal(report.occupants, C.LEISURE_JOBS[2]);
+  assert.ok(report.details.some(s => s.includes('Visitor appeal')), 'Leisure explains what draws visitors');
+});
 test('powered sewage treatment reduces discharge and loses filtration without electricity', () => {
   const city = demoCity();
   // Supply a stable prebuilt population so outlet load cannot drop to zero.
@@ -920,7 +948,7 @@ test('hospitals heal and police headquarters patrol like the smaller buildings t
 });
 test('every building variant is painted: no colour table runs out before the variants do', () => {
   // A missing entry becomes three's default colour, pure white, which also lights up at night.
-  for (const kind of [C.T_RES, C.T_COM, C.T_IND, C.T_OFFICE]) for (const level of [1, 2, 3]) {
+  for (const kind of [C.T_RES, C.T_COM, C.T_IND, C.T_OFFICE, C.T_FARM, C.T_LEISURE]) for (const level of [1, 2, 3]) {
     for (let v = 0; v < VARIANTS; v++) {
       const geo = buildingGeometry(kind, level, v), c = geo.attributes.color.array;
       for (let i = 0; i < c.length; i += 3) {
@@ -929,6 +957,24 @@ test('every building variant is painted: no colour table runs out before the var
       geo.dispose();
     }
   }
+});
+test('new power stations generate what they promise', () => {
+  const city = demoCity();
+  const net = Network.fromPlain(city.net); ensureApproaches(net);
+  const r = rasterize(net), terrain = generateTerrain(city.seed), owners = siteOwners(city.kind);
+  const base = (() => { load(city); send({ type: 'warm', ticks: 5 }); return latest().stats.power[1]; })();
+  // A gas plant anywhere by a road, and a dam on the bank.
+  const withPower = { ...city, kind: Uint8Array.from(city.kind), level: Uint8Array.from(city.level) };
+  const free = (i, bank) => !withPower.kind[i] && !terrain.water[i] && !r.cover[i] && r.accSeg[i] >= 0 && owners[i] < 0 && (bank || !terrain.shore[i]);
+  const gas = [...Array(C.N_TILES).keys()].find(i => free(i, false));
+  withPower.kind[gas] = C.T_GAS; withPower.level[gas] = 1;
+  const dam = [...Array(C.N_TILES).keys()].find(i => free(i, true) && touchesWater(terrain, i % C.GRID, Math.floor(i / C.GRID)));
+  withPower.kind[dam] = C.T_HYDRO; withPower.level[dam] = 1;
+  load(withPower); send({ type: 'warm', ticks: 5 });
+  const added = latest().stats.power[1] - base;
+  assert.ok(Math.abs(added - (C.SERVICES[C.T_GAS].power + C.SERVICES[C.T_HYDRO].power)) < 1, `Expected the gas plant and dam to add their output, got ${added}`);
+  assert.ok(C.SERVICES[C.T_NUCLEAR].power > C.SERVICES[C.T_SOLAR].power * 3, 'The reactor dwarfs every other station');
+  assert.ok(C.SERVICES[C.T_GAS].pollution < C.SERVICES[C.T_COAL].pollution, 'Gas burns cleaner than coal');
 });
 test('fishing docks employ people and sell a catch that sewage upstream spoils', () => {
   const geo = buildingGeometry(C.T_DOCKS, 1, 0);

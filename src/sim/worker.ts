@@ -10,6 +10,7 @@ import {
   GRID, N_TILES, MAX_CARS, SIM_HZ, T_RES, T_COM, T_IND, T_PUMP, T_TOWER, T_OUTLET,
   RES_POP, COM_JOBS, IND_JOBS, POWER_DEMAND, WATER_DEMAND, IND_POLLUTION, SERVICES, START_MONEY, ROAD_UPKEEP, ROAD_UPKEEP_FACTOR,
   F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, isZone, isService, neighbor, tileHash,
+  T_FARM, T_LEISURE, FARM_JOBS, LEISURE_JOBS, LEISURE_UNLOCK, zoneBase, zoneOccupants, ZONE_NAMES,
 } from '../constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
 import { entrySite } from '../roads/entries';
@@ -554,7 +555,7 @@ function spawn(dt: number): void {
       const d = pickWeighted(jobTiles, jobW);
       if (airTokens >= 1 && transit.airports.some(a => distance(a, d) < 24) && Math.random() < 0.45) { airTokens--; airWindow++; money += 0.2 * effects.fare; }
       else if (byIntercityRail(d)) { /* arrived by train */ }
-      else externalTrip(d, true, kind[d] === T_IND ? 3 : 2);
+      else externalTrip(d, true, zoneBase(kind[d]) === T_IND ? 3 : 2);
     } else if (resTiles.length) {
       const o = pickWeighted(resTiles, resW);
       if (!byIntercityRail(o)) externalTrip(o, false);
@@ -879,10 +880,11 @@ function census(): void {
     const l = level[i];
     if (l > 0) buildings++;
     const ok = tileConnected(i);
-    const zi = k - T_RES;
+    const zi = zoneBase(k) - T_RES;
     if (l > 0 && ok) {
-      needP += POWER_DEMAND[zi][l];
-      needW += WATER_DEMAND[zi][l];
+      // Farms run little machinery but water their fields.
+      needP += POWER_DEMAND[zi][l] * (k === T_FARM ? 0.4 : 1);
+      needW += WATER_DEMAND[zi][l] * (k === T_FARM ? 1.5 : 1);
     }
     if (k === T_RES) {
       pop += RES_POP[l];
@@ -893,6 +895,12 @@ function census(): void {
     } else if (k === T_OFFICE) {
       officeJobs += OFFICE_JOBS[l];
       if (l > 0 && ok) { jw += l * 1.2; jobTiles.push(i); jobW.push(jw); }
+    } else if (k === T_LEISURE) {
+      comJobs += LEISURE_JOBS[l];
+      if (l > 0 && ok) { jw += l * 1.3; jobTiles.push(i); jobW.push(jw); }
+    } else if (k === T_FARM) {
+      indJobs += FARM_JOBS[l];
+      if (l > 0 && ok) { jw += l * 0.7; jobTiles.push(i); jobW.push(jw); }
     } else {
       indJobs += IND_JOBS[l];
       if (l > 0 && ok) { jw += l; jobTiles.push(i); jobW.push(jw); }
@@ -972,7 +980,10 @@ function census(): void {
   taxIncome = 0;
   for (let i = 0; i < N_TILES; i++) {
     if (!isZone(kind[i]) || !level[i] || (flags[i] & F_NO_ROAD)) continue;
-    const amount = kind[i] === T_RES ? RES_POP[level[i]] * 0.012 : (kind[i] === T_COM ? COM_JOBS[level[i]] : kind[i] === T_OFFICE ? OFFICE_JOBS[level[i]] : IND_JOBS[level[i]]) * 0.015;
+    const k = kind[i];
+    let amount = zoneOccupants(k, level[i]) * (k === T_RES ? 0.012 : 0.015);
+    // Hotels and restaurants trade on visitors, who come for the parks and the waterfront.
+    if (k === T_LEISURE) amount *= tourismAppeal(i);
     const operating = (flags[i] & (F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) ? 0.5 : 1;
     taxIncome += amount * operating * tax / 10 * (1 - incidents.crime[i] / 200) * (incidents.fires.has(i) ? 0 : 1);
   }
@@ -980,6 +991,23 @@ function census(): void {
   serviceExpense = upkeep;
   loanExpense = Math.min(LOAN_PAYMENT, debt);
   netIncome = taxIncome + fishingIncome - roadUpkeep - serviceExpense - policyCost - loanExpense;
+}
+
+/** How much a leisure business earns over a plain shop: parks and a river view draw the visitors. */
+function tourismAppeal(i: number): number {
+  const x = i % GRID, z = Math.floor(i / GRID);
+  let river = false;
+  for (let dz = -2; dz <= 2 && !river; dz++) for (let dx = -2; dx <= 2; dx++) {
+    const nx = x + dx, nz = z + dz;
+    if (nx >= 0 && nz >= 0 && nx < GRID && nz < GRID && terrain.water[nz * GRID + nx]) { river = true; break; }
+  }
+  return 1.2 + (civicState.coverage.leisure[i] ?? 0) * 0.6 + (river ? 0.4 : 0);
+}
+
+/** Demand for a zone kind: specialised zones share their core zone's, once they are unlocked. */
+function zoneDemand(k: number): number {
+  if (k === T_LEISURE && cityLevel < LEISURE_UNLOCK) return -1;
+  return demand[zoneBase(k) - T_RES];
 }
 
 function civicEfficiency(i: number): number {
@@ -1014,7 +1042,7 @@ function spreadPollution(): void {
 /** City-block distance from each tile to the nearest shop or office, capped at 15. */
 const shopDistance = new Uint8Array(N_TILES);
 function measureShopDistance(): void {
-  for (let i = 0; i < N_TILES; i++) shopDistance[i] = kind[i] === T_COM || kind[i] === T_OFFICE ? 0 : 15;
+  for (let i = 0; i < N_TILES; i++) shopDistance[i] = kind[i] === T_COM || kind[i] === T_OFFICE || kind[i] === T_LEISURE ? 0 : 15;
   for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
     const i = z * GRID + x;
     if (x > 0) shopDistance[i] = Math.min(shopDistance[i], shopDistance[i - 1] + 1);
@@ -1042,7 +1070,7 @@ function grow(): void {
       continue;
     }
     // An empty lot the water reaches never builds on: nothing should stand in the river.
-    const d = terrain.shore[i] && l === 0 ? 0 : demand[k - T_RES];
+    const d = terrain.shore[i] && l === 0 ? 0 : zoneDemand(k);
     const p = pollution[i];
     const isRes = k === T_RES;
     if (l === 0) {
@@ -1308,8 +1336,8 @@ function postInspection(): void {
   if (inspected < 0) { post({ type: 'inspection', report: null }); return; }
   const i = inspected, k = kind[i], l = level[i], spec = SERVICES[k];
   const report: TileReport = {
-    tile: i, name: spec?.name ?? (k === T_RES ? 'Residential' : k === T_COM ? 'Commercial' : k === T_IND ? 'Industrial' : k === T_OFFICE ? 'Offices' : terrain.water[i] ? 'River' : cover[i] ? 'Road' : 'Unzoned land'),
-    level: l, occupants: k === T_RES ? RES_POP[l] : k === T_COM ? COM_JOBS[l] : k === T_IND ? IND_JOBS[l] : k === T_OFFICE ? OFFICE_JOBS[l] : 0,
+    tile: i, name: spec?.name ?? (ZONE_NAMES[k] ?? (terrain.water[i] ? 'River' : cover[i] ? 'Road' : 'Unzoned land')),
+    level: l, occupants: zoneOccupants(k, l),
     status: 'Ready to zone or build', details: [], blockers: [], coverage: {}, neglect: neglect[i],
   };
   const f = flags[i];
@@ -1321,7 +1349,7 @@ function postInspection(): void {
   }
   if (isZone(k)) {
     report.status = l === 0 ? 'Waiting for construction' : l === 3 ? 'Maximum building level' : `Level ${l} → ${l + 1}`;
-    if (demand[k - T_RES] <= 0 && l < 3) report.blockers.push('Demand is too low: balance homes, jobs and taxes');
+    if (zoneDemand(k) <= 0 && l < 3) report.blockers.push('Demand is too low: balance homes, jobs and taxes');
     if (k === T_RES) {
       for (const key of Object.keys(CIVIC_LABELS) as CivicNeed[]) report.coverage[key] = Math.round(civicState.coverage[key][i] * 100);
       if (l > 0 && l < 3) report.blockers.push(...civicShortfalls(i, l + 1, cityLevel, civicState.coverage));
@@ -1335,7 +1363,9 @@ function postInspection(): void {
     if (l === 2 && cityLevel < 3) report.blockers.push('High-rises unlock at Thriving town (900 residents)');
     if (l > 0 && l < 3 && age[i] <= (l === 1 ? 10 : 22)) report.blockers.push(`Maturing: ${(l === 1 ? 11 : 23) - age[i]}s remaining`);
     if (l < 3 && report.blockers.length === 0) report.details.push('Eligible for growth; construction occurs gradually.');
-    report.details.push(`Zone demand: ${Math.round(demand[k - T_RES] * 100)}%`);
+    report.details.push(`Zone demand: ${Math.round(zoneDemand(k) * 100)}%`);
+    if (k === T_LEISURE && l > 0) report.details.push(`Visitor appeal: ×${tourismAppeal(i).toFixed(2)} (parks and waterfront raise it)`);
+    if (k === T_LEISURE && cityLevel < LEISURE_UNLOCK) report.blockers.push('Leisure & tourism opens at Small town (400 residents)');
   } else if (spec) {
     const budget = serviceFunding(spec, funding);
     const efficiency = spec.civic ? civicEfficiency(i) : f ? 0 : fundingOutput(budget);

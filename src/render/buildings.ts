@@ -1,7 +1,7 @@
-import { T_OFFICE } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE } from '../constants';
 import { buildingRotation } from '../placement';
 import * as THREE from 'three';
-import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, SERVICES, isService, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { buildingGeometry, rotorGeometry, VARIANTS } from './buildingGeo';
 
@@ -20,11 +20,13 @@ const ZONE_COLOR: Record<number, number> = {
   [T_COM]: 0x4f8fe8,
   [T_IND]: 0xe6b93a,
   [T_OFFICE]: 0xb791e0,
+  [T_FARM]: 0xc9a55a,
+  [T_LEISURE]: 0xe07fb0,
 };
 const SERVICE_KINDS = Object.keys(SERVICES).map(Number);
 
 function key(kind: number, level: number, variant: number): number {
-  return kind * 16 + level * 4 + variant;
+  return (kind * 4 + level) * 8 + variant;
 }
 
 export class BuildingLayer {
@@ -61,7 +63,7 @@ export class BuildingLayer {
       this.meshes.set(key(k, l, v), mesh);
       this.group.add(mesh);
     };
-    for (const k of [T_RES, T_COM, T_IND, T_OFFICE]) {
+    for (const k of [T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE]) {
       for (let l = 1; l <= 3; l++) for (let v = 0; v < VARIANTS; v++) add(k, l, v, N_TILES);
     }
     for (const k of SERVICE_KINDS) add(k, 1, 0, 512);
@@ -122,8 +124,8 @@ export class BuildingLayer {
       // A placed building faces the quarter turn it was given; a grown one faces its road.
       let facing = turn * Math.PI / 2;
       if (!turn && !multi && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
-      // A dock's jetty (its -z side) points at the river, whichever side of the quay that is.
-      if (k === T_DOCKS && water) {
+      // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
+      if ((k === T_DOCKS || k === T_HYDRO) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);
         for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
           const nx = x + dx, nz = z + dz;

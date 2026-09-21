@@ -9,7 +9,9 @@ const LOOK = 0.0022; // radians per pixel of mouse movement
 
 export interface WalkerHooks {
   /** True where a pedestrian cannot stand: inside a building, in the river, off the map. */
-  blocked(x: number, z: number): boolean;
+  blocked(x: number, z: number, y: number): boolean;
+  /** Height of the ground or road deck underfoot, preferring the one nearest `y`. */
+  ground(x: number, z: number, y: number): number;
   /** Called when the walk ends, however it ends. */
   onExit(): void;
 }
@@ -67,6 +69,8 @@ export class Walker {
   }
 
   private lockedOnce = false;
+  /** Height of the ground under the walker's feet: 0, or a bridge deck. */
+  private feet = 0;
 
   /** Step down onto the street at (x, z), looking along `heading` (radians, 0 = towards -z). */
   enter(x: number, z: number, heading: number): void {
@@ -80,7 +84,8 @@ export class Walker {
     this.camera.near = 0.02;
     this.camera.fov = 70;
     this.camera.updateProjectionMatrix();
-    this.camera.position.set(x, EYE, z);
+    this.feet = this.hooks.ground(x, z, 0);
+    this.camera.position.set(x, this.feet + EYE, z);
     this.apply();
   }
 
@@ -123,14 +128,16 @@ export class Walker {
       // Try each axis on its own, so walking into a wall slides along it instead of sticking.
       if (!this.hits(p.x + dx, p.z)) p.x += dx;
       if (!this.hits(p.x, p.z + dz)) p.z += dz;
-      // A little bob in the step.
-      p.y = EYE + Math.abs(Math.sin(performance.now() / 1000 * (speed / dt > WALK ? 11 : 7))) * 0.006;
+      // Climb ramps and bridge decks, then a little bob in the step.
+      this.feet += (this.hooks.ground(p.x, p.z, this.feet) - this.feet) * Math.min(1, dt * 14);
+      p.y = this.feet + EYE + Math.abs(Math.sin(performance.now() / 1000 * (speed / dt > WALK ? 11 : 7))) * 0.006;
     }
     this.apply();
   }
 
   private hits(x: number, z: number): boolean {
     const r = RADIUS;
-    return this.hooks.blocked(x, z) || this.hooks.blocked(x + r, z) || this.hooks.blocked(x - r, z) || this.hooks.blocked(x, z + r) || this.hooks.blocked(x, z - r);
+    const y = this.feet, b = this.hooks.blocked;
+    return b(x, z, y) || b(x + r, z, y) || b(x - r, z, y) || b(x, z + r, y) || b(x, z - r, y);
   }
 }

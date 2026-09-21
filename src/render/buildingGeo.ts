@@ -1,7 +1,7 @@
-import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES } from '../constants';
+import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES, T_FARM, T_LEISURE } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_DOCKS, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
@@ -245,6 +245,108 @@ function roofDetail(b: Builder, y: number, variant: number): void {
   }
 }
 
+const CROPS = [0xc9a94e, 0x5f8f3e, 0x8a78b8, 0x79a553, 0xa9b548, 0xd4b13a];
+const BARNS = [0xa8423a, 0xb5503d, 0x8e3b33, 0xc9c2b0, 0x9c4a36, 0x6f7f8a];
+
+/** Crop rows across a field, running front to back. */
+function rows(b: Builder, x0: number, x1: number, z0: number, z1: number, crop: number, tall: number): void {
+  b.box(x1 - x0, 0.012, z1 - z0, (x0 + x1) / 2, 0, (z0 + z1) / 2, 0x7a5b3c); // tilled earth
+  for (let x = x0 + 0.04; x < x1 - 0.02; x += 0.07) b.box(0.035, tall, z1 - z0 - 0.04, x, 0.012, (z0 + z1) / 2, crop);
+}
+
+/** Farmland: fields that fill the lot, with a barn, then silos, then greenhouses as the farm grows. */
+function farm(b: Builder, level: number, v: number): void {
+  const crop = CROPS[v], barn = BARNS[v], side = v % 2 ? 1 : -1;
+  // Post-and-rail fence round the lot, open at the front for the track.
+  for (const s of [-1, 1]) b.box(0.015, 0.05, 0.94, s * 0.47, 0.02, 0, 0x8a6b4b);
+  b.box(0.94, 0.05, 0.015, 0, 0.02, -0.47, 0x8a6b4b);
+  b.box(0.12, 0.008, 0.94, side * 0.3, 0, 0, 0xa89272); // farm track to the road
+  if (level === 1) {
+    rows(b, side > 0 ? -0.46 : -0.2, side > 0 ? 0.2 : 0.46, -0.44, 0.44, crop, 0.05);
+    b.box(0.24, 0.16, 0.3, side * 0.34, 0, -0.26, barn);
+    b.gable(0.24, 0.3, 0.16, 0.1, barn, 0x4f4a45);
+    b.box(0.1, 0.12, 0.012, side * 0.34, 0, -0.105, 0x5a3b2a);
+  } else if (level === 2) {
+    rows(b, side > 0 ? -0.46 : -0.12, side > 0 ? 0.12 : 0.46, -0.44, 0.44, crop, 0.07);
+    const bx = side * 0.3;
+    b.box(0.3, 0.22, 0.38, bx, 0, -0.2, barn);
+    // Gable roof over the offset barn: shift the builder so the prism sits over it.
+    const keep = b.shift; b.shift = { x: keep.x + bx, z: keep.z - 0.2 };
+    b.gable(0.3, 0.38, 0.22, 0.14, barn, 0x4a4540);
+    b.shift = keep;
+    b.box(0.14, 0.16, 0.012, bx, 0, -0.005, 0xe8e2d2);
+    b.cyl(0.07, 0.42, bx, 0, 0.2, 0xc8ccc8, 12); // silo
+    b.taper(0.01, 0.075, 0.07, bx, 0.42, 0.2, 0x8c9396, 12);
+    b.box(0.07, 0.05, 0.1, -side * 0.05, 0.012, 0.36, 0x3d7a3a); // tractor
+    b.box(0.05, 0.05, 0.04, -side * 0.05, 0.06, 0.34, 0x2a3a3e);
+  } else {
+    rows(b, -0.46, 0.46, 0.08, 0.44, crop, 0.07);
+    // A row of greenhouses and a pair of silos behind them.
+    for (const x of [-0.3, 0, 0.3]) {
+      b.box(0.26, 0.16, 0.42, x, 0, -0.18, 0xb9d6d4);
+      const keep = b.shift; b.shift = { x: keep.x + x, z: keep.z - 0.18 };
+      b.gable(0.26, 0.42, 0.16, 0.08, 0xcfe3e0, 0xa7c4c2);
+      b.shift = keep;
+      for (let z = -0.36; z <= 0.01; z += 0.09) b.box(0.265, 0.2, 0.008, x, 0, z, 0x8aa3a1);
+    }
+    for (const x of [-0.37, 0.37]) {
+      b.cyl(0.06, 0.5, x, 0, 0.02, 0xc8ccc8, 12);
+      b.taper(0.01, 0.065, 0.06, x, 0.5, 0.02, 0x8c9396, 12);
+    }
+  }
+}
+
+const HOTEL = [0xe9d8c4, 0xd98f7a, 0xf1ece0, 0x9cc1c9, 0xe6c07a, 0xc7a3c9];
+const STRIPES = [0xd8453b, 0x2f7fb8, 0x3f9a5f, 0xe07fb0, 0xe0a021, 0x6a5acd];
+
+/** A café table under a parasol. */
+function parasol(b: Builder, x: number, z: number, color: number): void {
+  b.cyl(0.006, 0.16, x, 0, z, 0xd9d4c8, 5);
+  b.taper(0.006, 0.09, 0.04, x, 0.15, z, color, 8);
+  b.cyl(0.04, 0.05, x, 0, z, 0xe8e4da, 8);
+}
+
+/** Leisure and tourism: a café with a terrace, then a boutique hotel, then a resort tower with a pool. */
+function leisure(b: Builder, level: number, v: number): void {
+  const stripe = STRIPES[v], wall = HOTEL[v];
+  if (level === 1) {
+    const w = 0.66, h = [0.42, 0.5, 0.38, 0.46, 0.55, 0.4][v], d = 0.46;
+    b.box(w, h, d, 0, 0, -0.18, wall);
+    b.box(w * 0.8, 0.22, 0.02, 0, 0.08, -0.18 + d / 2 + 0.005, GLASS);
+    for (let k = 0; k < 6; k++) b.box(w / 6, 0.03, 0.2, -w / 2 + w / 12 + k * w / 6, h - 0.12, 0.13, k % 2 ? 0xf1ece0 : stripe); // striped awning
+    b.box(w * 0.5, 0.08, 0.02, 0, h - 0.04, -0.18 + d / 2 + 0.012, stripe); // sign
+    for (const [x, z] of [[-0.24, 0.3], [0, 0.34], [0.24, 0.3]] as [number, number][]) parasol(b, x, z, v % 2 ? stripe : 0xf1ece0);
+    b.box(0.9, 0.04, 0.03, 0, 0.012, 0.44, 0x5d8a45); // hedge planters along the terrace
+    roofDetail(b, h, v);
+  } else if (level === 2) {
+    const floors = [4, 5, 3, 5, 4, 6][v], w = 0.74, d = 0.6, h = 0.25 + floors * 0.28;
+    b.box(w, h, d, 0, 0, -0.08, wall);
+    b.box(w + 0.04, 0.05, d + 0.04, 0, h, -0.08, 0x5f5a53);
+    b.windows(w, h, d, 0.25, floors, 3, 0.45);
+    for (let f = 1; f < floors; f++) b.box(w * 0.9, 0.025, 0.08, 0, 0.25 + f * 0.28 - 0.03, -0.08 + d / 2 + 0.04, 0xd9d4c8); // balconies
+    b.box(0.3, 0.2, 0.03, 0, 0, -0.08 + d / 2 + 0.005, GLASS);
+    b.box(0.4, 0.025, 0.2, 0, 0.22, -0.08 + d / 2 + 0.1, stripe); // entrance canopy
+    b.box(0.05, 0.3, 0.02, w / 2 - 0.02, h * 0.45, -0.08 + d / 2 + 0.02, stripe); // vertical hotel sign
+    for (const x of [-0.3, 0.3]) parasol(b, x, 0.38, stripe);
+    roofDetail(b, h + 0.05, v);
+  } else {
+    // Resort: a podium with a pool deck, and a slim tower of rooms.
+    const floors = [10, 13, 8, 12, 9, 14][v], w = 0.5, d = 0.42, h = floors * 0.3;
+    b.box(0.9, 0.22, 0.86, 0, 0, 0, 0xd9d2c3);
+    b.box(0.6, 0.18, 0.02, 0, 0.02, 0.435, GLASS);
+    b.box(0.86, 0.02, 0.36, 0, 0.22, 0.22, 0xe6e0d0); // pool deck
+    b.box(0.5, 0.025, 0.2, -0.12, 0.225, 0.24, 0x3fa9d0); // pool
+    for (const x of [0.22, 0.32]) b.box(0.05, 0.02, 0.12, x, 0.24, 0.24, 0xf1ece0); // loungers
+    parasol(b, 0.27, 0.36, stripe);
+    b.box(w, h, d, 0, 0.22, -0.2, wall);
+    b.windows(w, h, d, 0.1, floors, 3, 0.5, 0.11);
+    for (let f = 1; f < floors; f++) b.box(w + 0.03, 0.02, d + 0.03, 0, 0.22 + f * (h / floors), -0.2, 0xbfb8aa);
+    b.box(w + 0.04, 0.06, d + 0.04, 0, 0.22 + h, -0.2, 0x4d5860);
+    b.box(0.34, 0.12, 0.02, 0, 0.22 + h - 0.2, -0.2 + d / 2 + 0.02, stripe); // name across the top
+    roofDetail(b, 0.28 + h, v);
+  }
+}
+
 /** Build the geometry for a (kind, level, variant) triple. Front of the building faces +z. */
 export function buildingGeometry(kind: number, level: number, variant: number): THREE.BufferGeometry {
   const b = new Builder(kind * 100 + level * 10 + variant);
@@ -374,6 +476,10 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
         for (let n = 0; n < 4; n++) b.box(0.01, 0.16, 0.255, x - 0.075 + n * 0.05, 0.025, 0.32, 0x8eaaa7);
       }
     }
+  } else if (kind === T_FARM) {
+    farm(b, level, v);
+  } else if (kind === T_LEISURE) {
+    leisure(b, level, v);
   }
   else if (kind === T_COAL) {
     b.box(0.92, 0.04, 0.92, 0, 0, 0, 0x6f6a62);
@@ -386,6 +492,42 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     b.cyl(0.055, 1.05, 0.1, 0.04, 0.33, 0x5a5650, 10);
     b.cyl(0.062, 0.07, 0.1, 1.0, 0.33, 0xb8433a, 10);
     b.box(0.3, 0.12, 0.25, -0.2, 0.04, -0.3, 0x24262b);
+  } else if (kind === T_GAS) {
+    // A compact turbine hall with two slim stacks and a row of gas tanks.
+    b.box(0.92, 0.04, 0.92, 0, 0, 0, 0x777a7c);
+    b.box(0.56, 0.36, 0.42, -0.14, 0.04, 0.14, 0xc9ccce);
+    b.box(0.58, 0.05, 0.44, -0.14, 0.4, 0.14, 0x3f6f9e);
+    b.windows(0.56, 0.36, 0.42, 0.1, 1, 3, 0.3, 0.09);
+    for (const x of [0.22, 0.34]) { b.cyl(0.04, 0.95, x, 0.04, 0.22, 0xb9bcbe, 10); b.cyl(0.045, 0.05, x, 0.96, 0.22, 0x3f6f9e, 10); }
+    for (const x of [-0.3, -0.05, 0.2]) b.cyl(0.1, 0.24, x, 0.04, -0.28, 0xe9e9e4, 14);
+    b.box(0.7, 0.03, 0.03, -0.05, 0.2, -0.28, 0x8c9092);
+  } else if (kind === T_HYDRO) {
+    // A concrete dam face stepping down to the river behind it (-z), with the generator house on top.
+    b.box(0.94, 0.05, 0.94, 0, 0, 0, 0x9a9890);
+    b.box(0.94, 0.55, 0.36, 0, 0.05, -0.28, 0xb9b6ac);
+    b.box(0.94, 0.3, 0.18, 0, -0.25, -0.52, 0xa7a49a); // spillway apron
+    for (const x of [-0.3, 0, 0.3]) b.box(0.16, 0.34, 0.03, x, 0.12, -0.47, 0x2d4d63); // sluice gates
+    b.box(0.6, 0.3, 0.34, 0.05, 0.05, 0.14, 0xd4d1c7);
+    b.box(0.64, 0.05, 0.38, 0.05, 0.35, 0.14, 0x3a6b8c);
+    b.windows(0.6, 0.3, 0.34, 0.1, 1, 3, 0.35, 0.08);
+    for (const x of [-0.34, 0.36]) { b.box(0.04, 0.5, 0.04, x, 0.05, 0.3, 0x7c8084); b.box(0.22, 0.03, 0.03, x, 0.52, 0.3, 0x7c8084); }
+  } else if (kind === T_NUCLEAR) {
+    // Two hyperbolic cooling towers, a domed reactor and a turbine hall on a 3 x 3 site.
+    b.shift = { x: 1, z: 1 };
+    b.box(2.94, 0.05, 2.94, 0, 0, 0, 0x8d8f89);
+    for (const [x, z] of [[-0.7, -0.6], [0.55, -0.75]] as [number, number][]) {
+      b.taper(0.62, 0.42, 1.0, x, 0.05, z, 0xd8d6cf, 20);
+      b.taper(0.42, 0.5, 0.75, x, 1.05, z, 0xd8d6cf, 20);
+      b.cyl(0.5, 0.04, x, 1.8, z, 0xb4b1a8, 20);
+    }
+    b.cyl(0.42, 0.7, -0.4, 0.05, 0.75, 0xe6e4dd, 18); // reactor building
+    b.taper(0.42, 0.05, 0.35, -0.4, 0.75, 0.75, 0xcfccc3, 18); // dome
+    b.box(1.0, 0.55, 0.6, 0.65, 0.05, 0.7, 0xbfc3c6); // turbine hall
+    b.box(1.04, 0.05, 0.64, 0.65, 0.6, 0.7, 0x4d6a82);
+    b.windows(1.0, 0.55, 0.6, 0.15, 2, 5, 0.35, 0.08);
+    b.box(0.08, 0.9, 0.08, 1.25, 0.05, 1.25, 0xb8433a); // stack
+    b.box(0.14, 0.06, 0.14, 1.25, 0.95, 1.25, 0xd8d6cf);
+    b.shift = { x: 0, z: 0 };
   } else if (kind === T_WIND) {
     b.cyl(0.16, 0.05, 0, 0, 0, 0x8f8a80, 12);
     b.taper(0.03, 0.055, 1.7, 0, 0.05, 0, 0xf2f2ee, 10);
@@ -661,7 +803,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
 
 /** Ground of a zoned lot in tile space (front edge at +z): fenced gardens for houses, paving for everything bigger. */
 function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeometry | null {
-  if (kind !== T_RES && kind !== T_COM && kind !== T_OFFICE) return null;
+  if (kind !== T_RES && kind !== T_COM && kind !== T_OFFICE && kind !== T_LEISURE) return null;
   const b = new Builder(kind * 31 + level * 7 + v), e = 0.47;
   if (kind === T_RES && level === 1) {
     b.box(0.96, 0.012, 0.96, 0, 0, 0, [0x7fa35f, 0x86a864, 0x7a9d5c, 0x8aab68, 0x829f5a, 0x7ba566][v]);

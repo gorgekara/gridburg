@@ -34,6 +34,13 @@ export const T_HOSPITAL = 27;
 export const T_CITY_HOSPITAL = 28;
 export const T_POLICE_HQ = 29;
 export const T_DOCKS = 30;
+export const T_GAS = 31;
+export const T_HYDRO = 32;
+export const T_NUCLEAR = 33;
+/** Two specialised zones: farmland counts towards industry, leisure & tourism towards commerce. */
+export const T_FARM = 34;
+export const T_LEISURE = 35;
+export const LEISURE_UNLOCK = 2;
 /** Jobs at a fishing dock, and dollars a second its boats land from a clean river. */
 export const DOCK_JOBS = 24;
 export const DOCK_CATCH = 2.4;
@@ -110,6 +117,10 @@ Object.assign(SERVICES, {
   [T_CITY_HOSPITAL]: { ...civic('City hospital', 11000, 5, 5, 'health', 5000, 34), footprint: [3, 2] as [number, number] },
   [T_POLICE_HQ]: { ...civic('Police headquarters', 6800, 3.2, 4, 'safety', 3200, 28), footprint: [2, 2] as [number, number] },
   [T_SOLAR]: { name: 'Solar farm', cost: 4800, upkeep: 1.5, unlock: 3, power: 1800, water: 0, sewage: 0, pollution: 0, needsWater: false },
+  // Gas burns cleaner than coal for less output; the river turns a dam; the reactor runs a region.
+  [T_GAS]: { name: 'Gas power plant', cost: 2200, upkeep: 2.2, unlock: 1, power: 1100, water: 0, sewage: 0, pollution: 3, needsWater: false },
+  [T_HYDRO]: { name: 'Hydroelectric dam', cost: 7500, upkeep: 3, unlock: 3, power: 2600, water: 0, sewage: 0, pollution: 0, needsWater: true },
+  [T_NUCLEAR]: { name: 'Nuclear power plant', cost: 18000, upkeep: 9, unlock: 5, footprint: [3, 3] as [number, number], power: 7000, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });
 
 Object.assign(SERVICES, {
@@ -125,6 +136,8 @@ export const RES_POP = [0, 4, 12, 40];
 export const COM_JOBS = [0, 3, 10, 30];
 export const OFFICE_JOBS = [0, 5, 16, 42];
 export const IND_JOBS = [0, 4, 12, 28];
+export const FARM_JOBS = [0, 3, 7, 12];
+export const LEISURE_JOBS = [0, 4, 11, 26];
 
 // Utility demand per level, indexed [kind - T_RES][level].
 export const POWER_DEMAND = [[0, 1, 3, 10], [0, 2, 6, 18], [0, 3, 8, 20], [0, 2, 5, 14]];
@@ -139,8 +152,20 @@ export const F_NO_ROAD = 8;
 export const F_DECLINING = 16;
 
 export function isZone(k: number): boolean {
-  return k >= T_RES && k <= T_OFFICE;
+  return (k >= T_RES && k <= T_OFFICE) || k === T_FARM || k === T_LEISURE;
 }
+
+/** The core zone a specialised one belongs to: it shares that zone's demand and utility needs. */
+export function zoneBase(k: number): number {
+  return k === T_FARM ? T_IND : k === T_LEISURE ? T_COM : k;
+}
+
+/** Jobs (or, for homes, residents) a zoned building of this kind and level holds. */
+export function zoneOccupants(k: number, l: number): number {
+  return k === T_RES ? RES_POP[l] : k === T_COM ? COM_JOBS[l] : k === T_OFFICE ? OFFICE_JOBS[l] : k === T_IND ? IND_JOBS[l] : k === T_FARM ? FARM_JOBS[l] : k === T_LEISURE ? LEISURE_JOBS[l] : 0;
+}
+
+export const ZONE_NAMES: Record<number, string> = { [T_RES]: 'Residential', [T_COM]: 'Commercial', [T_IND]: 'Industrial', [T_OFFICE]: 'Offices', [T_FARM]: 'Farmland', [T_LEISURE]: 'Leisure & tourism' };
 
 export function isService(k: number): boolean {
   return Object.hasOwn(SERVICES, k);

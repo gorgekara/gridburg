@@ -2,11 +2,11 @@ import { structurePlan, roadHeight, BRIDGE_RISE, STRUCTURE_COST } from './roads/
 import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
-import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from './constants';
+import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint, roadPoint } from './placement';
 import * as THREE from 'three';
 import {
-  T_DOCKS, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
+  T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
@@ -20,24 +20,24 @@ export type Tool =
   | 'none' | 'inspect'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
-  | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
-  | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet' | 'docks'
+  | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
+  | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
 export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
-  office: 0xb791e0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
+  office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
   road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
-  coal: 0x9a9a9a, wind: 0xf2f2ee, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
+  coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   bulldoze: 0xe04b3a,
 };
-export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
-const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE };
+export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
+const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE, farm: T_FARM, leisure: T_LEISURE };
 
 const BAD = 0xe04b3a;
 const GUIDE = 0xffffff;
@@ -591,6 +591,7 @@ export class Input {
     } else {
       const zk = ZONE_TOOL[this.tool]!;
       if (zk === T_OFFICE && g.stats.cityLevel < OFFICE_UNLOCK) { this.onToast?.('Offices unlock at Thriving town (900 residents)'); return; }
+      if (zk === T_LEISURE && g.stats.cityLevel < LEISURE_UNLOCK) { this.onToast?.('Leisure & tourism unlocks at Small town (400 residents)'); return; }
       for (const t of tiles) {
         if (!g.buildable(t) || g.kind[t] === zk || isService(g.kind[t])) continue;
         if (!g.canAfford(COST_ZONE)) { broke = true; break; }

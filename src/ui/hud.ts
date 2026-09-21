@@ -1,4 +1,4 @@
-import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY } from '../constants';
+import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, LEISURE_UNLOCK } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
 import { POLICIES, POLICY_IDS } from '../policies';
 import type { PolicyId } from '../policies';
@@ -9,7 +9,7 @@ import { CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
-import { T_DOCKS, DOCK_JOBS } from '../constants';
+import { T_DOCKS, DOCK_JOBS, T_GAS, T_HYDRO, T_NUCLEAR } from '../constants';
 import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
 
@@ -26,6 +26,7 @@ export interface HudActions {
   rotatePlacement(): void;
   /** Step down into the streets, or back up to the map. */
   toggleWalk(): void;
+  toggleDrive(): void;
   setElevation(level: number): void;
   /** Move the camera to whatever a message is about; false when there is nothing to show. */
   focusOn(id: string): boolean;
@@ -77,6 +78,8 @@ const CATEGORIES: Category[] = [
       { id: 'com', label: 'Commercial', key: '2', price: `${money(COST_ZONE)} / cell`, note: 'Shops and commerce', hint: 'Drag a rectangle beside a road. Shops want customers nearby' },
       { id: 'office', label: 'Offices', price: `${money(COST_ZONE)} / cell`, note: 'Clean jobs · needs education', hint: 'Clean employment with no industrial pollution. Unlocks at 900 residents; upgrades need 25% then 50% education coverage' },
       { id: 'ind', label: 'Industrial', key: '3', price: `${money(COST_ZONE)} / cell`, note: 'Jobs, pollutes', hint: 'Drag a rectangle beside a road. Pollutes the ground around it, so keep it away from homes' },
+      { id: 'farm', label: 'Farmland', price: `${money(COST_ZONE)} / cell`, note: 'Clean rural jobs', hint: 'Fields, barns and greenhouses. Meets industrial demand with few jobs but no pollution and little power; fields drink extra water' },
+      { id: 'leisure', label: 'Leisure & tourism', price: `${money(COST_ZONE)} / cell`, note: 'Hotels, cafés, nightlife', hint: 'Meets commercial demand with cafés, hotels and nightlife. Pays more tax near parks and the river. Unlocks at 400 residents' },
     ],
   },
   {
@@ -84,7 +87,10 @@ const CATEGORIES: Category[] = [
     tools: [
       { id: 'wind', label: 'Wind turbine', price: svc(T_WIND), note: `${SERVICES[T_WIND].power} MW · clean`, hint: 'Place beside a road. Power travels along connected roads' },
       { id: 'solar', label: 'Solar farm', price: svc(T_SOLAR), note: '1,800 MW · clean', hint: 'Clean, high-capacity electricity with low running costs. Unlocks at Thriving town' },
+      { id: 'gas', label: 'Gas plant', price: svc(T_GAS), note: `${SERVICES[T_GAS].power.toLocaleString()} MW · some smoke`, hint: 'Less output than coal and about a third of the pollution. Unlocks at Growing village' },
       { id: 'coal', label: 'Coal plant', price: svc(T_COAL), note: `${SERVICES[T_COAL].power.toLocaleString()} MW · polluting`, hint: 'Lots of power and lots of ground pollution. Keep it away from homes and water towers' },
+      { id: 'hydro', label: 'Hydro dam', price: svc(T_HYDRO), note: `${SERVICES[T_HYDRO].power.toLocaleString()} MW · clean`, hint: 'Build on the river bank. Clean, steady power from the current. Unlocks at Thriving town' },
+      { id: 'nuclear', label: 'Nuclear plant', price: svc(T_NUCLEAR), note: `${SERVICES[T_NUCLEAR].power.toLocaleString()} MW · 3 × 3`, hint: 'Enormous clean output for a large city, at a high price and upkeep. Unlocks at Regional capital' },
     ],
   },
   {
@@ -204,6 +210,10 @@ export class Hud {
   private clock = el('div', 'city-clock');
   private walkHint = el('div', 'walk-hint');
   private walkBtn: HTMLButtonElement = el('button');
+  private driveBtn: HTMLButtonElement = el('button');
+  private walkTitle = el('strong', undefined, 'Walking');
+  private walkKeys = el('span');
+  private speedo = el('b', 'speedo');
   /** Which height the road tool is drawing at: a tunnel, the surface, or a bridge. */
   setElevation(level: number): void {
     this.elevation = level;
@@ -220,10 +230,23 @@ export class Hud {
   }
 
   /** Walking hides the building tools and shows how to move; the map comes back on the way out. */
-  setWalking(on: boolean): void {
+  setWalking(on: boolean, mode: 'walk' | 'drive' = 'walk'): void {
     this.walkHint.classList.toggle('open', on);
-    this.walkBtn.classList.toggle('active', on);
+    this.walkBtn.classList.toggle('active', on && mode === 'walk');
+    this.driveBtn.classList.toggle('active', on && mode === 'drive');
     document.body.classList.toggle('walking', on);
+    const driving = on && mode === 'drive';
+    this.walkTitle.textContent = driving ? 'Driving' : 'Walking';
+    this.walkKeys.textContent = driving
+      ? 'W / S to drive and brake · A D to steer · Shift for speed · Space handbrake · V driver’s seat · Esc or M to park'
+      : 'W A S D to walk · Shift to run · click, then move the mouse to look · Esc or F to leave';
+    this.speedo.hidden = !driving;
+  }
+
+  /** The speedometer while driving. */
+  setDriveSpeed(kmh: number): void {
+    const text = `${kmh} km/h`;
+    if (this.speedo.textContent !== text) this.speedo.textContent = text;
   }
 
   /** The city clock, written by the render loop. */
@@ -424,12 +447,12 @@ export class Hud {
     const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
     const walkBtn = iconBtn('walk', 'Walk the streets (F)', () => actions.toggleWalk());
     this.walkBtn = walkBtn;
-    this.walkHint.append(
-      el('strong', undefined, 'Walking'),
-      el('span', undefined, 'W A S D to walk · Shift to run · click, then move the mouse to look · Esc or F to leave'),
-    );
+    const driveBtn = iconBtn('drive', 'Drive around town (M)', () => actions.toggleDrive());
+    this.driveBtn = driveBtn;
+    this.speedo.hidden = true;
+    this.walkHint.append(this.walkTitle, this.speedo, this.walkKeys);
     right.append(
-      walkBtn, messageBtn, trafficBtn, polBtn, policyBtn,
+      walkBtn, driveBtn, messageBtn, trafficBtn, polBtn, policyBtn,
       iconBtn('link', 'Copy a link to this city', actions.share),
       iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
       menuBtn,
@@ -618,6 +641,7 @@ export class Hud {
           <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and clicking a message takes you to it</li>
           <li><b>Placing</b> — right-click, press <b>G</b> or use Rotate in the panel to turn a building before you put it down</li>
           <li><b>Walking</b> — press <b>F</b> or the walker button to step down into the streets. <b>WASD</b> walks, <b>Shift</b> runs, click then move the mouse to look, and <b>Esc</b> takes you back up</li>
+          <li><b>Driving</b> — press <b>M</b> or the car button to take a car out. <b>W/S</b> drive and brake, <b>A/D</b> steer, <b>Shift</b> for speed, <b>Space</b> handbrake, <b>V</b> driver’s seat, <b>Esc</b> to park</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
           <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>
@@ -792,12 +816,12 @@ export class Hud {
     this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.railLines} rail lines · ${s.transport.intercityLines} intercity lines · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · ${s.transport.railPassengers} intercity rail passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
     this.incidentStats.textContent = `${s.incidents.patrols} police cars · ${s.incidents.fireEngines} fire engines · ${s.incidents.extinguished} fires extinguished · ${s.incidents.prevented} crimes prevented · ${s.incidents.foiled} robberies foiled · ${s.incidents.robbed} got away`;
     this.treatmentStats.textContent = `${s.treatedSewage} sewage units filtered`;
-    for (const id of ['office', 'entry'] as Tool[]) {
+    for (const id of ['office', 'leisure', 'entry'] as Tool[]) {
       const button = this.toolBtns.get(id)!;
-      const unlock = id === 'office' ? OFFICE_UNLOCK : ENTRY_UNLOCK;
+      const unlock = id === 'office' ? OFFICE_UNLOCK : id === 'leisure' ? LEISURE_UNLOCK : ENTRY_UNLOCK;
       button.disabled = s.cityLevel < unlock;
       const note = button.querySelector('.cnote');
-      if (note) note.textContent = button.disabled ? `Level ${unlock + 1} · ${MILESTONES[unlock].population} residents` : id === 'office' ? 'Clean jobs · needs education' : 'New highway access';
+      if (note) note.textContent = button.disabled ? `Level ${unlock + 1} · ${MILESTONES[unlock].population} residents` : id === 'office' ? 'Clean jobs · needs education' : id === 'leisure' ? 'Hotels, cafés, nightlife' : 'New highway access';
     }
     for (const [id, button] of this.toolBtns) {
       const kind = SERVICE_TOOL[id];

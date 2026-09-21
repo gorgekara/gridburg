@@ -68,12 +68,21 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Walk the streets.** Press F, or the walker button in the top-right corner, to step down to street
   level wherever you are looking. W A S D walks, Shift runs, and the mouse looks around (click once to
   capture it). Buildings, gardens and the river stop you, but streets, alleys and parks are open.
-  Esc or F takes you back up to the map where you left it.
+  Esc or F takes you back up to the map where you left it. People walk the pavements (more as the
+  city grows, fewer late at night), and at street level the kerbs fill with benches, bins, hydrants,
+  street trees, bike racks, planters, post boxes, bollards and a shelter at every bus stop. You can
+  walk up the ramps and over bridges.
+- **Drive around town.** Press M, or the car button, to take a car out on the nearest street. W / S
+  drive and brake (and reverse), A D steer, Shift for a burst of speed, Space is the handbrake and V
+  swaps the chase camera for the driver's seat. Buildings and the river stop you; bridges carry you.
+  Esc or M parks it and returns to the map.
 - **Fishing docks.** Build them on the river bank (Water menu, from Small town). Each one employs 24
   people, turns its jetty to the water and sends two fishing boats out to work the river and come
   home. The catch sells for up to $2.40 a second per dock, shown as Fishing in the budget, but sewage
   upstream thins it, so an untreated outlet above the docks costs money.
-- **Utilities along roads.** Wind and coal power, water towers and river pumps, sewage outlets. Buildings
+- **Utilities along roads.** Six kinds of power station — wind, solar, gas (from Growing village,
+  cleaner than coal), coal, a hydroelectric dam on the river bank (from Thriving town) and a 3×3
+  nuclear plant (from Regional capital: 7,000 power and no smoke) — plus water towers and river pumps, sewage outlets. Buildings
   need all three to grow past small. Outlets foul the river downstream, so pumps belong upstream.
 - **Pollution.** Industry and coal pollute the ground around them. It spreads, drives residents away, and
   spoils water towers. Press P to see it.
@@ -124,6 +133,8 @@ Emergency vehicles obey traffic and can be delayed by jams. Each station handles
 
 The first visit opens a five-step welcome tutorial explaining the goal (6,500 residents), the first neighborhood, utilities, services and transport. It pauses the simulation, can be skipped, and is available again from Menu → Welcome tutorial. Keyboard help remains available under H.
 
+- **Farmland** is open from the start: fields, barns, silos and then greenhouses. It meets industrial demand with a few jobs, no pollution and little power, but the fields drink half as much water again.
+- **Leisure & tourism** unlocks at Small town (400 residents): cafés with terraces, boutique hotels and resort towers with a pool. It meets commercial demand and pays more tax the closer it is to parks and the river.
 - **Offices** unlock at Thriving town (900 residents). Purple zoning supplies clean jobs and a separate demand meter. Building upgrades require 25%, then 50%, city education coverage.
 - **Buses** unlock at Small town (400 residents). Place stops near homes and jobs. Stops automatically connect to the nearest earlier reachable stop; buses run return trips. Both ends need utilities and a road route in each direction. Walking range is 9 cells, capacity 30 passengers per connection, and congestion reduces throughput.
 - **Passenger rail** unlocks at City (1,800 residents). Stations reserve 3×2 cells and connect automatically with elevated tracks along existing road corridors. Trains avoid road congestion, with an 18-cell walking range and 120-passenger connection capacity.
@@ -185,6 +196,7 @@ roads take priority, so curved roads and older saves retain their original geome
 | K, J | Stop signs, traffic calming |
 | G, right click | Turn the building in hand before placing it |
 | F | Walk the streets at eye level; Esc or F again to return |
+| M | Drive a car around town; V switches to the driver's seat; Esc or M to park |
 | U | Upgrade a road one step wider |
 | C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |

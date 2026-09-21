@@ -11,6 +11,9 @@ import { AlleyLayer } from './render/alleys';
 import { HelicopterLayer } from './render/helicopters';
 import { BoatLayer } from './render/boats';
 import { Walker } from './render/walker';
+import { Driver } from './render/driver';
+import { PedestrianLayer } from './render/pedestrians';
+import { StreetFurnitureLayer } from './render/streetFurniture';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -27,6 +30,8 @@ import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
 import { GRID, MAX_CARS, RES_POP, SERVICES, isZone } from './constants';
+import { HALF_WIDTH, Network } from './roads/network';
+import { roadHeight } from './roads/structures';
 import { serviceCoverage } from './coverage';
 import { entryGate } from './roads/entries';
 import { footprintSize } from './sites';
@@ -51,8 +56,10 @@ const alleys = new AlleyLayer();
 const helicopters = new HelicopterLayer();
 const boats = new BoatLayer();
 const incidents = new IncidentLayer();
+const pedestrians = new PedestrianLayer();
+const furniture = new StreetFurnitureLayer();
 let showTraffic = false;
-scene.add(helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -69,6 +76,7 @@ const hud = new Hud(uiRoot, {
   loan: (action) => game.loan(action),
   rotatePlacement: () => input.rotatePlacement(),
   toggleWalk: () => { if (walker.active) walker.exit(); else startWalking(); },
+  toggleDrive: () => { if (driver.active) driver.exit(); else startDriving(); },
   setElevation: (level) => input.setElevation(level),
   focusOn: (id) => {
     // Take the camera to whatever the message is about.
@@ -150,11 +158,39 @@ game.onNotice = (message) => hud.toast(message);
 // ---- walking the streets -----------------------------------------------------------------
 /** Parks, playgrounds and the like are open ground; everything else with walls stops a walker. */
 const OPEN_GROUND = new Set(Object.entries(SERVICES).filter(([, spec]) => spec.civic === 'leisure').map(([k]) => Number(k)));
-function blockedAt(x: number, z: number): boolean {
+/**
+ * The road deck under (x, z) in scene space, if any: the height of the nearest bridge, ramp or street
+ * surface, choosing the deck closest to `y` where one road passes over another. Tunnels are left to
+ * the traffic; on foot or at the wheel you cross the ground above them.
+ */
+function deckAt(x: number, z: number, y: number): number | null {
+  const tx = x + GRID / 2, tz = z + GRID / 2;
+  let best: number | null = null;
+  for (const seg of game.net.segs.values()) {
+    if (seg.structure === 2) continue;
+    const reach = HALF_WIDTH[seg.kind] + 0.12;
+    if (tx < seg.minX - reach || tx > seg.maxX + reach || tz < seg.minZ - reach || tz > seg.maxZ + reach) continue;
+    const hit = Network.nearestOn(seg, tx, tz);
+    if (hit.dist > reach) continue;
+    const h = roadHeight(seg, hit.s);
+    // A deck far above you is a bridge to walk under, not one you are standing on.
+    if (h > y + 0.25) continue;
+    if (best === null || Math.abs(h - y) < Math.abs(best - y)) best = h;
+  }
+  return best;
+}
+/** Height underfoot: the road deck you are on, or the ground. */
+function groundAt(x: number, z: number, y: number): number {
+  return deckAt(x, z, y) ?? 0;
+}
+function blockedAt(x: number, z: number, y = 0): boolean {
   const tx = x + GRID / 2, tz = z + GRID / 2;
   if (tx < 0.2 || tz < 0.2 || tx > GRID - 0.2 || tz > GRID - 0.2) return true;
   const cx = Math.floor(tx), cz = Math.floor(tz);
-  if (game.terrain.water[cz * GRID + cx]) return true;
+  // Up on a bridge nothing below is in the way; over the river only a deck will carry you.
+  const deck = y > 0.12 || game.terrain.water[cz * GRID + cx] ? deckAt(x, z, y) : null;
+  if (deck !== null && deck > 0.12) return false;
+  if (game.terrain.water[cz * GRID + cx]) return deck === null;
   // A grown building stands on its lot, which may have shifted up to most of a cell towards its road,
   // so look at the neighbouring tiles as well as the one underfoot.
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
@@ -178,11 +214,42 @@ function blockedAt(x: number, z: number): boolean {
 }
 const walker = new Walker(camera, canvas, {
   blocked: blockedAt,
-  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); },
+  ground: groundAt,
+  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
 });
+const driver = new Driver(camera, scene, {
+  blocked: blockedAt,
+  ground: groundAt,
+  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
+});
+/** Take the wheel on the nearest street to the middle of the view, driving on the right. */
+function startDriving(): void {
+  if (driver.active || !playing) return;
+  walker.exit();
+  input.setTool('none');
+  const t = controls.target;
+  const hit = game.net.nearestSeg(t.x + GRID / 2, t.z + GRID / 2, 40);
+  if (!hit) { hud.toast('Build a road first, then take a car out on it.'); return; }
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const seg = hit.seg, i = Math.min(seg.n - 1, Math.floor(hit.t * seg.n));
+  let tx = seg.pts[i * 2 + 2] - seg.pts[i * 2], tz = seg.pts[i * 2 + 3] - seg.pts[i * 2 + 1];
+  const len = Math.hypot(tx, tz) || 1; tx /= len; tz /= len;
+  // Point the way the camera looks along the street, and keep to the right-hand lane.
+  // A one-way street only goes a → b.
+  if (!seg.oneway && tx * dir.x + tz * dir.z < 0) { tx = -tx; tz = -tz; }
+  const lane = seg.oneway ? 0 : HALF_WIDTH[seg.kind] * 0.45;
+  const x = hit.x - tz * lane - GRID / 2, z = hit.z + tx * lane - GRID / 2;
+  input.suspended = true;
+  setWalking(true);
+  furniture.setVisible(true);
+  driver.enter(x, z, Math.atan2(tx, tz));
+  hud.setWalking(true, 'drive');
+}
 /** Step down onto the nearest street to the middle of the view, facing the way the camera faced. */
 function startWalking(): void {
   if (walker.active || !playing) return;
+  driver.exit();
   input.setTool('none');
   const t = controls.target;
   let spot = { x: t.x, z: t.z };
@@ -194,12 +261,14 @@ function startWalking(): void {
   camera.getWorldDirection(dir);
   input.suspended = true;
   setWalking(true);
+  furniture.setVisible(true);
   walker.enter(spot.x, spot.z, Math.atan2(-dir.x, -dir.z));
-  hud.setWalking(true);
+  hud.setWalking(true, 'walk');
 }
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
   if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') { if (walker.active) walker.exit(); else startWalking(); }
+  if (e.code === 'KeyM' || e.key === 'm' || e.key === 'M') { if (driver.active) driver.exit(); else startDriving(); }
 });
 
 const tileCentre = (tile: number): { x: number; z: number } => ({ x: tile % 80 + 0.5, z: Math.floor(tile / 80) + 0.5 });
@@ -224,7 +293,7 @@ const showCoverage = (): void => {
 };
 input.onElevation = (level) => hud.setElevation(level);
 input.onRotate = (quarter) => hud.setRotation(quarter, SERVICE_TOOL[input.tool] !== undefined);
-input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office', 'farm', 'leisure'].includes(t)); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
@@ -240,6 +309,8 @@ game.onEdit = () => {
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
+  pedestrians.rebuild(game.net);
+  furniture.rebuild(game.net, game.kind, game.raster);
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
@@ -254,6 +325,7 @@ game.onState = () => {
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   helicopters.watch(game.incidents);
+  pedestrians.setCrowd(game.stats.pop, daylight(game.cityTime).night);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
@@ -266,7 +338,7 @@ game.onFrame = () => {
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
-  if (e.key === ' ' || e.code === 'Space') {
+  if ((e.key === ' ' || e.code === 'Space') && !driver.active) {
     e.preventDefault();
     const v = game.speed === 0 ? 1 : 0;
     game.setSpeed(v);
@@ -288,7 +360,7 @@ function applySettings(s: Settings): void {
 }
 
 function startCity(data: Parameters<typeof game.load>[0], message?: string): void {
-  walker.exit(); // a new map starts back on the overview
+  walker.exit(); driver.exit(); // a new map starts back on the overview
   game.load(data);
   hud.setTax(game.tax);
   game.setTax(game.tax);
@@ -320,6 +392,7 @@ const menu: MainMenu = new MainMenu(uiRoot, {
 
 function openMenu(): void {
   walker.exit();
+  driver.exit();
   resumeSpeed = game.speed;
   game.setSpeed(0);
   hud.setSpeed(0);
@@ -354,7 +427,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 let last = performance.now();
@@ -363,6 +436,8 @@ renderer.setAnimationLoop((now: number) => {
   last = now;
   dbg.frames++;
   walker.update(dt);
+  driver.update(dt);
+  if (driver.active) hud.setDriveSpeed(driver.kmh);
   if (flight) {
     // Ease the camera across rather than cutting, so it stays obvious where the map moved to.
     flight.time = Math.min(1, flight.time + dt * 1.6);
@@ -387,6 +462,7 @@ renderer.setAnimationLoop((now: number) => {
   incidents.update(game.simTime);
   helicopters.update(now / 1000);
   boats.update(now / 1000);
+  pedestrians.update(dt, now / 1000);
   transport.update(game.simTime);
   subway.update(game.simTime);
   transitLines.update(game.simTime);
