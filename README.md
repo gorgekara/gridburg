@@ -13,6 +13,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
   The HUD menu button reopens it in game and pauses. Settings cover shadows, day length, autosaving and the
   infinite money cheat, and they persist in the browser.
+- **Six silhouettes per building type.** Shops, blocks, offices and towers come in six shapes and
+  palettes each, from two-storey brick parades to glass towers, so a commercial street is a mix of
+  heights and colours rather than a wall of the same block.
 - **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
   can type a seed in when starting a city.
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
@@ -165,6 +168,9 @@ roads take priority, so curved roads and older saves retain their original geome
 | Wheel | Zoom |
 | I | Inspect a building and its growth requirements |
 | L, R, V, X | Lane, Road, Avenue, Expressway |
+| + / − | Raise the road to a bridge, lower it to a tunnel |
+| K, J | Stop signs, traffic calming |
+| G, right click | Turn the building in hand before placing it |
 | U | Upgrade a road one step wider |
 | C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |
@@ -220,6 +226,13 @@ MIT license.
 
 ## Road construction
 
-Roads now includes **Bridge** ($75/cell) and **Tunnel** ($100/cell). Use Straight, Curved or Smooth drawing; allow at least 14 cells and two clear, dry ends for automatic ramps. Normal roads crossing water become bridges. Bridges and tunnels connect at their ends and pass crossing roads without a junction. Upgrade widens a span into an avenue. Structural upkeep is 3× for bridges and 4× for tunnels. Surface zoning cannot use a bridge or tunnel as frontage; underground interiors leave the surface available for building.
+Bridges and tunnels are not separate tools: pick any road and change its height. **+** raises it to a
+bridge, **−** lowers it to a tunnel, and the Height control in the Roads panel shows where you are.
+Any kind of road can be raised or buried, so an avenue viaduct or an expressway tunnel is a matter of
+drawing it at that height. Allow at least 14 cells and two clear, dry ends for the automatic ramps.
+A surface road crossing water still becomes a bridge by itself. Spans connect at their ends and pass
+crossing roads without a junction; Upgrade widens one a step. Structural cost and upkeep are 3× for
+bridges and 4× for tunnels. Surface zoning cannot use a bridge or tunnel as frontage; underground
+interiors leave the surface available for building.
 
 Bridge/tunnel spans must be removed with Bulldoze and redrawn to change their shape; their ends remain at ground level. Cyan dashes show underground routes while road tools are selected. Saves from versions 3–6 still load.

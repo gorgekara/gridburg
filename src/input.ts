@@ -18,7 +18,7 @@ import type { Game } from './game';
 
 export type Tool =
   | 'none' | 'inspect'
-  | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade' | 'bridge' | 'tunnel'
+  | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet'
@@ -28,7 +28,6 @@ export type Tool =
 export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
-  bridge: 0x9cd9c1, tunnel: 0x86d9e7,
   office: 0xb791e0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
@@ -59,6 +58,9 @@ export class Input {
   onInspect: ((tile: number) => void) | null = null;
   onToolChange: ((t: Tool) => void) | null = null;
   onRotate: ((quarter: number) => void) | null = null;
+  onElevation: ((level: number) => void) | null = null;
+  /** What the road tool is drawing: -1 a tunnel, 0 the surface, 1 a bridge. */
+  elevation = 0;
   /** Quarter turns applied to the next building placed, cleared when the tool changes. */
   placeRotation = 0;
   onModeChange: ((m: RoadMode) => void) | null = null;
@@ -143,6 +145,8 @@ export class Input {
 
   setTool(t: Tool): void {
     this.cancel();
+    this.elevation = 0;
+    this.onElevation?.(0);
     this.placeRotation = 0;
     this.onRotate?.(0);
     this.tool = t;
@@ -157,7 +161,7 @@ export class Input {
   }
 
   private isRoadTool(): boolean {
-    return ['road', 'avenue', 'lane', 'highway', 'bridge', 'tunnel'].includes(this.tool);
+    return ['road', 'avenue', 'lane', 'highway'].includes(this.tool);
   }
 
   private isRectTool(): boolean {
@@ -174,6 +178,10 @@ export class Input {
     const t = map[key];
     if (t) this.setTool(t);
     if (key === 'g' && SERVICE_TOOL[this.tool] !== undefined) this.rotatePlacement();
+    if (this.isRoadTool()) {
+      if (e.key === '+' || e.key === '=' || e.key === 'PageUp') this.setElevation(this.elevation + 1);
+      if (e.key === '-' || e.key === '_' || e.key === 'PageDown') this.setElevation(this.elevation - 1);
+    }
     if (key === 'c') {
       const order: RoadMode[] = ['straight', 'curve', 'smooth'];
       this.setMode(order[(order.indexOf(this.mode) + 1) % order.length]);
@@ -384,8 +392,21 @@ export class Input {
   }
 
   private roadStructure(path: P[]): Structure {
-    if (this.tool === 'tunnel') return 2;
-    return this.tool === 'bridge' || measurePath(path, this.game.terrain.water).wet > 0 ? 1 : 0;
+    if (this.elevation < 0) return 2;
+    // Raised by hand, or automatically where the road would otherwise run through the river.
+    return this.elevation > 0 || measurePath(path, this.game.terrain.water).wet > 0 ? 1 : 0;
+  }
+
+  /**
+   * Step the road being drawn up or down: tunnel, surface, bridge. Cities: Skylines raises roads the
+   * same way, and it beats keeping a separate tool for every height.
+   */
+  setElevation(level: number): void {
+    const next = Math.max(-1, Math.min(1, level));
+    if (next === this.elevation) return;
+    this.elevation = next;
+    this.onElevation?.(next);
+    if (this.chain.length) this.cancel();
   }
 
   private roadProblem(path: P[]): string | null {
@@ -411,7 +432,7 @@ export class Input {
     return null;
   }
 
-  /** The kind of road the tool in hand draws; bridges and tunnels carry streets. */
+  /** The kind of road the tool in hand draws, at whatever height it is set to. */
   private drawKind(): number {
     return this.tool === 'avenue' ? KIND_AVENUE : this.tool === 'lane' ? KIND_LANE : this.tool === 'highway' ? KIND_HIGHWAY : KIND_ROAD;
   }

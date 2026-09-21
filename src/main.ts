@@ -64,6 +64,7 @@ const hud = new Hud(uiRoot, {
   setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
   rotatePlacement: () => input.rotatePlacement(),
+  setElevation: (level) => input.setElevation(level),
   focusOn: (id) => {
     // Take the camera to whatever the message is about.
     const tileAt = (): { x: number; z: number } | null => {
@@ -161,8 +162,9 @@ const showCoverage = (): void => {
   const k = SERVICE_TOOL[input.tool];
   overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
 };
+input.onElevation = (level) => hud.setElevation(level);
 input.onRotate = (quarter) => hud.setRotation(quarter, SERVICE_TOOL[input.tool] !== undefined);
-input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['road', 'avenue', 'bridge', 'tunnel', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['tunnel', 'subway', 'bulldoze'].includes(t)); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office'].includes(t)); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);

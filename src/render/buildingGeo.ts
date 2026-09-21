@@ -121,17 +121,19 @@ export class Builder {
   }
 }
 
-const RES_WALLS = [0xf3e2c4, 0xe6c7a1, 0xf2d3cc, 0xcfdcd0];
-const RES_ROOFS = [0xa8453a, 0x5c4a3d, 0x4a5b6b, 0x7a4b3f];
-const APT_WALLS = [0xd9c3a5, 0xc9a98a, 0xe3d6c4, 0xb9b5a8];
+const RES_WALLS = [0xf3e2c4, 0xe6c7a1, 0xf2d3cc, 0xcfdcd0, 0xdcd8c6, 0xeadbb6];
+const RES_ROOFS = [0xa8453a, 0x5c4a3d, 0x4a5b6b, 0x7a4b3f, 0x64764f, 0x8f5b39];
+const APT_WALLS = [0xd9c3a5, 0xc9a98a, 0xe3d6c4, 0xb9b5a8, 0xcdb79b, 0xd6cab6];
 const TOWER_WALLS = [0xd8d2c6, 0xc3b8a6, 0xbfc7cc, 0xe0d9cf];
-const SHOP_WALLS = [0xe8dcc8, 0xd7c9b6, 0xcfd6dc, 0xe2d2d2];
-const AWNINGS = [0xd9483b, 0x2a9d8f, 0xe89b3c, 0x7b5ea7];
-const OFFICE_WALLS = [0x9fb4c4, 0x8aa2b6, 0xb3c1cc, 0x7f95a8];
-const GLASS_TOWERS = [0x5f93cf, 0x3e6fae, 0x6aa8c9, 0x4b7fb3];
-const IND_WALLS = [0xc2bb9f, 0xa89f82, 0xb0aa93, 0x9c9a90];
+// Shops and mid-rise blocks carry the street's colour: brick, stucco, painted render and tile.
+const SHOP_WALLS = [0xe8dcc8, 0xc0674a, 0xcfd6dc, 0xe2d2d2, 0xd8b271, 0x9fb59b];
+const BLOCK_WALLS = [0xb9603f, 0xd9c09a, 0x8fa9bb, 0xc7b49a, 0xa8b49c, 0xd3cbbd];
+const AWNINGS = [0xd9483b, 0x2a9d8f, 0xe89b3c, 0x7b5ea7, 0x3f7fbf, 0xc76b2e];
+const OFFICE_WALLS = [0x759eab, 0x91a5b5, 0x6d98a2, 0x92a6bf, 0xa3a98f, 0xb0a794];
+const GLASS_TOWERS = [0x5f93cf, 0x3e6fae, 0x6aa8c9, 0x4b7fb3, 0x5c9c8b, 0x7e88ac];
+const IND_WALLS = [0xc2bb9f, 0xa89f82, 0xb0aa93, 0x9c9a90, 0xb6ab8d, 0xa4a89b];
 
-export const VARIANTS = 4;
+export const VARIANTS = 6;
 const heights = new Map<string, number>();
 
 export function buildingHeight(kind: number, level: number, variant: number): number {
@@ -195,7 +197,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
   const v = variant % VARIANTS;
   if (kind === T_RES) {
     if (level === 1) {
-      const w = [0.5, 0.62, 0.54, 0.6][v], h = [0.4, 0.65, 0.48, 0.72][v], d = [0.56, 0.6, 0.68, 0.58][v];
+      const w = [0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v], h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
       b.box(w, h, d, 0, 0, 0, RES_WALLS[v]);
       if (v === 2) {
         b.box(w + 0.06, 0.05, d + 0.06, 0, h, 0, RES_ROOFS[v]);
@@ -209,8 +211,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.07, 0.24, 0.07, -0.15, h + 0.05, -0.12, 0x6b6560);
       b.box(0.62, 0.02, 0.68, 0, -0.005, 0, 0x8a9a6a);
     } else if (level === 2) {
-      const floors = [3, 4, 5, 4][v];
-      const w = [0.68, 0.76, 0.64, 0.72][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7][v];
+      const floors = [3, 4, 5, 4, 2, 6][v];
+      const w = [0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
       b.box(w, h, d, 0, 0, 0, APT_WALLS[v]);
       b.box(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x8c8578);
       b.box(w + 0.04, 0.05, d + 0.04, 0, h, 0, 0x6f6a62);
@@ -223,8 +225,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.3, 0.03, 0.12, 0, 0.26, d / 2 + 0.06, 0x6f6a62);
       roofDetail(b, h + 0.05, v);
     } else {
-      const floors = [7, 9, 6, 11][v];
-      const w = [0.7, 0.65, 0.8, 0.68][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7][v];
+      const floors = [7, 9, 6, 11, 5, 8][v];
+      const w = [0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
       b.box(w, h, d, 0, 0, 0, TOWER_WALLS[v]);
       b.box(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469);
       b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53);
@@ -234,28 +236,30 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     }
   } else if (kind === T_COM) {
     if (level === 1) {
-      const w = 0.82, h = [0.55, 0.7, 0.48, 0.85][v], d = [0.7, 0.62, 0.76, 0.66][v];
+      const w = [0.82, 0.78, 0.84, 0.7, 0.86, 0.66][v], h = [0.55, 0.7, 0.48, 0.85, 0.42, 0.95][v], d = [0.7, 0.62, 0.76, 0.66, 0.8, 0.58][v];
       b.box(w, h, d, 0, 0, 0, SHOP_WALLS[v]);
-      b.box(0.5, 0.28, 0.03, -0.1, 0.12, d / 2 + 0.005, GLASS);
-      b.box(0.14, 0.38, 0.03, 0.3, 0, d / 2 + 0.005, 0x3d2c22);
-      b.box(0.8, 0.04, 0.24, 0, 0.44, d / 2 + 0.1, AWNINGS[v]);
-      b.box(0.5, 0.12, 0.05, -0.1, h, d / 2 - 0.03, 0xfff4dc);
+      b.box(w * 0.6, 0.28, 0.03, -w * 0.12, 0.12, d / 2 + 0.005, GLASS);
+      b.box(0.14, 0.38, 0.03, w * 0.36, 0, d / 2 + 0.005, 0x3d2c22);
+      if (v !== 3 && v !== 5) b.box(w * 0.96, 0.04, 0.24, 0, Math.min(0.44, h - 0.1), d / 2 + 0.1, AWNINGS[v]);
+      b.box(w * 0.6, 0.12, 0.05, -w * 0.12, h, d / 2 - 0.03, 0xfff4dc);
       banners(b, w, h, d, v, 11);
       roofDetail(b, h + 0.12, v);
       b.box(0.02, 0.18, 0.3, w / 2 + 0.005, 0.15, 0, WINDOW_DARK);
     } else if (level === 2) {
-      const floors = [5, 4, 6, 7][v];
-      const w = [0.8, 0.72, 0.76, 0.68][v], h = 0.3 + floors * 0.31, d = 0.76;
-      b.box(w, h, d, 0, 0, 0, OFFICE_WALLS[v]);
-      b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x5c6a75);
-      b.bands(w, h, d, 0.3, floors, 0x3d6a85, 0.1);
-      b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x46525c);
+      // Two, three or six storeys, and a parapet or a setback top floor rather than one flat slab.
+      const floors = [3, 5, 2, 6, 4, 3][v];
+      const w = [0.8, 0.72, 0.84, 0.68, 0.76, 0.82][v], h = 0.3 + floors * 0.31, d = [0.76, 0.7, 0.8, 0.66, 0.78, 0.72][v];
+      b.box(w, h, d, 0, 0, 0, BLOCK_WALLS[v]);
+      b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257);
+      b.bands(w, h, d, 0.3, floors, v % 2 ? 0x3d6a85 : 0x4a4139, 0.1);
+      if (v === 1 || v === 4) b.box(w * 0.7, 0.34, d * 0.7, 0, h, 0, BLOCK_WALLS[v]); // setback top floor
+      b.box(w + 0.03, 0.05, d + 0.03, 0, h + (v === 1 || v === 4 ? 0.34 : 0), 0, 0x46525c);
       banners(b, w, h, d, v, 27);
-      roofDetail(b, h + 0.05, v);
+      roofDetail(b, h + (v === 1 || v === 4 ? 0.39 : 0.05), v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
     } else {
-      const floors = [12, 9, 15, 11][v];
-      const w = [0.8, 0.7, 0.66, 0.76][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78][v];
+      const floors = [12, 9, 15, 11, 6, 8][v];
+      const w = [0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
       b.box(w, h, d, 0, 0, 0, GLASS_TOWERS[v]);
       b.box(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a);
       for (let f = 1; f < floors; f++) {
@@ -267,16 +271,16 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.5, 0.3, 0.03, 0, 0, d / 2 + 0.005, 0xbfe3f5);
     }
   } else if (kind === T_OFFICE) {
-    const floors = level === 1 ? [2, 3, 2, 4][v] : level === 2 ? [5, 7, 6, 8][v] : [11, 14, 12, 16][v];
-    const w = [0.76, 0.65, 0.8, 0.7][v], d = [0.68, 0.8, 0.62, 0.74][v], h = floors * 0.3;
-    b.box(w, h, d, 0, 0, 0, [0x759eab, 0x91a5b5, 0x6d98a2, 0x92a6bf][v]);
+    const floors = level === 1 ? [2, 3, 2, 4, 1, 3][v] : level === 2 ? [5, 7, 6, 8, 3, 4][v] : [11, 14, 12, 16, 7, 9][v];
+    const w = [0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v], d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
+    b.box(w, h, d, 0, 0, 0, OFFICE_WALLS[v]);
     b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16);
     for (const x of [-w * 0.3, w * 0.3]) b.box(0.035, h, d + 0.035, x, 0, 0, 0xc9d2d9);
     b.box(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270);
     b.box(0.3, 0.23, 0.03, 0, 0, d / 2 + 0.02, GLASS);
     roofDetail(b, h + 0.08, v);
   } else if (kind === T_IND) {
-    const h = [0.42, 0.62, 0.52, 0.7][v] + (level - 1) * 0.32;
+    const h = [0.42, 0.62, 0.52, 0.7, 0.48, 0.58][v] + (level - 1) * 0.32;
     const wall = IND_WALLS[v];
     b.box(0.96, 0.025, 0.96, 0, 0, 0, 0x92928b);
     if (v === 0) { // sawtooth workshop, roof lights and loading bays

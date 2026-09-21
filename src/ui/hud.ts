@@ -23,6 +23,7 @@ export interface HudActions {
   setFunding(key: FundingKey, value: number): void;
   loan(action: 'take' | 'repay'): void;
   rotatePlacement(): void;
+  setElevation(level: number): void;
   /** Move the camera to whatever a message is about; false when there is nothing to show. */
   focusOn(id: string): boolean;
   closeInspection(): void;
@@ -52,8 +53,6 @@ const CATEGORIES: Category[] = [
       { id: 'road', label: 'Road', key: 'R', price: `${money(COST_ROAD)} / cell`, note: 'Two lanes', hint: 'Click to start, click again to finish. It keeps going from the last point until you join a road, right-click, or press Esc' },
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
       { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
-      { id: 'bridge', label: 'Bridge', price: '$75 / cell', note: 'Over rivers & roads', hint: 'Draw a span at least 14 cells long with dry approaches. Ramps rise automatically; crossing roads stay separate. Upgrade can widen the deck' },
-      { id: 'tunnel', label: 'Tunnel', price: '$100 / cell', note: 'Underground route', hint: 'Draw at least 14 cells between two clear, dry portals. Traffic travels underground; cyan arrows reveal the route while road tools are selected' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
       { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Widening costs the difference; narrowing is free' },
     ],
@@ -173,6 +172,8 @@ export class Hud {
   private toolBtns = new Map<Tool, HTMLButtonElement>();
   private catBtns = new Map<string, HTMLButtonElement>();
   private modeBtns = new Map<RoadMode, HTMLButtonElement>();
+  private heightBtns = new Map<number, HTMLButtonElement>();
+  private elevation = 0;
   private panels = new Map<string, HTMLElement>();
   private panel = el('div', 'panel');
   private panelTitle = el('span', 'ptitle');
@@ -197,6 +198,13 @@ export class Hud {
   private help: HTMLElement;
   private about = el('div', 'help about');
   private clock = el('div', 'city-clock');
+  /** Which height the road tool is drawing at: a tunnel, the surface, or a bridge. */
+  setElevation(level: number): void {
+    this.elevation = level;
+    for (const [value, button] of this.heightBtns) button.classList.toggle('active', value === level);
+    this.setTool(this.tool);
+  }
+
   /** Which way the building in hand is facing, and whether that control applies at all. */
   setRotation(quarter: number, placing: boolean): void {
     this.rotateBtn.classList.toggle('shown', placing);
@@ -466,6 +474,17 @@ export class Hud {
       if (c.id === 'bulldoze' || c.id === 'inspect') continue;
       const body = el('div', 'pbody');
       if (c.id === 'roads') {
+        const height = el('div', 'modes');
+        height.append(el('span', 'mlabel', 'Height'));
+        for (const [level, label, key] of [[-1, 'Tunnel', '−'], [0, 'Surface', ''], [1, 'Bridge', '+']] as [number, string, string][]) {
+          const b = el('button', 'mode');
+          b.append(icon(level > 0 ? 'bridge' : level < 0 ? 'tunnel' : 'road', 20), el('span', undefined, label));
+          b.title = key ? `${label} (${key})` : `${label} road`;
+          b.addEventListener('click', () => actions.setElevation(level));
+          this.heightBtns.set(level, b);
+          height.append(b);
+        }
+        body.append(height);
         const seg = el('div', 'modes');
         seg.append(el('span', 'mlabel', 'Draw'));
         for (const m of MODES) {
@@ -532,6 +551,7 @@ export class Hud {
     });
     this.setTool('road');
     this.setMode('straight');
+    this.setElevation(0);
     this.setSpeed(1);
   }
 
@@ -565,6 +585,7 @@ export class Hud {
           <li><b>Roads</b> — pick Road or Avenue, then <b>click</b> to place points. <b>Straight</b> is two clicks,
           <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
           right-click or <b>Esc</b> stops. Crossings become junctions</li>
+          <li><b>Height</b> — with a road in hand, <b>+</b> raises it to a bridge and <b>−</b> lowers it to a tunnel. Allow 14 cells and clear, dry ends. A road drawn across water becomes a bridge on its own</li>
           <li><b>Four road types</b> — Lane, Road, Avenue and Expressway, in rising order of width, speed and price.
           Nothing can be zoned along an expressway, so feed it with ordinary streets. <b>Upgrade (U)</b> widens a road one step</li>
           <li><b>Traffic</b> — cars queue for real. Busy junctions jam; fix them with <b>avenues</b>, <b>signals</b>,
@@ -652,9 +673,10 @@ export class Hud {
   private refreshHint(): void {
     const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
     if (!def) { this.hint.textContent = ''; return; }
-    if (['road', 'avenue', 'bridge', 'tunnel'].includes(this.tool)) {
+    if (['lane', 'road', 'avenue', 'highway'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
-      this.hint.textContent = `${this.tool === "bridge" || this.tool === "tunnel" ? "Minimum 14 cells · dry ends. " : ""}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
+      const height = this.elevation > 0 ? 'Bridge: minimum 14 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 14 cells, clear portals. ' : '';
+      this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
     } else {
       this.hint.textContent = def.hint;
     }
