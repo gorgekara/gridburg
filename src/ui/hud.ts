@@ -9,6 +9,7 @@ import { CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
+import { T_DOCKS, DOCK_JOBS } from '../constants';
 import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
 
@@ -23,6 +24,8 @@ export interface HudActions {
   setFunding(key: FundingKey, value: number): void;
   loan(action: 'take' | 'repay'): void;
   rotatePlacement(): void;
+  /** Step down into the streets, or back up to the map. */
+  toggleWalk(): void;
   setElevation(level: number): void;
   /** Move the camera to whatever a message is about; false when there is nothing to show. */
   focusOn(id: string): boolean;
@@ -90,6 +93,7 @@ const CATEGORIES: Category[] = [
       { id: 'tower', label: 'Water tower', price: svc(T_TOWER), note: `${SERVICES[T_TOWER].water} water`, hint: 'Works anywhere beside a road, but keep it off polluted ground' },
       { id: 'pump', label: 'River pump', price: svc(T_PUMP), note: `${SERVICES[T_PUMP].water.toLocaleString()} water`, hint: 'Must touch the river. Put it upstream of any sewage outlet (arrows on the water show the flow)' },
       { id: 'treatment', label: 'Sewage treatment', price: svc(T_TREATMENT), note: '2,200 sewage · 95% filtered', hint: 'Build on the river bank. Electricity powers filtration, reducing pollution from treated sewage by 95%' },
+      { id: 'docks', label: 'Fishing docks', price: svc(T_DOCKS), note: `${DOCK_JOBS} jobs · boats`, hint: 'Build on the river bank. The docks put fishing boats on the river and sell the catch; sewage upstream thins it, so keep outlets downstream or treated. Unlocks at Small town' },
       { id: 'outlet', label: 'Sewage outlet', price: svc(T_OUTLET), note: `${SERVICES[T_OUTLET].sewage.toLocaleString()} sewage`, hint: 'Must touch the river. Fouls the water downstream of it' },
     ],
   },
@@ -198,6 +202,8 @@ export class Hud {
   private help: HTMLElement;
   private about = el('div', 'help about');
   private clock = el('div', 'city-clock');
+  private walkHint = el('div', 'walk-hint');
+  private walkBtn: HTMLButtonElement = el('button');
   /** Which height the road tool is drawing at: a tunnel, the surface, or a bridge. */
   setElevation(level: number): void {
     this.elevation = level;
@@ -211,6 +217,13 @@ export class Hud {
     this.rotateBtn.style.setProperty('--turn', `${quarter * 90}deg`);
     const facing = ['north', 'east', 'south', 'west'][quarter & 3];
     this.rotateBtn.setAttribute('aria-label', `Rotate: facing ${facing}`);
+  }
+
+  /** Walking hides the building tools and shows how to move; the map comes back on the way out. */
+  setWalking(on: boolean): void {
+    this.walkHint.classList.toggle('open', on);
+    this.walkBtn.classList.toggle('active', on);
+    document.body.classList.toggle('walking', on);
   }
 
   /** The city clock, written by the render loop. */
@@ -316,7 +329,7 @@ export class Hud {
     incRow.append(el('span', 'label', 'Net income'), this.budgetIncome);
     budget.append(el('div', 'ptitle', 'City budget'), taxRow);
     this.taxInput.setAttribute('aria-label', 'Tax rate');
-    for (const [key, label] of [['fareIncome', 'Transport fares'], ['tollIncome', 'Congestion charge'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['policyExpense', 'Policies'], ['loanExpense', 'Loan payment']]) {
+    for (const [key, label] of [['fareIncome', 'Transport fares'], ['tollIncome', 'Congestion charge'], ['fishingIncome', 'Fishing'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['policyExpense', 'Policies'], ['loanExpense', 'Loan payment']]) {
       const row = el('div', 'finance-row');
       const value = el('strong');
       row.append(el('span', undefined, label), value);
@@ -409,8 +422,14 @@ export class Hud {
     messageBtn.append(this.messageDot);
     this.messageBtn = messageBtn;
     const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
+    const walkBtn = iconBtn('walk', 'Walk the streets (F)', () => actions.toggleWalk());
+    this.walkBtn = walkBtn;
+    this.walkHint.append(
+      el('strong', undefined, 'Walking'),
+      el('span', undefined, 'W A S D to walk · Shift to run · click, then move the mouse to look · Esc or F to leave'),
+    );
     right.append(
-      messageBtn, trafficBtn, polBtn, policyBtn,
+      walkBtn, messageBtn, trafficBtn, polBtn, policyBtn,
       iconBtn('link', 'Copy a link to this city', actions.share),
       iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
       menuBtn,
@@ -460,7 +479,7 @@ export class Hud {
     }
 
     this.polBtn = polBtn;
-    root.append(chips, budget, policyPanel, this.messagePanel, right, menu, this.messagePop, this.about);
+    root.append(chips, budget, policyPanel, this.messagePanel, right, menu, this.messagePop, this.about, this.walkHint);
 
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
@@ -598,6 +617,7 @@ export class Hud {
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
           <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and clicking a message takes you to it</li>
           <li><b>Placing</b> — right-click, press <b>G</b> or use Rotate in the panel to turn a building before you put it down</li>
+          <li><b>Walking</b> — press <b>F</b> or the walker button to step down into the streets. <b>WASD</b> walks, <b>Shift</b> runs, click then move the mouse to look, and <b>Esc</b> takes you back up</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
           <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>
@@ -723,7 +743,7 @@ export class Hud {
   }
 
   update(s: Stats): void {
-    for (const [key, value] of this.financeValues) value.textContent = `$${(key === 'fareIncome' ? s.transport.fareIncome : s[key as 'taxIncome' | 'tollIncome' | 'roadExpense' | 'serviceExpense' | 'policyExpense' | 'loanExpense']).toFixed(2)}/s`;
+    for (const [key, value] of this.financeValues) value.textContent = `$${(key === 'fareIncome' ? s.transport.fareIncome : s[key as 'taxIncome' | 'tollIncome' | 'fishingIncome' | 'roadExpense' | 'serviceExpense' | 'policyExpense' | 'loanExpense']).toFixed(2)}/s`;
     for (const key of FUNDING_KEYS) {
       const slider = this.fundingInputs.get(key)!;
       if (document.activeElement !== slider) {

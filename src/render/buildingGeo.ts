@@ -1,7 +1,7 @@
 import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
+import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_DOCKS, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
 const WINDOW_DARK = 0x1f2a3a;
 const WINDOW_LIT = 0xffe1a0;
@@ -521,6 +521,22 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     b.box(0.26, 0.16, 0.012, -0.55, 0.95, 0.78, 0x2f5fa8);
     for (let k = 0; k < 3; k++) b.box(0.24, 0.012, 0.36, -0.05 + k * 0.28, 0.06, 0.78, 0xe8e8e0); // patrol bays
     b.shift = { x: 0, z: 0 };
+  } else if (kind === T_DOCKS) {
+    // A quay on the bank: a fish shed, crates, a small crane, and a timber jetty running out over the
+    // water behind it (-z), where the boats tie up. The renderer turns the jetty towards the river.
+    b.box(0.94, 0.06, 0.94, 0, 0, 0, 0xa19c8f); // concrete apron
+    b.box(0.5, 0.36, 0.42, -0.14, 0.06, 0.16, 0xb8573f); // shed
+    b.box(0.56, 0.05, 0.48, -0.14, 0.42, 0.16, 0x4d5a63);
+    b.box(0.16, 0.2, 0.02, -0.14, 0.06, 0.38, 0x2f2a22);
+    for (const [x, z, c] of [[0.24, 0.3, 0x4f7fa8], [0.34, 0.3, 0xc9a24a], [0.29, 0.2, 0x5f8f5a]] as [number, number, number][]) b.box(0.09, 0.08, 0.09, x, 0.06, z, c);
+    b.box(0.04, 0.55, 0.04, 0.3, 0.06, -0.18, 0xd9a933); // crane mast
+    b.box(0.04, 0.04, 0.42, 0.3, 0.6, -0.38, 0xd9a933);   // jib, reaching out over the jetty
+    b.box(0.012, 0.18, 0.012, 0.3, 0.42, -0.56, 0x3a3f44);
+    // Timber jetty on piles, out past the bank.
+    b.box(0.3, 0.04, 1.35, 0.1, 0.04, -0.95, 0x8a6a45);
+    for (let z = -0.45; z > -1.6; z -= 0.28) for (const x of [-0.03, 0.23]) b.box(0.035, 0.18, 0.035, x, -0.12, z, 0x5e4630);
+    for (let z = -0.5; z > -1.6; z -= 0.11) b.box(0.3, 0.006, 0.012, 0.1, 0.082, z, 0x6f5436);
+    b.box(0.04, 0.1, 0.04, 0.25, 0.08, -1.55, 0x3a3f44); // bollard
   } else if (kind === T_SOLAR) {
     b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x8d9a82);
     for (const z of [-0.3, 0, 0.3]) {

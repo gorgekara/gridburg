@@ -33,6 +33,10 @@ export const T_GARDEN = 26;
 export const T_HOSPITAL = 27;
 export const T_CITY_HOSPITAL = 28;
 export const T_POLICE_HQ = 29;
+export const T_DOCKS = 30;
+/** Jobs at a fishing dock, and dollars a second its boats land from a clean river. */
+export const DOCK_JOBS = 24;
+export const DOCK_CATCH = 2.4;
 export const OFFICE_UNLOCK = 3;
 export const ENTRY_UNLOCK = 2;
 export const COST_ENTRY = 3500;
@@ -82,6 +86,8 @@ export const SERVICES: Record<number, ServiceSpec> = {
   [T_PUMP]: { name: 'Water pump', cost: 900, upkeep: 1, power: 0, water: 1500, sewage: 0, pollution: 0, needsWater: true },
   [T_TOWER]: { name: 'Water tower', cost: 600, upkeep: 0.5, power: 0, water: 350, sewage: 0, pollution: 0, needsWater: false },
   [T_OUTLET]: { name: 'Sewage outlet', cost: 700, upkeep: 0.8, power: 0, water: 0, sewage: 1500, pollution: 0, needsWater: true },
+  // A working waterfront: jobs on the quay and a catch that sells, for as long as the river is clean.
+  [T_DOCKS]: { name: 'Fishing docks', cost: 3800, upkeep: 1.2, unlock: 2, power: 0, water: 0, sewage: 0, pollution: 0.3, needsWater: true },
 };
 
 const civic = (name: string, cost: number, upkeep: number, unlock: number, need: CivicNeed, capacity: number, radius: number): ServiceSpec => ({

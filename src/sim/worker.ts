@@ -1,6 +1,6 @@
 import { roadHeight, STRUCTURE_COST } from '../roads/structures';
 import { Incidents } from './incidents';
-import { T_FIRE, T_POLICE, T_POLICE_HQ } from '../constants';
+import { T_FIRE, T_POLICE, T_POLICE_HQ, T_DOCKS, DOCK_JOBS, DOCK_CATCH } from '../constants';
 import { TrafficSpace, vehicleLength } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TREATMENT } from '../constants';
@@ -71,6 +71,7 @@ let policies: Policies = noPolicies();
 let effects: PolicyEffects = policyEffects(policies);
 let policyCost = 0;
 let tollIncome = 0, tollWindow = 0;
+let fishingIncome = 0, docks = 0;
 let riderWindow = 0, airWindow = 0, airTokens = 0;
 let railWindow = 0, railTokens = 0;
 let power: [number, number] = [0, 0];
@@ -411,6 +412,10 @@ function freeCar(slot: number): void {
 
 function clearCars(): void {
   for (let s = 0; s < MAX_CARS; s++) if (slots[s]) freeCar(s);
+  // Hand slots out in the same order as a fresh start. A slot picks its car's lane, so a free list
+  // left shuffled by the last city would decide which lanes the next city's traffic uses.
+  freeList.length = 0;
+  for (let i = MAX_CARS - 1; i >= 0; i--) freeList.push(i);
   lockOwner.fill(-1); ringClaim.fill(-1); spawnSpace.clear();
 }
 
@@ -827,6 +832,7 @@ function census(): void {
   resTiles = []; resW = []; jobTiles = []; jobW = [];
   let rw = 0, jw = 0;
   let capP = 0, capW = 0, capS = 0, needP = 0, needW = 0, upkeep = 0;
+  fishingIncome = 0; docks = 0;
   let dirtyCap = 0;
   const outlets: { flow: number; cap: number; treatment: number }[] = [];
   treatedSewage = 0;
@@ -854,6 +860,16 @@ function census(): void {
       if (pollution[i] > 5) dirtyCap += spec.water * output;
     } else if (k === T_OUTLET || k === T_TREATMENT) {
       outlets.push({ flow: adjacentFlow(terrain, x, z), cap: spec.sewage * output, treatment: spec.treatment ?? 0 });
+    } else if (k === T_DOCKS) {
+      // The quay employs people like a workshop, and the boats sell what they catch. Sewage in the
+      // river upstream of the dock thins the catch, so an outlet in the wrong place costs money.
+      needP += 4; needW += 2;
+      indJobs += DOCK_JOBS;
+      jw += 3; jobTiles.push(i); jobW.push(jw);
+      const f = adjacentFlow(terrain, x, z);
+      const clean = f >= 0 ? Math.max(0, 1 - riverPollution[f] * 1.6) : 1;
+      fishingIncome += DOCK_CATCH * output * clean;
+      docks++;
     }
   }
 
@@ -963,7 +979,7 @@ function census(): void {
   policyCost = policyExpense(policies, pop);
   serviceExpense = upkeep;
   loanExpense = Math.min(LOAN_PAYMENT, debt);
-  netIncome = taxIncome - roadUpkeep - serviceExpense - policyCost - loanExpense;
+  netIncome = taxIncome + fishingIncome - roadUpkeep - serviceExpense - policyCost - loanExpense;
 }
 
 function civicEfficiency(i: number): number {
@@ -1084,7 +1100,7 @@ function stats(): Stats {
       robbed: incidents.robbed, foiled: incidents.foiled,
     },
     transport: { busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, intercityLines: transit.intercity.length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, railPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
-    funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
+    funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, fishingIncome, docks, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
     cityLevel, happiness, civic: civicState.average,
     money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
     demand: [...demand], tick, roadLength: Math.round(roadLength), buildings,

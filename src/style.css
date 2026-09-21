@@ -376,3 +376,16 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 .menu-select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #c3c9b4; background: #faf8ee; color: inherit; }
 .menu-card button:focus-visible, .menu-card input:focus-visible, .menu-card select:focus-visible { outline: 3px solid #b17c28; outline-offset: 2px; }
 @media (max-width: 700px) { .menu-card { padding: 22px; } .menu-title h1 { font-size: 30px; } .menu-maps { grid-template-columns: 1fr; } }
+
+/* ---- walking the streets -------------------------------------------------------------- */
+.walk-hint {
+  display: none; position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+  flex-direction: column; align-items: center; gap: 3px; padding: 10px 16px; border-radius: 12px;
+  background: var(--bg); color: var(--fg); font-size: 12px; text-align: center;
+  backdrop-filter: blur(8px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); pointer-events: none !important;
+}
+.walk-hint.open { display: flex; }
+.walk-hint strong { color: var(--accent); font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+.walk-hint span { color: var(--dim); }
+/* At street level the build bar, tool panels and city card only get in the way. */
+body.walking .bottombar, body.walking .dock, body.walking .city-overview, body.walking .chips { display: none; }

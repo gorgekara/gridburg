@@ -9,6 +9,8 @@ import { SubwayLayer } from './render/subway';
 import { TransitLineLayer } from './render/transitLines';
 import { AlleyLayer } from './render/alleys';
 import { HelicopterLayer } from './render/helicopters';
+import { BoatLayer } from './render/boats';
+import { Walker } from './render/walker';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -24,15 +26,16 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { MAX_CARS, RES_POP } from './constants';
+import { GRID, MAX_CARS, RES_POP, SERVICES, isZone } from './constants';
 import { serviceCoverage } from './coverage';
 import { entryGate } from './roads/entries';
+import { footprintSize } from './sites';
 import { SERVICE_TOOL } from './input';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
 
-const { renderer, scene, camera, controls, grid, update: updateScene } = createScene(canvas);
+const { renderer, scene, camera, controls, grid, update: updateScene, setWalking } = createScene(canvas);
 const landscape = new LandscapeLayer();
 const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
@@ -46,9 +49,10 @@ const subway = new SubwayLayer();
 const transitLines = new TransitLineLayer();
 const alleys = new AlleyLayer();
 const helicopters = new HelicopterLayer();
+const boats = new BoatLayer();
 const incidents = new IncidentLayer();
 let showTraffic = false;
-scene.add(helicopters.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -64,6 +68,7 @@ const hud = new Hud(uiRoot, {
   setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
   rotatePlacement: () => input.rotatePlacement(),
+  toggleWalk: () => { if (walker.active) walker.exit(); else startWalking(); },
   setElevation: (level) => input.setElevation(level),
   focusOn: (id) => {
     // Take the camera to whatever the message is about.
@@ -142,6 +147,61 @@ input.onInspect = (tile) => game.inspect(tile);
 game.onInspection = (report) => hud.showInspection(report);
 game.onNotice = (message) => hud.toast(message);
 
+// ---- walking the streets -----------------------------------------------------------------
+/** Parks, playgrounds and the like are open ground; everything else with walls stops a walker. */
+const OPEN_GROUND = new Set(Object.entries(SERVICES).filter(([, spec]) => spec.civic === 'leisure').map(([k]) => Number(k)));
+function blockedAt(x: number, z: number): boolean {
+  const tx = x + GRID / 2, tz = z + GRID / 2;
+  if (tx < 0.2 || tz < 0.2 || tx > GRID - 0.2 || tz > GRID - 0.2) return true;
+  const cx = Math.floor(tx), cz = Math.floor(tz);
+  if (game.terrain.water[cz * GRID + cx]) return true;
+  // A grown building stands on its lot, which may have shifted up to most of a cell towards its road,
+  // so look at the neighbouring tiles as well as the one underfoot.
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    const nx = cx + dx, nz = cz + dz;
+    if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) continue;
+    const i = nz * GRID + nx, k = game.kind[i];
+    if (!k) continue;
+    if (isZone(k)) {
+      if (!game.level[i]) continue;
+      // The whole lot is private: the house is pushed out to its street front and fenced gardens fill
+      // the rest. Lots stop 0.08 short of each other, which leaves the alleys between them walkable.
+      if (Math.abs(tx - game.raster.lotX[i]) < 0.42 && Math.abs(tz - game.raster.lotZ[i]) < 0.42) return true;
+      continue;
+    }
+    if (OPEN_GROUND.has(k)) continue;
+    // A service building fills its site, less a narrow margin to walk right up to the wall.
+    const [w, d] = footprintSize(k, game.rot[i]);
+    if (tx > nx + 0.12 && tx < nx + w - 0.12 && tz > nz + 0.12 && tz < nz + d - 0.12) return true;
+  }
+  return false;
+}
+const walker = new Walker(camera, canvas, {
+  blocked: blockedAt,
+  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); },
+});
+/** Step down onto the nearest street to the middle of the view, facing the way the camera faced. */
+function startWalking(): void {
+  if (walker.active || !playing) return;
+  input.setTool('none');
+  const t = controls.target;
+  let spot = { x: t.x, z: t.z };
+  const road = game.net.nearestSeg(t.x + GRID / 2, t.z + GRID / 2, 30);
+  if (road) spot = { x: road.x - GRID / 2, z: road.z - GRID / 2 };
+  // Nudge off anything solid, in case the nearest road point runs under a bridge pier or similar.
+  for (let r = 0; r < 3 && blockedAt(spot.x, spot.z); r += 0.2) spot = { x: spot.x + 0.2, z: spot.z };
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  input.suspended = true;
+  setWalking(true);
+  walker.enter(spot.x, spot.z, Math.atan2(-dir.x, -dir.z));
+  hud.setWalking(true);
+}
+window.addEventListener('keydown', (e) => {
+  if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
+  if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') { if (walker.active) walker.exit(); else startWalking(); }
+});
+
 const tileCentre = (tile: number): { x: number; z: number } => ({ x: tile % 80 + 0.5, z: Math.floor(tile / 80) + 0.5 });
 /** Glide the camera to a place on the map, keeping its current height and angle. */
 let flight: { x: number; z: number; time: number } | null = null;
@@ -173,22 +233,23 @@ input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 game.onTerrain = () => { alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   showCoverage();
-  alleys.rebuild(game.kind, game.level, game.raster);
+  boats.rebuild(game.kind, game.terrain);
+  alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   roads.rebuild(game.net, game.terrain);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
 };
 game.onState = () => {
-  alleys.rebuild(game.kind, game.level, game.raster);
+  alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
@@ -227,6 +288,7 @@ function applySettings(s: Settings): void {
 }
 
 function startCity(data: Parameters<typeof game.load>[0], message?: string): void {
+  walker.exit(); // a new map starts back on the overview
   game.load(data);
   hud.setTax(game.tax);
   game.setTax(game.tax);
@@ -257,6 +319,7 @@ const menu: MainMenu = new MainMenu(uiRoot, {
 }, settings);
 
 function openMenu(): void {
+  walker.exit();
   resumeSpeed = game.speed;
   game.setSpeed(0);
   hud.setSpeed(0);
@@ -291,7 +354,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, frames: 0, layers: { landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 let last = performance.now();
@@ -299,6 +362,7 @@ renderer.setAnimationLoop((now: number) => {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   dbg.frames++;
+  walker.update(dt);
   if (flight) {
     // Ease the camera across rather than cutting, so it stays obvious where the map moved to.
     flight.time = Math.min(1, flight.time + dt * 1.6);
@@ -322,6 +386,7 @@ renderer.setAnimationLoop((now: number) => {
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
   incidents.update(game.simTime);
   helicopters.update(now / 1000);
+  boats.update(now / 1000);
   transport.update(game.simTime);
   subway.update(game.simTime);
   transitLines.update(game.simTime);

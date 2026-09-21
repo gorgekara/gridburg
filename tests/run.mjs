@@ -19,7 +19,7 @@ const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGH
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
-const { generateTerrain, WATER_EDGE } = await import('../src/terrain.ts');
+const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater } = await import('../src/terrain.ts');
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
 const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
@@ -929,6 +929,44 @@ test('every building variant is painted: no colour table runs out before the var
       geo.dispose();
     }
   }
+});
+test('fishing docks employ people and sell a catch that sewage upstream spoils', () => {
+  const geo = buildingGeometry(C.T_DOCKS, 1, 0);
+  geo.computeBoundingBox();
+  assert.ok([...geo.attributes.position.array].every(Number.isFinite));
+  assert.ok(geo.boundingBox.min.z < -1.2, 'The jetty runs out past the bank, over the water');
+  geo.dispose();
+
+  const city = demoCity();
+  const net = Network.fromPlain(city.net); ensureApproaches(net);
+  const r = rasterize(net), terrain = generateTerrain(city.seed);
+  const outlet = city.kind.findIndex(k => k === C.T_OUTLET);
+  // Bank tiles a dock or an outlet could stand on, from upstream to downstream.
+  const banks = [];
+  for (let i = 0; i < C.N_TILES; i++) {
+    const x = i % C.GRID, z = Math.floor(i / C.GRID);
+    if (city.kind[i] || terrain.water[i] || r.cover[i] || r.accSeg[i] < 0 || !touchesWater(terrain, x, z)) continue;
+    banks.push({ i, flow: adjacentFlow(terrain, x, z) });
+  }
+  banks.sort((a, b) => a.flow - b.flow);
+  const dock = banks.at(-1), source = banks.find(b => b.flow < dock.flow - 12);
+  assert.ok(dock && source, 'The demo river has room for a dock with an outlet above it');
+
+  // The same dock, first with the city's outlet gone, then with an outlet just upstream of it.
+  const run = (fouled) => {
+    const withDock = { ...city, kind: Uint8Array.from(city.kind), level: Uint8Array.from(city.level) };
+    withDock.kind[outlet] = 0; withDock.level[outlet] = 0;
+    if (fouled) { withDock.kind[source.i] = C.T_OUTLET; withDock.level[source.i] = 1; }
+    withDock.kind[dock.i] = C.T_DOCKS; withDock.level[dock.i] = 1;
+    load(withDock);
+    send({ type: 'warm', ticks: 120 });
+    return latest().stats;
+  };
+  const clean = run(false), fouled = run(true);
+  assert.equal(clean.docks, 1, 'The dock counts as working');
+  assert.ok(clean.fishingIncome > 0, 'Its boats land a catch');
+  assert.ok(fouled.fishingIncome < clean.fishingIncome * 0.8, `Sewage upstream thins the catch: ${fouled.fishingIncome.toFixed(2)} vs ${clean.fishingIncome.toFixed(2)}`);
+  console.log(`  Fishing docks: $${clean.fishingIncome.toFixed(2)}/s on a clean river, $${fouled.fishingIncome.toFixed(2)}/s below an outlet`);
 });
 test('a robbery calls the police, and getting away costs the city', () => {
   const events = new Incidents(), kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES);

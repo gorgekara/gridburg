@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, N_TILES, isService, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { MeshBuilder } from './meshBuilder';
 
@@ -28,7 +28,7 @@ export class AlleyLayer {
 
   reset(): void { this.signature = ''; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, terrain?: { water: Uint8Array; shore: Uint8Array }): void {
     // Cheap pass first: alleys only change when a building or its access road does.
     let hash = 17;
     for (let i = 0; i < N_TILES; i++) {
@@ -36,7 +36,7 @@ export class AlleyLayer {
       hash = (Math.imul(hash, 16777619) ^ (i * 131 + kind[i] * 7 + level[i])) >>> 0;
       hash = (Math.imul(hash, 16777619) ^ (raster.accSeg[i] + Math.round(raster.lotX[i] * 8) + Math.round(raster.lotZ[i] * 8))) >>> 0;
     }
-    const signature = String(hash);
+    const signature = `${hash}:${terrain ? 1 : 0}`;
     if (signature === this.signature) return;
     this.signature = signature;
 
@@ -45,7 +45,9 @@ export class AlleyLayer {
     for (let i = 0; i < N_TILES; i++) {
       const k = kind[i];
       if (!k || raster.accSeg[i] < 0) continue;
-      if (isZone(k) ? !level[i] : !isService(k)) continue;
+      // Only houses, shops, workshops and offices back onto a lane. A service building has its own
+      // forecourt, and a pump or an outlet stands on the river bank with nowhere for an alley to go.
+      if (!isZone(k) || !level[i]) continue;
       const lx = raster.lotX[i], lz = raster.lotZ[i];
       const dx = raster.accX[i] - lx, dz = raster.accZ[i] - lz;
       const distance = Math.hypot(dx, dz);
@@ -59,6 +61,18 @@ export class AlleyLayer {
       const lateral = alongX ? z + side : x + side;
       const back = (alongX ? x + 0.5 : z + 0.5) - toward * (0.5 + 0.35 * r);
       const curb = alongX ? raster.accX[i] : raster.accZ[i];
+      // Never pave the bank or the river: skip an alley that would cross either.
+      if (terrain) {
+        const lo = Math.floor(Math.min(back, curb)), hi = Math.floor(Math.max(back, curb));
+        let wet = false;
+        for (let a = lo; a <= hi && !wet; a++) for (const l of [lateral - 1, lateral]) {
+          const tx = alongX ? a : l, tz = alongX ? l : a;
+          if (tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) continue;
+          const t = tz * GRID + tx;
+          if (terrain.water[t] || terrain.shore[t]) wet = true;
+        }
+        if (wet) continue;
+      }
       const key = `${alongX ? 'x' : 'z'}:${lateral}:${Math.round(back * 4)}:${Math.round(curb * 4)}`;
       if (drawn.has(key)) continue;
       drawn.add(key);

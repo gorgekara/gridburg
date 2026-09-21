@@ -12,6 +12,8 @@ export interface SceneBundle {
   grid: THREE.GridHelper;
   /** Call once per frame with seconds elapsed. */
   update(dt: number, seconds: number): void;
+  /** While walking, the orbit camera and its keys stand down and the sun follows the walker. */
+  setWalking(on: boolean): void;
 }
 
 export function createScene(canvas: HTMLCanvasElement): SceneBundle {
@@ -97,8 +99,20 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const half = GRID / 2;
 
   let frame = 0;
+  let walking = false;
+  function setWalking(on: boolean): void {
+    walking = on;
+    controls.enabled = !on;
+    if (!on) controls.update();
+  }
   function update(dt: number, seconds: number): void {
     if (++frame % 3 === 0) sun.shadow.needsUpdate = true;
+    if (walking) {
+      // The walker owns the camera; keep the sun's shadow box centred on it.
+      sun.target.position.set(camera.position.x, 0, camera.position.z);
+      light(seconds, sun.target.position);
+      return;
+    }
     let mx = 0;
     let mz = 0;
     if (keys.has('KeyW') || keys.has('ArrowUp') || keys.has('w')) mz += 1;
@@ -141,6 +155,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
     t.y = 0;
     controls.update();
     sun.target.position.copy(t);
+    light(seconds, t);
+  }
+
+  function light(seconds: number, t: THREE.Vector3): void {
     const light = daylight(seconds);
     const angle = (light.hour - 6) / 24 * Math.PI * 2;
     sun.position.set(t.x + Math.cos(angle) * 65, 15 + Math.abs(light.sun) * 70, t.z + 25);
@@ -155,5 +173,5 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
     renderer.toneMappingExposure = 1.12 - light.day * 0.07;
   }
 
-  return { renderer, scene, camera, controls, grid, update };
+  return { renderer, scene, camera, controls, grid, update, setWalking };
 }

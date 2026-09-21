@@ -65,6 +65,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   and a marker running each route, the way the metro tool shows its tunnels.
 - **Service coverage at a glance.** Selecting a service paints the area existing buildings of that sort
   already reach, so the next clinic, station or bus stop goes where the gap is.
+- **Walk the streets.** Press F, or the walker button in the top-right corner, to step down to street
+  level wherever you are looking. W A S D walks, Shift runs, and the mouse looks around (click once to
+  capture it). Buildings, gardens and the river stop you, but streets, alleys and parks are open.
+  Esc or F takes you back up to the map where you left it.
+- **Fishing docks.** Build them on the river bank (Water menu, from Small town). Each one employs 24
+  people, turns its jetty to the water and sends two fishing boats out to work the river and come
+  home. The catch sells for up to $2.40 a second per dock, shown as Fishing in the budget, but sewage
+  upstream thins it, so an untreated outlet above the docks costs money.
 - **Utilities along roads.** Wind and coal power, water towers and river pumps, sewage outlets. Buildings
   need all three to grow past small. Outlets foul the river downstream, so pumps belong upstream.
 - **Pollution.** Industry and coal pollute the ground around them. It spreads, drives residents away, and
@@ -176,6 +184,7 @@ roads take priority, so curved roads and older saves retain their original geome
 | + / − | Raise the road to a bridge, lower it to a tunnel |
 | K, J | Stop signs, traffic calming |
 | G, right click | Turn the building in hand before placing it |
+| F | Walk the streets at eye level; Esc or F again to return |
 | U | Upgrade a road one step wider |
 | C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |

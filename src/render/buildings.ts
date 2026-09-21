@@ -1,7 +1,7 @@
 import { T_OFFICE } from '../constants';
 import { buildingRotation } from '../placement';
 import * as THREE from 'three';
-import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, SERVICES, isService, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { buildingGeometry, rotorGeometry, VARIANTS } from './buildingGeo';
 
@@ -89,7 +89,7 @@ export class BuildingLayer {
 
   showZones(show: boolean): void { this.zones.visible = show; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
@@ -122,6 +122,14 @@ export class BuildingLayer {
       // A placed building faces the quarter turn it was given; a grown one faces its road.
       let facing = turn * Math.PI / 2;
       if (!turn && !multi && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
+      // A dock's jetty (its -z side) points at the river, whichever side of the quay that is.
+      if (k === T_DOCKS && water) {
+        const x = i % GRID, z = Math.floor(i / GRID);
+        for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+          const nx = x + dx, nz = z + dz;
+          if (nx >= 0 && nz >= 0 && nx < GRID && nz < GRID && water[nz * GRID + nx]) { facing = Math.atan2(-dx, -dz); break; }
+        }
+      }
       q.setFromAxisAngle(yAxis, facing);
       if (multi) {
         // Turn the block about the middle of its site, so a rotated footprint still covers its tiles.

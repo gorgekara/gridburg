@@ -6,7 +6,7 @@ import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UN
 import { gridPoint, roadPoint } from './placement';
 import * as THREE from 'three';
 import {
-  T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
+  T_DOCKS, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
@@ -21,7 +21,7 @@ export type Tool =
   | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
-  | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet'
+  | 'coal' | 'wind' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
@@ -33,10 +33,10 @@ const TOOL_COLOR: Record<Tool, number> = {
   inspect: 0xffd166, none: 0xffffff,
   road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
-  coal: 0x9a9a9a, wind: 0xf2f2ee, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a,
+  coal: 0x9a9a9a, wind: 0xf2f2ee, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   bulldoze: 0xe04b3a,
 };
-export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET };
+export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE };
 
 const BAD = 0xe04b3a;
@@ -57,6 +57,8 @@ export class Input {
   mode: RoadMode = 'straight';
   onInspect: ((tile: number) => void) | null = null;
   onToolChange: ((t: Tool) => void) | null = null;
+  /** True while walking the streets: clicks and shortcut keys belong to the walker then. */
+  suspended = false;
   onRotate: ((quarter: number) => void) | null = null;
   onElevation: ((level: number) => void) | null = null;
   /** What the road tool is drawing: -1 a tunnel, 0 the surface, 1 a bridge. */
@@ -169,6 +171,7 @@ export class Input {
   }
 
   private onKey = (e: KeyboardEvent): void => {
+    if (this.suspended) return;
     if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
     const map: Record<string, Tool> = {
       i: 'inspect', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
@@ -238,6 +241,7 @@ export class Input {
 
   // ---- pointer handling --------------------------------------------------------------------------
   private onDown = (e: PointerEvent): void => {
+    if (this.suspended) return;
     if (e.button === 2) { this.rightDown = { x: e.clientX, y: e.clientY }; return; }
     if (e.button !== 0) return;
     const p = this.pick(e);
@@ -262,6 +266,7 @@ export class Input {
   };
 
   private onMove = (e: PointerEvent): void => {
+    if (this.suspended) return;
     if (this.tool === 'none') { this.clearHover(); return; }
     const p = this.pick(e);
     if (!p) { if (!this.dragging && !this.chain.length) this.clearHover(); return; }

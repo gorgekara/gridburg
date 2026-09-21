@@ -27,6 +27,9 @@ export interface Stats {
   policies: Policies;
   policyExpense: number;
   tollIncome: number;
+  /** Dollars a second landed by fishing boats, and how many docks are working. */
+  fishingIncome: number;
+  docks: number;
   debt: number;
   taxIncome: number;
   roadExpense: number;
@@ -85,7 +88,7 @@ export function emptyStats(money: number): Stats {
   return {
     incidents: { fires: 0, heists: 0, racers: 0, crashes: 0, crime: 0, patrols: 0, fireEngines: 0, prevented: 0, extinguished: 0, damaged: 0, robbed: 0, foiled: 0 },
     transport: { busLines: 0, railLines: 0, intercityLines: 0, subwayLines: 0, airports: 0, riders: 0, airPassengers: 0, railPassengers: 0, fareIncome: 0 }, treatedSewage: 0, entries: 0,
-    funding: defaultFunding(), policies: noPolicies(), policyExpense: 0, tollIncome: 0, debt: 0, taxIncome: 0, roadExpense: 0, serviceExpense: 0, loanExpense: 0, declining: 0,
+    funding: defaultFunding(), policies: noPolicies(), policyExpense: 0, tollIncome: 0, fishingIncome: 0, docks: 0, debt: 0, taxIncome: 0, roadExpense: 0, serviceExpense: 0, loanExpense: 0, declining: 0,
     cityLevel: 0, happiness: 65, civic: { health: 0, education: 0, fire: 0, safety: 0, leisure: 0, waste: 0 },
     money, pop: 0, jobs: 0, cars: 0, commute: 0, demand: [0, 0, 0, 0], tick: 0, roadLength: 0, buildings: 0,
     noPath: 0, gaveUp: 0, power: [0, 0], water: [0, 0], sewage: [0, 0], dirtyWater: false, resPollution: 0, income: 0,
