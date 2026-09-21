@@ -14,8 +14,9 @@ function pieces(): THREE.BufferGeometry[] {
   const make = (seed: number, draw: (b: Builder) => void): THREE.BufferGeometry => { const b = new Builder(seed); draw(b); return b.build(); };
   return [
     make(1, b => { // bench
-      b.box(0.11, 0.008, 0.03, 0, 0.03, 0, 0x8a6240);
-      b.box(0.11, 0.028, 0.006, 0, 0.042, -0.015, 0x8a6240);
+      for (const z of [-0.01, 0, 0.01]) b.box(0.11, 0.008, 0.008, 0, 0.03, z, 0x8a6240);
+      for (const y of [0.046, 0.06]) b.box(0.11, 0.01, 0.006, 0, y, -0.015, 0xa17a51);
+      for (const x of [-0.045, 0.045]) b.box(0.006, 0.006, 0.033, x, 0.05, 0, 0x3a4046);
       for (const x of [-0.045, 0.045]) b.box(0.006, 0.03, 0.028, x, 0, 0, 0x3a4046);
     }),
     make(2, b => { // litter bin
@@ -58,6 +59,10 @@ function pieces(): THREE.BufferGeometry[] {
       b.box(0.1, 0.006, 0.02, 0, 0.03, -0.012, 0x8a6240);
       b.box(0.004, 0.13, 0.004, 0.1, 0, 0.02, 0x5d6469);
       b.box(0.03, 0.03, 0.004, 0.1, 0.1, 0.02, 0x2f6fb7);
+      b.pane(0.02, 0.022, 0.1, 0.066, 0.024, 0, 0xe3dfd2);
+      for (const y of [0.071, 0.078, 0.085]) b.pane(0.014, 0.002, 0.1, y, 0.025, 0, 0x637a86);
+      b.pane(0.038, 0.056, 0.051, 0.029, -0.02, 0, 0x267f88);
+      b.pane(0.027, 0.012, 0.051, 0.057, -0.019, 0, 0xe7c784);
     }),
   ];
 }

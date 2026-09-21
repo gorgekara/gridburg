@@ -1,3 +1,10 @@
+import { parkPathTiles, parkPathTouchesLot, quantizeParkPath, PARK_PATH_COST } from './parkPaths';
+import type { ParkPath } from './parkPaths';
+import { sampleCurve } from './roads/network';
+import { decorationPlacementAllowed } from './parks';
+import { isDecoration, T_PATH, T_LAWN, T_PLAZA, SERVICES } from './constants';
+import { airportClearanceMask, airportPlacementBlocked } from './airports';
+import { T_AIRPORT } from './constants';
 import type { IncidentSnapshot, IncidentView } from './sim/incidents';
 import { footprint, siteOwners } from './sites';
 import { defaultFunding } from './management';
@@ -26,10 +33,14 @@ export class Game {
   seed = 1;
   terrain: Terrain = generateTerrain(1);
   net = new Network();
+  parkPaths: ParkPath[] = [];
+  parkPathMask: Uint8Array = new Uint8Array(N_TILES);
+  private parkPathLotMask: Uint8Array = new Uint8Array(N_TILES);
   raster: Raster = rasterize(this.net);
   kind = new Uint8Array(N_TILES);
   /** Quarter turns for placed buildings: which way each one faces. */
   rot = new Uint8Array(N_TILES);
+  airportClearance: Uint8Array = new Uint8Array(N_TILES);
   owners: Int32Array = new Int32Array(N_TILES).fill(-1);
   level = new Uint8Array(N_TILES);
   neglect = new Uint8Array(N_TILES);
@@ -129,17 +140,87 @@ export class Game {
    * a pump or an outlet belongs on the bank.
    */
   buildable(i: number, bank = false): boolean {
-    if (this.terrain.water[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
+    if (this.parkPathLotMask[i]) return false;
+    if (this.airportClearance[i] || this.terrain.water[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
     return bank || !this.terrain.shore[i];
+  }
+
+  parkPathProblem(paths: ParkPath[]): string | null {
+    paths = paths.map(quantizeParkPath);
+    if (!paths.length || this.parkPaths.length + paths.length > 2000) return 'Park path limit reached';
+    for (const path of paths) {
+      if (Object.values(path).some(v => !Number.isFinite(v) || v < 0.1 || v > GRID - 0.1)) return 'Keep the path inside the map';
+      const cells = parkPathTiles(path);
+      if (!cells.length || sampleCurve(path).len < 0.2) return 'Choose a longer path';
+      const nearby = new Set<number>();
+      for (const i of cells) for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+        const x = i % GRID + dx, z = Math.floor(i / GRID) + dz;
+        if (x >= 0 && z >= 0 && x < GRID && z < GRID) nearby.add(z * GRID + x);
+      }
+      for (const i of nearby) if ((isZone(this.kind[i]) || (isService(this.kind[i]) && !isDecoration(this.kind[i]) && !SERVICES[this.kind[i]].footprint)) && parkPathTouchesLot(path, this.raster.lotX[i], this.raster.lotZ[i])) return 'Keep paths clear of building fronts';
+      for (const i of cells) {
+        if (this.kind[i] !== 0 && this.kind[i] !== T_PATH && this.kind[i] !== T_LAWN && this.kind[i] !== T_PLAZA) return 'Clear buildings and decorations from the path';
+        if (this.terrain.water[i] || this.terrain.shore[i] || this.raster.cover[i] || this.airportClearance[i] || this.owners[i] >= 0) return 'Keep paths on clear, dry ground beside roads';
+      }
+    }
+    return null;
+  }
+
+  addParkPaths(paths: ParkPath[]): boolean {
+    paths = paths.map(quantizeParkPath);
+    if (this.parkPathProblem(paths)) return false;
+    const fresh = paths.filter(p => !this.parkPaths.some(q => Object.keys(p).every(k => p[k as keyof ParkPath] === q[k as keyof ParkPath])));
+    if (!fresh.length) return false;
+    const cost = Math.ceil(fresh.reduce((n, p) => n + sampleCurve(p).len, 0) * PARK_PATH_COST);
+    if (!this.canAfford(cost)) return false;
+    for (const path of fresh) {
+      this.parkPaths.push({ ...path });
+      for (const i of parkPathTiles(path)) { this.kind[i] = T_PATH; this.level[i] = 1; this.rot[i] = 0; }
+    }
+    this.syncParkPaths(); this.spend(cost); return true;
+  }
+
+  /** Removing a touched tile removes that drawn segment; shared intersections remain. */
+  private syncParkPaths(): void {
+    const old = this.parkPathMask;
+    this.parkPaths = this.parkPaths.filter(p => {
+      const cells = parkPathTiles(p);
+      return cells.length && cells.every(i => this.kind[i] === T_PATH && !this.raster.cover[i]);
+    });
+    this.parkPathMask = new Uint8Array(N_TILES);
+    this.parkPathLotMask = new Uint8Array(N_TILES);
+    for (const path of this.parkPaths) {
+      const nearby = new Set<number>();
+      for (const i of parkPathTiles(path)) {
+        this.parkPathMask[i] = 1;
+        for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+          const x = i % GRID + dx, z = Math.floor(i / GRID) + dz;
+          if (x >= 0 && z >= 0 && x < GRID && z < GRID) nearby.add(z * GRID + x);
+        }
+      }
+      for (const i of nearby) if (parkPathTouchesLot(path, this.raster.lotX[i], this.raster.lotZ[i])) this.parkPathLotMask[i] = 1;
+    }
+    for (let i = 0; i < N_TILES; i++) if (old[i] && !this.parkPathMask[i] && this.kind[i] === T_PATH) { this.kind[i] = 0; this.level[i] = 0; }
   }
 
   /** Change a tile's kind, optionally facing a given quarter turn. Returns false if unchanged. */
   setKind(i: number, k: number, cost: number, rot = 0): boolean {
-    if (this.owners[i] >= 0) i = this.owners[i];
+    if (!Number.isInteger(i) || i < 0 || i >= N_TILES) return false;
+    if (k && !isDecoration(k) && this.parkPathLotMask[i]) return false;
+    if (isDecoration(k) && !decorationPlacementAllowed(i, { kind: this.kind, water: this.terrain.water, shore: this.terrain.shore, cover: this.raster.cover, owners: this.owners, airportClearance: this.airportClearance })) return false;
+    if (this.owners[i] >= 0) {
+      if (k) return false;
+      i = this.owners[i];
+    }
+    if (k && !footprint(i, k, rot).length) return false;
+    if (k === T_PATH) rot = 0;
+    if (k && footprint(i, k, rot).some(t => this.airportClearance[t])) return false;
+    if (k === T_AIRPORT && airportPlacementBlocked(i, rot, this.kind, this.level, this.rot)) return false;
     if (this.kind[i] === k && this.rot[i] === rot) return false;
     this.kind[i] = k;
     this.rot[i] = k ? rot & 3 : 0;
     this.owners = siteOwners(this.kind, this.rot);
+    this.airportClearance = airportClearanceMask(this.kind, this.rot);
     this.level[i] = isService(k) ? 1 : 0;
     this.pendingSpent += cost;
     this.dirty = true;
@@ -160,12 +241,14 @@ export class Game {
       }
     }
     this.owners = siteOwners(this.kind, this.rot);
+    this.airportClearance = airportClearanceMask(this.kind, this.rot);
+    this.syncParkPaths();
     const net = this.net.toPlain();
     this.segOrder = net.segs.map((s) => s[0]);
     this.serial++;
     this.segCong = new Uint8Array(this.segOrder.length);
     return {
-      kind: this.kind.slice(), net, serial: this.serial,
+      kind: this.kind.slice(), rot: this.rot.slice(), net, serial: this.serial,
       cover: this.raster.cover.slice(), accSeg: this.raster.accSeg.slice(), accS: this.raster.accS.slice(),
     };
   }
@@ -190,6 +273,9 @@ export class Game {
     this.net = Network.fromPlain(d.net);
     ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
+    this.parkPaths = (d.parkPaths ?? []).map(p => ({ ...p }));
+    this.parkPathMask = new Uint8Array(N_TILES);
+    for (const path of this.parkPaths) for (const i of parkPathTiles(path)) this.parkPathMask[i] = 1;
     this.kind.set(d.kind);
     this.rot.set(d.rot ?? new Uint8Array(N_TILES));
     this.level.set(d.level);
@@ -220,9 +306,13 @@ export class Game {
 
   snapshot(): SaveData {
     return {
-      incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, rot: this.rot, net: this.net.toPlain(),
+      parkPaths: this.parkPaths.map(p => ({ ...p })), incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, rot: this.rot, net: this.net.toPlain(),
       funding: this.stats.funding, policies: this.stats.policies, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
+  }
+
+  setStreetView(active: boolean): void {
+    this.send({ type: 'streetView', active });
   }
 
   setSpeed(v: number): void {

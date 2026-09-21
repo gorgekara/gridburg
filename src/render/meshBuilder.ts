@@ -68,6 +68,18 @@ export class MeshBuilder {
     }
   }
 
+  /** Triangle fan from (x, z) to each point of a polyline, wound the same way as a disc. */
+  fan(x: number, z: number, pts: ArrayLike<number>, count: number, y: number, color: number): void {
+    this.c.setHex(color);
+    const centre = this.vert(x, y, z);
+    for (let i = 1; i < count; i++) {
+      const x1 = pts[i * 2 - 2] - x, z1 = pts[i * 2 - 1] - z, x2 = pts[i * 2] - x, z2 = pts[i * 2 + 1] - z;
+      const p = this.vert(x1 + x, y, z1 + z), q = this.vert(x2 + x, y, z2 + z);
+      if (x1 * z2 - z1 * x2 < 0) this.idx.push(centre, p, q);
+      else this.idx.push(centre, q, p);
+    }
+  }
+
   /** Small arrowhead pointing along (tx, tz). */
   arrow(x: number, z: number, tx: number, tz: number, size: number, y: number, color: number): void {
     this.c.setHex(color);

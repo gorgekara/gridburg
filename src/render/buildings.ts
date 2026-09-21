@@ -1,3 +1,5 @@
+import { isDecoration, T_PATH, neighbor } from '../constants';
+import type { VisualDetail } from './detail';
 import { T_OFFICE, T_FARM, T_LEISURE } from '../constants';
 import { buildingRotation } from '../placement';
 import * as THREE from 'three';
@@ -26,7 +28,7 @@ const ZONE_COLOR: Record<number, number> = {
 const SERVICE_KINDS = Object.keys(SERVICES).map(Number);
 
 function key(kind: number, level: number, variant: number): number {
-  return (kind * 4 + level) * 8 + variant;
+  return (kind * 4 + level) * 16 + variant;
 }
 
 export class BuildingLayer {
@@ -35,6 +37,8 @@ export class BuildingLayer {
   private zones: THREE.InstancedMesh;
   private rotors: THREE.InstancedMesh;
   private rotorSites: { x: number; z: number; rot: number; phase: number }[] = [];
+
+  private detail: VisualDetail = 1;
 
   private night = { value: 0 };
 
@@ -66,7 +70,7 @@ export class BuildingLayer {
     for (const k of [T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE]) {
       for (let l = 1; l <= 3; l++) for (let v = 0; v < VARIANTS; v++) add(k, l, v, N_TILES);
     }
-    for (const k of SERVICE_KINDS) add(k, 1, 0, 512);
+    for (const k of SERVICE_KINDS) for (let v = 0; v < (k === T_PATH ? 16 : 1); v++) add(k, 1, v, isDecoration(k) ? N_TILES : 512);
 
     this.rotors = new THREE.InstancedMesh(rotorGeometry(), new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.6 }), 512);
     this.rotors.castShadow = true;
@@ -89,21 +93,35 @@ export class BuildingLayer {
     this.group.add(this.zones);
   }
 
+  setDetail(detail: VisualDetail): void {
+    if (this.detail === detail) return;
+    this.detail = detail;
+    for (const [id, mesh] of this.meshes) {
+      const variant = id % 16, group = Math.floor(id / 16);
+      const level = group % 4, kind = Math.floor(group / 4);
+      const previous = mesh.geometry;
+      mesh.geometry = buildingGeometry(kind, level, variant, detail);
+      mesh.boundingSphere = null;
+      previous.dispose();
+    }
+  }
+
   showZones(show: boolean): void { this.zones.visible = show; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
     let nz = 0;
     for (let i = 0; i < N_TILES; i++) {
       const k = kind[i];
+      if (k === T_PATH && parkPathMask?.[i]) continue;
       const zone = isZone(k);
       if (!zone && !isService(k)) continue;
       const multi = SERVICES[k]?.footprint;
       const turn = isService(k) ? (rot?.[i] ?? 0) & 3 : 0;
-      const tx = multi ? i % GRID + 0.5 : raster.lotX[i];
-      const tz = multi ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
+      const tx = multi || isDecoration(k) ? i % GRID + 0.5 : raster.lotX[i];
+      const tz = multi || isDecoration(k) ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
       pos.set(tx - half, 0, tz - half);
       if (zone) {
         q.identity();
@@ -114,7 +132,11 @@ export class BuildingLayer {
         if (level[i] === 0) continue;
       }
       const l = zone ? level[i] : 1;
-      const variant = zone ? Math.floor(tileHash(i) * VARIANTS) % VARIANTS : 0;
+      let variant = zone ? Math.floor(tileHash(i) * VARIANTS) % VARIANTS : 0;
+      if (k === T_PATH) for (let d = 0; d < 4; d++) {
+        const n = neighbor(i, d);
+        if (n >= 0 && (isDecoration(kind[n]) || raster.cover[n])) variant |= 1 << d;
+      }
       const kk = key(k, l, variant);
       const mesh = this.meshes.get(kk);
       if (!mesh) continue;
@@ -122,8 +144,8 @@ export class BuildingLayer {
       if (n >= mesh.instanceMatrix.count) continue;
       counts.set(kk, n + 1);
       // A placed building faces the quarter turn it was given; a grown one faces its road.
-      let facing = turn * Math.PI / 2;
-      if (!turn && !multi && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
+      let facing = k === T_PATH ? 0 : turn * Math.PI / 2;
+      if (!turn && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
       // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
       if ((k === T_DOCKS || k === T_HYDRO) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);

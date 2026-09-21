@@ -1,0 +1,63 @@
+import { registerHooks } from 'node:module';
+import { existsSync } from 'node:fs';
+import assert from 'node:assert/strict';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier.startsWith('.') && !/\.[a-z]+$/.test(specifier)) {
+    const candidate = new URL(`${specifier}.ts`, context.parentURL);
+    if (existsSync(candidate)) return nextResolve(candidate.href, context);
+  }
+  return nextResolve(specifier, context);
+}});
+const { Game } = await import('../src/game.ts');
+const { Input } = await import('../src/input.ts');
+const { ParkPathLayer } = await import('../src/render/parkPaths.ts');
+const { parkPathTiles, PARK_PATH_HALF } = await import('../src/parkPaths.ts');
+const { encode, decode } = await import('../src/save.ts');
+const { T_PATH, T_BENCH, T_RES, GRID } = await import('../src/constants.ts');
+globalThis.Worker = class { postMessage() {} };
+const fresh = () => { const g = new Game(); g.terrain.water.fill(0); g.terrain.shore.fill(0); g.stats.money = 100000; g.flush(); return g; };
+const line = {ax:20.5,az:20.5,cx:22.5,cz:20.5,bx:24.5,bz:20.5};
+const curve = {ax:24.5,az:20.5,cx:27.5,cz:20.5,bx:27.5,bz:24.5};
+const g=fresh();
+assert.equal(g.addParkPaths([line,curve]),true); g.flush();
+assert.equal(g.addParkPaths([line]),false,'Exact duplicate costs nothing');
+assert.equal(g.parkPaths.length,2);
+for (const p of [line,curve]) for(const i of parkPathTiles(p)) assert.equal(g.kind[i],T_PATH);
+const saved=decode(encode(g.snapshot())); assert.ok(saved); assert.deepEqual(saved.parkPaths,[line,curve]);
+const loaded=fresh(); loaded.load(saved); assert.deepEqual(loaded.parkPaths,[line,curve]);
+// A v11 save ends before the newly appended path block and still loads.
+const empty=encode(fresh().snapshot()); const raw=Buffer.from(empty,'base64url'); raw[0]=11;
+assert.ok(decode(raw.subarray(0,raw.length-2).toString('base64url')));
+assert.equal(decode(encode(g.snapshot()).slice(0,-4)),null,'Truncated route block rejected');
+const layer=new ParkPathLayer();layer.rebuild([line]);
+const geometry=layer.group.children[0].geometry;geometry.computeBoundingBox();
+assert.ok(geometry.boundingBox.max.z-geometry.boundingBox.min.z < .14,'Path is much narrower than street');
+assert.ok(PARK_PATH_HALF < .08);
+layer.rebuild([curve]); const coords=layer.group.children[0].geometry.attributes.position.array;
+assert.ok([...coords].every(Number.isFinite));
+const precise=fresh();
+const edgeCurve={ax:20.25,az:20.25,cx:26.992381944658568,cz:25.00141366285438,bx:30.25,bz:25.25};
+assert.equal(precise.addParkPaths([edgeCurve]),true);precise.flush();
+const precisionLoad=fresh();precisionLoad.load(decode(encode(precise.snapshot())));
+assert.deepEqual(precisionLoad.parkPaths,precise.parkPaths,'Quantized curve at tile boundary survives save');
+const frontage=fresh();
+frontage.net.insertPath([{x:10,z:10},{x:30,z:10}],0);frontage.flush();
+frontage.kind[12*GRID+20]=T_RES;frontage.level[12*GRID+20]=3;
+const frontPath={ax:20.1,az:11.75,cx:20.5,cz:11.75,bx:20.9,bz:11.75};
+assert.equal(frontage.addParkPaths([frontPath]),false,'Reject path under neighboring shifted building');
+frontage.kind.fill(0);assert.equal(frontage.addParkPaths([frontPath]),true);frontage.flush();
+assert.equal(frontage.buildable(12*GRID+20),false,'Future zoning cannot grow a shifted building over path');
+assert.equal(frontage.setKind(12*GRID+20,T_RES,0),false);
+const before=g.stats.money;
+const blocked=fresh(); blocked.kind[20*GRID+22]=T_RES;
+assert.equal(blocked.addParkPaths([line]),false);assert.equal(blocked.parkPaths.length,0);
+blocked.kind.fill(0);blocked.terrain.water[20*GRID+22]=1; assert.equal(blocked.addParkPaths([line]),false);
+g.setKind(20*GRID+21,0,0);g.flush();assert.equal(g.parkPaths.length,1);assert.deepEqual(g.parkPaths[0],curve);
+assert.equal(g.kind[20*GRID+20],0,'Other cells of deleted segment cleaned');
+assert.equal(g.kind[20*GRID+24],T_PATH,'Shared endpoint remains for connected curve');
+assert.equal(g.stats.money,before,'Bulldozing costs no extra');
+// Exercise the same start/bend/end controller that roads use.
+const drawn=fresh();const input=Object.assign(Object.create(Input.prototype),{game:drawn,tool:'parkpath',mode:'curve',chain:[],tangent:null,heading:null,shape:{visible:false},serviceRadius:{visible:false},hover:{visible:false}});
+input.roadClick({x:30.5,z:30.5});input.roadClick({x:34.5,z:30.5});assert.equal(drawn.parkPaths.length,0);
+input.roadClick({x:34.5,z:34.5});assert.ok(drawn.parkPaths.length>0);assert.ok(drawn.parkPaths.some(p=>p.ax!==p.bx&&p.az!==p.bz));
+console.log('Park paths: narrow curved geometry, real draw controls, placement, shared endpoint removal, saves and v11 migration passed.');

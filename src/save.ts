@@ -1,3 +1,4 @@
+import type { ParkPath } from './parkPaths';
 import type { IncidentSnapshot } from './sim/incidents';
 import { N_TILES, START_MONEY, T_RES, RES_POP, isZone, isService } from './constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, LOAN_TOTAL, NEGLECT_LIMIT } from './management';
@@ -8,6 +9,7 @@ import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 
 export interface SaveData {
+  parkPaths?: ParkPath[];
   /** Quarter turns for placed buildings, sparse: most tiles face their road. */
   rot?: Uint8Array;
   incidents?: IncidentSnapshot;
@@ -27,7 +29,7 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 11;
+const VERSION = 12;
 // v9 appends a two-byte policy mask to the v8 header. v10 cities, which stored drawn railway lines
 // after the incidents, still load; their lines are ignored now that railways pair up again. v11 puts
 // the quarter turn of every rotated building in that spot instead.
@@ -87,6 +89,10 @@ export function encode(d: SaveData): string {
   for (let t = 0; t < N_TILES && turned.length < 3 * 2000; t++) if (d.rot?.[t]) turned.push(t, d.rot[t] & 3);
   bytes.push((turned.length / 2 >> 8) & 255, (turned.length / 2) & 255);
   for (let k = 0; k < turned.length; k += 2) bytes.push((turned[k] >> 8) & 255, turned[k] & 255, turned[k + 1]);
+  const paths = d.parkPaths ?? [];
+  if (paths.length > 2000) throw new Error('Too many park paths');
+  u16(paths.length);
+  for (const path of paths) for (const key of ['ax', 'az', 'cx', 'cz', 'bx', 'bz'] as const) u16(packC(path[key]));
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -107,7 +113,7 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, 7, 8, 9, 10, VERSION].includes(version)) return null;
+    if (![3, 4, 5, 6, 7, 8, 9, 10, 11, VERSION].includes(version)) return null;
     const header = legacy ? 14 : version === 4 ? 15 : version >= 9 ? HEAD : HEAD_V8;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
@@ -178,11 +184,23 @@ export function decode(str: string): SaveData | null {
     if (version >= 11) {
       if (p + 1 >= bytes.length) return null;
       const count = dv.getUint16(p); p += 2;
-      if (p + count * 3 !== bytes.length) return null;
+      if (p + count * 3 > bytes.length || (version === 11 && p + count * 3 !== bytes.length)) return null;
       for (let k = 0; k < count; k++, p += 3) {
         const tile = dv.getUint16(p);
         if (tile >= N_TILES) return null;
         rot[tile] = bytes[p + 2] & 3;
+      }
+    }
+    const parkPaths: ParkPath[] = [];
+    if (version >= 12) {
+      const count = dv.getUint16(p); p += 2;
+      if (count > 2000 || p + count * 12 !== bytes.length) return null;
+      for (let n = 0; n < count; n++) {
+        const values: number[] = [];
+        for (let j = 0; j < 6; j++, p += 2) values.push(unpackC(dv.getUint16(p)));
+        if (values.some(v => v < 0 || v >= 80)) return null;
+        const [ax, az, cx, cz, bx, bz] = values;
+        parkPaths.push({ ax, az, cx, cz, bx, bz });
       }
     }
     // Cities saved while the map kinds existed carry one extra byte; skip it.
@@ -191,7 +209,7 @@ export function decode(str: string): SaveData | null {
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, rot, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
+    return { seed, kind, level, rot, parkPaths, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
   } catch {
     return null;
   }

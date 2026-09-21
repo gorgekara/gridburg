@@ -1,5 +1,6 @@
 /** Inline stroke icons, 24x24. Kept as inner SVG markup so they inherit the button's text color. */
 const I: Record<string, string> = {
+  taxi: '<path d="M4 17v3m16-3v3M3 17V11l3-5h12l3 5v6H3zm0-6h18M9 6V3h6v3M6 14h2m8 0h2"/>',
   bridge: '<path d="M2 17h20M5 17V7M19 17V7M5 8q7 10 14 0M8 12v5M12 13v4M16 12v5M5 17v5M19 17v5"/>',
   tunnel: '<path d="M2 21V11a10 10 0 0 1 20 0v10M6 21V11a6 6 0 0 1 12 0v10M9 21l2-8M15 21l-2-8"/>',
 
@@ -75,6 +76,19 @@ const I: Record<string, string> = {
   garden: '<path d="M4 20h16"/><path d="M8 20c0-3.5 1.6-6 4-6s4 2.5 4 6"/><circle cx="12" cy="8.5" r="4.5"/><path d="M3 20c0-2 1-3.5 2.5-3.5M21 20c0-2-1-3.5-2.5-3.5"/>',
   stopsign: '<path d="M8.6 3h6.8L21 8.6v6.8L15.4 21H8.6L3 15.4V8.6z"/><path d="M9 14.5c.7.6 1.7 1 2.9 1 1.6 0 2.6-.7 2.6-1.8 0-2.6-5.2-1.2-5.2-3.6 0-1 1-1.8 2.5-1.8 1.1 0 2 .3 2.6 .9"/>',
   calm: '<path d="M3 16h18"/><path d="M5 16a4 4 0 0 1 8 0"/><path d="M15 16a2.5 2.5 0 0 1 5 0"/><path d="M3 20h18"/>',
+  parks: '<path d="M3 21h18M7 21v-6m10 6v-6M3 15l4-8 4 8zm10 0 4-12 4 12z"/>',
+  decorations: '<path d="M12 21V10M8 15l4 3 4-3"/><circle cx="12" cy="7" r="3"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="7" r="2"/>',
+  parkpath: '<path d="M8 22c0-6 9-5 9-10S7 8 7 2M13 22c0-5 9-5 9-10S12 8 12 2"/>',
+  pond: '<path d="M3 16c3-3 6 3 9 0s6 3 9 0M3 20c3-3 6 3 9 0s6 3 9 0M7 12V4m-2 3 2 2 2-2"/>',
+  parkshop: '<path d="M4 10v11h16V10M2 10l3-7h14l3 7M8 21v-7h8v7M2 10h20"/>',
+  tree: '<path d="M12 21v-5M4 16l8-13 8 13z"/>',
+  flowers: '<circle cx="8" cy="9" r="3"/><circle cx="17" cy="7" r="3"/><path d="M8 12v8m9-10v10M3 21h18"/>',
+  bench: '<path d="M3 10h18v4H3zM5 14v7m14-7v7M4 5h16v3H4z"/>',
+  fountain: '<path d="M3 14h18c0 7-18 7-18 0zM12 14V4m0 5C8 2 4 5 5 9m7 0c4-7 8-4 7 0M7 21h10"/>',
+  plaza: '<path d="M3 3h18v18H3zM9 3v18m6-18v18M3 9h18M3 15h18"/>',
+  lawn: '<path d="M3 21h18M6 21l-2-7m5 7V9m3 12 2-8m3 8 3-10"/>',
+  trolley: '<rect x="5" y="7" width="14" height="13" rx="3"/><path d="M8 7l4-5h7M5 14h14M8 20v2m8-2v2"/><circle cx="8" cy="17" r="1"/><circle cx="16" cy="17" r="1"/>',
+  bikelane: '<circle cx="5" cy="16" r="4"/><circle cx="19" cy="16" r="4"/><path d="m5 16 5-8 4 8H5m9 0 3-10h3M8 6h5"/>',
   rotate: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>',
   message: '<path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.3A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14.5h4"/>',
   policy: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5"/><path d="m9 13 1.6 1.6L14 11"/><path d="M9 18h6"/>',

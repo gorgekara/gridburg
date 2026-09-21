@@ -1,3 +1,5 @@
+import { airportRunway } from '../airports';
+import { T_TROLLEY } from '../constants';
 import * as THREE from 'three';
 import { GRID, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT } from '../constants';
 import { transitNetwork } from '../sim/transit';
@@ -190,7 +192,7 @@ export function transportSignature(kind: Uint8Array, flags: Uint8Array, raster: 
   let h = net ? (net.version + 1) * 0x9e37 : 17;
   for (let i = 0; i < kind.length; i++) {
     const k = kind[i];
-    if (k !== T_BUS && k !== T_STATION && k !== T_SUBWAY && k !== T_AIRPORT) continue;
+    if (k !== T_TROLLEY && k !== T_BUS && k !== T_STATION && k !== T_SUBWAY && k !== T_AIRPORT) continue;
     h = (Math.imul(h, 16777619) ^ i) >>> 0;
     h = (Math.imul(h, 16777619) ^ (k * 131 + flags[i] * 7 + (raster.accSeg[i] + 2))) >>> 0;
   }
@@ -202,7 +204,7 @@ export class TransportLayer {
   private tracks = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }));
   private moving = new THREE.Group();
   private trains: Train[] = [];
-  private planes: { mesh: THREE.Mesh; x: number; z: number; phase: number }[] = [];
+  private planes: { mesh: THREE.Mesh; x: number; z: number; dx: number; dz: number; phase: number }[] = [];
   private signature = '';
   private inputs = -1;
   private p = new THREE.Vector3();
@@ -211,14 +213,14 @@ export class TransportLayer {
     this.group.add(this.tracks, this.moving);
   }
   reset(): void { this.signature = ''; this.inputs = -1; }
-  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, gates: readonly { x: number; z: number }[] = []): void {
+  rebuild(kind: Uint8Array, flags: Uint8Array, raster: Raster, net: Network, gates: readonly { x: number; z: number }[] = [], rotations?: Uint8Array): void {
     // Stations rarely change, but this runs on every state update, so skip the costly
     // route search unless the network or a transport tile actually changed.
-    const inputs = transportSignature(kind, flags, raster, net);
+    const inputs = transportSignature(kind, flags, raster, net) ^ (rotations?.reduce((hash, rot, i) => kind[i] === T_AIRPORT ? Math.imul(hash ^ (rot + i), 16777619) : hash, 17) ?? 17);
     if (inputs === this.inputs) return;
     this.inputs = inputs;
     const transit = transitNetwork(kind, i => flags[i] === 0 && raster.accSeg[i] >= 0, (a, b) => kind[a] === T_STATION && railPath(net, raster, a, b).length > 1, gates);
-    const signature = `${net.version}:` + JSON.stringify(transit);
+    const signature = `${net.version}:` + JSON.stringify([transit, transit.airports.map(i => rotations?.[i] ?? 0)]);
     if (signature === this.signature) return;
     this.signature = signature;
     this.moving.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
@@ -284,7 +286,9 @@ export class TransportLayer {
       plane.box(0.1, 0.06, 0.165, 0.3, 0.055, 0, 0x416078);
       const mesh = new THREE.Mesh(plane.build(), new THREE.MeshStandardMaterial({ vertexColors: true }));
       mesh.castShadow = true; this.moving.add(mesh);
-      this.planes.push({ mesh, x: i % GRID + 0.5 - half, z: Math.floor(i / GRID) + 0.5 - half, phase: i % 30 });
+      const runway = airportRunway(i, rotations?.[i] ?? 0);
+      mesh.rotation.y = (rotations?.[i] ?? 0) * Math.PI / 2;
+      this.planes.push({ mesh, x: runway.x - half, z: runway.z - half, dx: runway.dx, dz: runway.dz, phase: i % 30 });
     }
   }
 
@@ -396,7 +400,7 @@ export class TransportLayer {
     for (const p of this.planes) {
       const phase = (time + p.phase) % 36;
       const x = phase < 6 ? 2.5 : 2.5 + (phase - 6) * 1.1;
-      p.mesh.position.set(p.x + x, 0.1 + Math.max(0, x - 6) * 0.3, p.z);
+      p.mesh.position.set(p.x + p.dx * x, 0.1 + Math.max(0, x - 6) * 0.3, p.z + p.dz * x);
       p.mesh.visible = phase < 24;
     }
   }

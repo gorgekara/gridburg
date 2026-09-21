@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node tests/run.mjs",
+    "test": "node tests/all.mjs",
     "test:soak": "node tests/soak.mjs",
-    "build": "tsc && node tests/run.mjs && vite build",
+    "build": "tsc && npm test && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {

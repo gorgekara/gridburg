@@ -47,6 +47,7 @@ export interface RSeg {
   oneway: boolean; // traffic flows a -> b only
   fixed: boolean;
   calm: boolean; // traffic calming: slower, but collisions are rarer
+  bike?: boolean; // curbside bicycle tracks within the asphalt; absent in older cities
   // derived
   n: number; // number of polyline pieces
   pts: Float32Array; // (n+1) x,z pairs, uniform in t
@@ -169,7 +170,7 @@ export class Network {
       if ((o.a === b || o.b === b) && Math.hypot(o.cx - cx, o.cz - cz) < 0.6) return null;
     }
     const s = {
-      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed, structure, calm: false,
+      id: this.nextId++, a, b, cx, cz, kind, oneway, fixed, structure, calm: false, bike: false,
       n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
     } as RSeg;
     this.resample(s);
@@ -292,6 +293,7 @@ export class Network {
     this.removeSegKeepNodes(segId);
     const left = this.addSeg(s.a, node.id, l.cx, l.cz, s.kind, s.oneway, s.fixed, 0.05);
     const right = this.addSeg(node.id, s.b, r.cx, r.cz, s.kind, s.oneway, s.fixed, 0.05);
+    for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; }
     return { node, left, right };
   }
 
@@ -543,8 +545,9 @@ export class Network {
     const segs: number[][] = [];
     for (const s of this.segs.values()) {
       // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
-      // the extra kinds set bit 5 as well.
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.calm ? 128 : 0)]);
+      // the extra kinds set bit 5 as well. Bit 6 stores bike tracks in the existing byte;
+      // old saves leave it clear, and structure bits 3–4 remain unchanged.
+      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0)]);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -558,7 +561,7 @@ export class Network {
     for (const [id, a, b, cx, cz, f] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       net.resample(s);
@@ -566,6 +569,7 @@ export class Network {
       net.adj.get(a)!.push(id);
       net.adj.get(b)!.push(id);
     }
+    for (const s of net.segs.values()) if (!canAddBikeLane(s, net)) s.bike = false;
     net.nextId = p.nextId;
     return net;
   }
@@ -625,3 +629,12 @@ export function measurePath(points: { x: number; z: number }[], water: Uint8Arra
   }
   return { len, wet };
 }
+
+/** Tracks fit in the 0.42-unit reserved verge, beyond the carriageway and curb. */
+export function canAddBikeLane(seg: RSeg, net: Network): boolean {
+  return (seg.kind === KIND_ROAD || seg.kind === KIND_AVENUE) && !seg.structure && !seg.fixed
+    && !net.nodes.get(seg.a)?.ring && !net.nodes.get(seg.b)?.ring;
+}
+
+/** Both sides are installed together, priced per unit of road length. */
+export function bikeLaneCost(seg: RSeg): number { return Math.ceil(seg.len * 12); }

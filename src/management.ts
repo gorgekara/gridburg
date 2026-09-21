@@ -8,7 +8,7 @@ export const FUNDING_LABELS: Record<FundingKey, string> = { power: 'Electricity'
 export const defaultFunding = (): Funding => Object.fromEntries(FUNDING_KEYS.map(k => [k, 100])) as Funding;
 export const validFunding = (v: number): boolean => Number.isInteger(v) && v >= 50 && v <= 150 && v % 10 === 0;
 export function serviceFunding(spec: ServiceSpec, funding: Funding): number {
-  if (spec.transport) return 1;
+  if (spec.transport || spec.decoration) return 1;
   const key = spec.civic ?? (spec.power ? 'power' : spec.water ? 'water' : 'sewage');
   return funding[key] / 100;
 }

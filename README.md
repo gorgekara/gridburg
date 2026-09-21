@@ -8,11 +8,19 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 
 **Play:** https://gorgekara.github.io/gridburg/
 
+## Streets and custom parks
+
+- Ordinary surface junctions have pedestrian crossings. Roundabout islands have flower beds, trees and fountains; the river has translucent shallows over a gravel bed.
+- **Roads → Bike lanes** upgrades a surface street or avenue for $12 per cell. Click again to remove. Bike lanes sit outside motor lanes; narrow lanes, expressways, structures and roundabouts are excluded. This adds cycling infrastructure, not simulated cyclist trips.
+- **Parks** lets you compose parks from paths, lawns, plazas, ponds and kiosks. Drag paths, lawns or plazas to paint; paths join neighbouring pieces automatically. **Decorations** adds trees, flowers, benches and fountains. Pieces can be rotated, replaced or bulldozed and are saved with your city. Connect walkable park pieces to a road to activate nearby amenities' recreation coverage. Kiosks are recreation amenities rather than commercial zones.
+- **Transport → Trolleybus stop** creates electric road transit between operating stops on connected surface streets and avenues. Stops need utilities and two-way routes. Overhead wires follow the routes, trolleybuses obey traffic, and ridership appears in the overview. Narrow lanes, expressways, roundabouts, bridges and tunnels cannot carry trolley routes.
+- Airports reserve a one-cell perimeter and three-cell-wide flight corridors extending twelve cells beyond either runway end. Rotate an airport to aim its approach. New buildings and zoning cannot obstruct these areas; saved buildings remain intact. Amber placement shading shows the clearance.
+
 ## What is in it
 
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
-  The HUD menu button reopens it in game and pauses. Settings cover shadows, day length, autosaving and the
-  infinite money cheat, and they persist in the browser.
+  The HUD menu button reopens it in game and pauses. Settings cover visual detail (Low, Balanced or High), shadows, day length, autosaving and the
+  infinite money cheat, and they persist in the browser. Visual detail changes apply immediately: Low simplifies buildings, trees and vehicles; Balanced keeps moderate detail; High adds shutters, flower boxes, roof seams, balconies, roof terraces, shop displays, denser foliage and vehicle trim.
 - **Six silhouettes per building type.** Shops, blocks, offices and towers come in six shapes and
   palettes each, from two-storey brick parades to glass towers, so a commercial street is a mix of
   heights and colours rather than a wall of the same block. Offices and towers carry a company logo,

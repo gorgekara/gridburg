@@ -9,3 +9,12 @@ Position: complete.
 5. Complete — 38 regression checks, four extended simulation scenarios, production build and browser checks.
 
 Behavior: emergency vehicles obey traffic. Fires start once Small town is earned, take 8 seconds of on-scene work to extinguish, and damage buildings after 120 seconds unattended. Patrol protection lasts 180 seconds. Collisions recover after 35 seconds unless police clear them sooner.
+
+## 2026-09-21 streets, parks and transit expansion
+- Complete: crossings at ordinary junctions, landscaped roundabouts, translucent river.
+- Complete: rotated airport buffers and runway approaches enforced in placement and growth, with aircraft aligned to the runway.
+- Complete: persisted road bike-lane upgrades and markings.
+- Complete: Decorations and Parks menus with placeable paths, ponds, kiosks and furnishings.
+- Complete: road-based trolleybus stops, operating lines, vehicles, overhead wires and route visualization.
+- Complete: save regression checks, geometry/placement checks, production build and local UI verification.
+Constraints: preserve existing changes and saves, retain instancing, never deploy.

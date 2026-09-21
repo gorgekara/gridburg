@@ -1,4 +1,6 @@
+import type { VisualDetail } from './detail';
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GRID, mulberry32 } from '../constants';
 import type { Terrain } from '../terrain';
 import type { Raster } from '../roads/raster';
@@ -7,7 +9,7 @@ import type { Network } from '../roads/network';
 import { entrySite } from '../roads/entries';
 
 /** Trees keep full detail within this radius, a single cone beyond it, and vanish past the cull. */
-const TREE_NEAR = 70, TREE_CULL = 250, TREE_LIMIT = 15000;
+const TREE_CULL = 250, TREE_LIMIT = 15000;
 
 export interface RiverSample { x: number; z: number; w: number; y: number }
 /** Scenic upstream cascades stay outside the construction grid. */
@@ -63,6 +65,45 @@ export function landscapeHeight(x: number, z: number, seed: number, river: River
   return bed * Math.min(1, edge / 3) - trench + fade * fade * Math.max(1, hills) * bank * bank;
 }
 
+/** Shared near-tree silhouettes, with baked foliage shading and no extra draw calls. */
+export function canopyGeometry(leafy: boolean, detail: VisualDetail = 1): THREE.BufferGeometry {
+  if (detail === 0) {
+    const g = leafy ? new THREE.IcosahedronGeometry(0.78, 0) : new THREE.ConeGeometry(0.62, 2.1, 7);
+    g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(1), 3));
+    return g;
+  }
+  const parts: THREE.BufferGeometry[] = [];
+  for (let layer = 0; layer < 3; layer++) {
+    const source = leafy
+      ? new THREE.IcosahedronGeometry([0.57, 0.55, 0.5][layer], detail === 2 && layer === 2 ? 1 : 0)
+      : new THREE.ConeGeometry([0.62, 0.48, 0.34][layer], [1.05, 0.95, 0.9][layer], detail === 2 ? 9 : 7, 1, true);
+    const g = source.index ? source.toNonIndexed() : source;
+    if (g !== source) source.dispose();
+    if (leafy) {
+      g.scale(1, 1.12, 1);
+      g.translate([-0.24, 0.23, 0][layer], [-0.16, -0.07, 0.3][layer], [0.02, 0.08, -0.14][layer]);
+    } else {
+      g.rotateY(layer * 0.4);
+      g.translate(0, [-0.42, 0.12, 0.6][layer], 0);
+    }
+    g.computeVertexNormals();
+    const normals = g.getAttribute('normal');
+    const colors = new Float32Array(normals.count * 3);
+    for (let i = 0; i < normals.count; i++) {
+      const shade = 0.78 + layer * 0.055 + Math.max(0, normals.getY(i)) * 0.11;
+      colors[i * 3] = shade * 0.96;
+      colors[i * 3 + 1] = shade;
+      colors[i * 3 + 2] = shade * 0.9;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    parts.push(g);
+  }
+  const geometry = mergeGeometries(parts, false)!;
+  for (const part of parts) part.dispose();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 export class LandscapeLayer {
   readonly group = new THREE.Group();
   private terrain?: Terrain;
@@ -72,8 +113,8 @@ export class LandscapeLayer {
   private natureSites = new Map<number, { bank: number; h: number }>();
   private ground = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
   private trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.8, 5, 1, true), new THREE.MeshStandardMaterial({ color: 0x69523a }), 15000);
-  private crowns = new THREE.InstancedMesh(new THREE.ConeGeometry(0.62, 2.1, 7), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), 15000);
-  private leaves = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.78, 0), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), 15000);
+  private crowns = new THREE.InstancedMesh(canopyGeometry(false), new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1 }), 15000);
+  private leaves = new THREE.InstancedMesh(canopyGeometry(true), new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1 }), 15000);
   private rocks = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0x899084, roughness: 1 }), 1200);
   /** Distant stand-in: one open cone for the whole tree, no shadow. */
   private distant = new THREE.InstancedMesh(new THREE.ConeGeometry(0.66, 2.2, 5, 1, true), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), 15000);
@@ -88,12 +129,25 @@ export class LandscapeLayer {
   private treeColor = new Float32Array(TREE_LIMIT * 3);
   private lodAt = new THREE.Vector3(1e9, 0, 0);
   private lodDirty = true;
+  private detail: VisualDetail = 1;
   constructor() {
     this.ground.receiveShadow = true;
     for (const mesh of [this.trunks, this.crowns, this.leaves, this.rocks]) { mesh.count = 0; mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false; }
     this.distant.count = 0; this.distant.frustumCulled = false; this.distant.receiveShadow = true;
     this.distant.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(TREE_LIMIT * 3), 3);
     this.group.add(this.ground, this.trunks, this.crowns, this.leaves, this.rocks, this.distant);
+  }
+
+  setDetail(detail: VisualDetail): void {
+    if (this.detail === detail) return;
+    this.detail = detail;
+    for (const [mesh, leafy] of [[this.crowns, false], [this.leaves, true]] as const) {
+      const previous = mesh.geometry;
+      mesh.geometry = canopyGeometry(leafy, detail);
+      mesh.boundingSphere = null;
+      previous.dispose();
+    }
+    this.lodDirty = true;
   }
 
   /**
@@ -112,7 +166,7 @@ export class LandscapeLayer {
       if (d2 > TREE_CULL * TREE_CULL) continue;
       color.fromArray(this.treeColor, i * 3);
       obj.rotation.set(0, this.treeRot[i], 0);
-      if (d2 > TREE_NEAR * TREE_NEAR) {
+      if (d2 > [40 * 40, 70 * 70, 85 * 85][this.detail]) {
         obj.scale.set(s, s, s);
         obj.position.set(x, h + s * 0.32, z);
         obj.updateMatrix();

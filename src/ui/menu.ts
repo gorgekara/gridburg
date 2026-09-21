@@ -1,20 +1,24 @@
+import { visualDetail, type VisualDetail } from '../render/detail';
 import { icon } from './icons';
 
 export interface Settings {
   shadows: boolean;
+  visualDetail: VisualDetail;
   dayLength: number;
   autosave: boolean;
   infiniteMoney: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { shadows: true, dayLength: 480, autosave: true, infiniteMoney: false };
+export const DEFAULT_SETTINGS: Settings = { shadows: true, visualDetail: 1, dayLength: 480, autosave: true, infiniteMoney: false };
 
 const KEY = 'gridburg.settings.v1';
 
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) as Partial<Settings> } : { ...DEFAULT_SETTINGS };
+    const settings = raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) as Partial<Settings> } : { ...DEFAULT_SETTINGS };
+    settings.visualDetail = visualDetail(settings.visualDetail);
+    return settings;
   } catch { return { ...DEFAULT_SETTINGS }; }
 }
 
@@ -159,6 +163,20 @@ export class MainMenu {
   private buildSettings(): void {
     const page = el('div', 'menu-page');
     page.append(el('h2', 'menu-heading', 'Settings'));
+    const detailRow = el('label', 'menu-setting');
+    const detailText = el('span', 'menu-label');
+    detailText.append(el('strong', undefined, 'Visual detail'), el('span', 'menu-note', 'Buildings, trees and vehicles. Low favors speed; High adds finer details. Applies immediately.'));
+    const detailSelect = el('select', 'menu-select');
+    detailSelect.setAttribute('aria-label', 'Visual detail');
+    for (const [value, label] of [[0, 'Low'], [1, 'Balanced'], [2, 'High']] as const) {
+      const option = el('option', undefined, label);
+      option.value = String(value);
+      detailSelect.append(option);
+    }
+    detailSelect.value = String(this.settings.visualDetail);
+    detailSelect.addEventListener('change', () => { this.settings.visualDetail = visualDetail(Number(detailSelect.value)); this.commit(); });
+    detailRow.append(detailText, detailSelect);
+    page.append(detailRow);
     page.append(this.toggle('Shadows', 'Turn off for more speed on weak hardware', () => this.settings.shadows, v => { this.settings.shadows = v; }));
     page.append(this.toggle('Save automatically', 'Keeps your city in this browser', () => this.settings.autosave, v => { this.settings.autosave = v; }));
     page.append(this.toggle('Infinite money', 'Building is free and the treasury stays full', () => this.settings.infiniteMoney, v => { this.settings.infiniteMoney = v; }));

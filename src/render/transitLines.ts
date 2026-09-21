@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, SERVICES, T_BUS, T_STATION } from '../constants';
-import { transitNetwork } from '../sim/transit';
+import { GRID, SERVICES, T_BUS, T_STATION, T_TROLLEY } from '../constants';
+import { transitNetwork, trolleyPath } from '../sim/transit';
 import type { TransitMode } from '../sim/transit';
 import type { Raster } from '../roads/raster';
 import { intercityTrack, railPath } from '../roads/rail';
@@ -10,7 +10,7 @@ import { MeshBuilder } from './meshBuilder';
 
 const LINE_COLORS = [0x2e6fd8, 0xd8452e, 0x2ea86a, 0xe0a52a, 0x8a4fd0, 0x2aa8c4];
 
-interface Run { px: Float32Array; pz: Float32Array; cum: Float32Array; marker: THREE.Mesh; phase: number; travel: number }
+interface Run { loop: boolean; px: Float32Array; pz: Float32Array; cum: Float32Array; marker: THREE.Mesh; phase: number; travel: number }
 
 /**
  * The route map for one mode of transport, the way the underground view shows the metro: every
@@ -50,7 +50,8 @@ export class TransitLineLayer {
     if (inputs === this.inputs) return;
     this.inputs = inputs;
     const operating = (i: number): boolean => flags[i] === 0 && raster.accSeg[i] >= 0;
-    const transit = transitNetwork(kind, operating, (a, b) => railPath(net, raster, a, b).length > 1, gates);
+    const pathFor = (a: number, b: number): { x: number; z: number }[] => kind[a] === T_TROLLEY ? trolleyPath(net, raster.accSeg[a], raster.accS[a], raster.accSeg[b], raster.accS[b]) : railPath(net, raster, a, b);
+    const transit = transitNetwork(kind, operating, (a, b) => pathFor(a, b).length > 1, gates);
     const lines = transit.lines.filter(l => l.mode === this.mode);
     const intercity = this.mode === 'rail' ? transit.intercity : [];
     const signature = `${net.version}:${this.mode}:` + JSON.stringify([lines, intercity]);
@@ -61,7 +62,7 @@ export class TransitLineLayer {
     this.markers.clear();
     this.runs = [];
     const half = GRID / 2, b = new MeshBuilder();
-    const stopKind = this.mode === 'bus' ? T_BUS : T_STATION;
+    const stopKind = this.mode === 'bus' ? T_BUS : this.mode === 'trolley' ? T_TROLLEY : T_STATION;
     const [fw, fd] = SERVICES[stopKind].footprint ?? [1, 1];
     const centre = (i: number): { x: number; z: number } => ({ x: i % GRID + fw / 2 - half, z: Math.floor(i / GRID) + fd / 2 - half });
 
@@ -82,7 +83,8 @@ export class TransitLineLayer {
     });
 
     lines.forEach((line, n) => {
-      const path = railPath(net, raster, line.a, line.b);
+      const path = pathFor(line.a, line.b);
+      if (line.mode === 'trolley') path.push(...pathFor(line.b, line.a));
       if (path.length < 2) return;
       const color = LINE_COLORS[n % LINE_COLORS.length];
       const flat = new Float32Array(path.length * 2);
@@ -106,7 +108,7 @@ export class TransitLineLayer {
       marker.renderOrder = 8;
       this.markers.add(marker);
       const length = cum.at(-1) ?? 0;
-      this.runs.push({ px: Float32Array.from(path, p => p.x - half), pz: Float32Array.from(path, p => p.z - half), cum, marker, phase: n * 3.1, travel: Math.max(4, length / 3) });
+      this.runs.push({ loop: line.mode === 'trolley', px: Float32Array.from(path, p => p.x - half), pz: Float32Array.from(path, p => p.z - half), cum, marker, phase: n * 3.1, travel: Math.max(4, length / 3) });
     });
     this.lines.geometry.dispose();
     this.lines.geometry = b.build();
@@ -118,7 +120,7 @@ export class TransitLineLayer {
       const length = run.cum.at(-1) ?? 0;
       if (length <= 0) continue;
       const cycle = ((time + run.phase) % (run.travel * 2)) / run.travel;
-      const d = (cycle <= 1 ? cycle : 2 - cycle) * length;
+      const d = (run.loop ? ((time + run.phase) % run.travel) / run.travel : (cycle <= 1 ? cycle : 2 - cycle)) * length;
       let lo = 0, hi = run.cum.length - 1;
       while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (run.cum[mid] <= d) lo = mid; else hi = mid; }
       const u = (d - run.cum[lo]) / (run.cum[hi] - run.cum[lo] || 1);

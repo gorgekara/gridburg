@@ -9,10 +9,12 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 }});
 const C = await import('../src/constants.ts');
+const { BuildingLayer } = await import('../src/render/buildings.ts');
+const { loadSettings, saveSettings } = await import('../src/ui/menu.ts');
 const { advanceCity, levelForPopulation, MILESTONES } = await import('../src/progression.ts');
 const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
-const { buildingGeometry, BANNER_COLORS, VARIANTS } = await import('../src/render/buildingGeo.ts');
+const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const { newCity } = await import('../src/game.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
@@ -24,6 +26,78 @@ const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policies
 const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`✓ ${name}`); }
+
+test('detailed windows stay below the old box budget and face outwards on every facade', () => {
+  const b = new Builder(1);
+  b.windows(1, 1, 1, 0.2, 1, 1, 1);
+  const g = b.build(), p = g.attributes.position, n = g.attributes.normal;
+  assert.ok(p.count / 3 < 4 * 12, 'framed windows must use fewer triangles than four boxes');
+  const sides = new Set();
+  for (let i = 0; i < p.count; i += 3) {
+    const nx = n.getX(i), nz = n.getZ(i);
+    assert.ok(p.getX(i) * nx + p.getZ(i) * nz > 0.49, 'window faces away from building');
+    sides.add(`${Math.round(nx)},${Math.round(nz)}`);
+    const ax = p.getX(i+1)-p.getX(i), ay = p.getY(i+1)-p.getY(i), az = p.getZ(i+1)-p.getZ(i);
+    const bx = p.getX(i+2)-p.getX(i), by = p.getY(i+2)-p.getY(i), bz = p.getZ(i+2)-p.getZ(i);
+    assert.ok((ay*bz-az*by)*nx + (az*bx-ax*bz)*n.getY(i) + (ax*by-ay*bx)*nz > 0, 'front-face winding agrees with normal');
+  }
+  assert.equal(sides.size, 4);
+  g.dispose();
+});
+
+test('graphics settings migrate, persist, and reject unknown detail levels', () => {
+  const old = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  let saved = JSON.stringify({ shadows: false });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: () => saved, setItem: (_key, value) => { saved = value; },
+  }});
+  try {
+    assert.equal(loadSettings().visualDetail, 1);
+    assert.equal(loadSettings().shadows, false);
+    saveSettings({ ...loadSettings(), visualDetail: 2 });
+    assert.equal(loadSettings().visualDetail, 2);
+    saved = JSON.stringify({ visualDetail: 99 });
+    assert.equal(loadSettings().visualDetail, 1);
+  } finally {
+    if (old) Object.defineProperty(globalThis, 'localStorage', old);
+    else delete globalThis.localStorage;
+  }
+});
+
+test('detail presets increase geometry while keeping building footprints stable', () => {
+  const counts = [];
+  for (const detail of [0, 1, 2]) {
+    const g = buildingGeometry(C.T_RES, 1, 1, detail);
+    g.computeBoundingBox();
+    assert.ok(g.boundingBox.max.x < 0.5 && g.boundingBox.min.x > -0.5);
+    counts.push(g.attributes.position.count);
+    g.dispose();
+  }
+  assert.ok(counts[0] < counts[1] && counts[1] < counts[2]);
+});
+
+test('switching detail preserves building instances and disposes replaced geometry', () => {
+  const layer = new BuildingLayer();
+  const mesh = layer.group.children[0], count = layer.group.children.length;
+  mesh.count = 2;
+  mesh.userData.tileIds = [17, 23];
+  const instances = mesh.instanceMatrix;
+  let disposals = 0;
+  for (const detail of [2, 0, 1]) {
+    mesh.geometry.addEventListener('dispose', () => { disposals++; });
+    layer.setDetail(detail);
+    assert.equal(mesh.count, 2);
+    assert.equal(mesh.instanceMatrix, instances);
+    assert.deepEqual(mesh.userData.tileIds, [17, 23]);
+    assert.equal(layer.group.children.length, count);
+    const geometry = mesh.geometry;
+    layer.setDetail(detail);
+    assert.equal(mesh.geometry, geometry, 'same preset must not rebuild');
+  }
+  assert.equal(disposals, 3);
+  for (const mesh of layer.group.children) { mesh.geometry.dispose(); mesh.dispose(); }
+  for (const material of new Set(layer.group.children.map(mesh => mesh.material))) material.dispose();
+});
 
 test('milestone thresholds, multi-level grants and permanent earned levels', () => {
   assert.equal(levelForPopulation(119), 0);
@@ -204,7 +278,6 @@ test('river valleys never move: the same maps every seed has always made', () =>
   }
   assert.equal(digests.join(' '), golden, 'River valley maps must stay byte for byte what they were');
 });
-const { BuildingLayer } = await import('../src/render/buildings.ts');
 const THREE = await import('three');
 test('building picking follows tile instances after rebuilding in a new location', () => {
   const buildings = new BuildingLayer();
@@ -881,8 +954,8 @@ test('fires and patrol protection persist while old v5 saves still migrate', () 
   const city = demoCity(); city.incidents = { fires: [{ tile: 100, age: 48 }], crime: [[101, 50]], patrol: [[102, 150]] };
   const restored = decode(encode(city)); assert.deepEqual(restored.incidents, city.incidents);
   const empty = demoCity(); const bytes = Buffer.from(encode(empty), 'base64url');
-  // Strip the incident block and the empty rotation block that follows it.
-  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2;
+  // Strip the incident block and the empty rotation and park-path blocks that follow it.
+  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2 + 2;
   // A v5 stream has no policy mask: keep the first 28 header bytes and the body that follows the v9 header.
   const v5 = Buffer.concat([bytes.subarray(0, 28), bytes.subarray(30, bytes.length - tail)]); v5[0] = 5;
   const migrated = decode(v5.toString('base64url')); assert.ok(migrated); assert.equal(migrated.incidents, undefined);
@@ -1145,8 +1218,8 @@ const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/st
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const current = Buffer.from(encode(demoCity()), 'base64url');
-  // Versions before 9 carry no policy mask and no rotation block: drop both.
-  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 2)]); legacy[0] = 6;
+  // Versions before 9 carry no policy mask, rotation block or park paths: drop them all.
+  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 4)]); legacy[0] = 6;
   assert.ok(decode(legacy.toString('base64url')), 'Version 6 cities remain readable');
   const net = new Network();
   net.insertPath([{ x: 30, z: 10 }, { x: 30, z: 65 }], 0);

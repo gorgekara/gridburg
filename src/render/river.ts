@@ -47,9 +47,13 @@ export class RiverLayer {
     );
     this.water = new THREE.Mesh(
       new THREE.BufferGeometry(),
-      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.22, metalness: 0.1, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.22, metalness: 0.1, side: THREE.DoubleSide, transparent: true, opacity: 0.84, depthWrite: false }),
     );
+    // Depth testing keeps bridges and boat hulls in front. Draw the surface before transparent
+    // wakes/spray, without writing depth that would hide those effects.
+    this.water.renderOrder = -1;
     const mat = this.water.material as THREE.MeshStandardMaterial;
+    mat.forceSinglePass = true; // The flat water ribbon needs only one transparent draw.
     mat.onBeforeCompile = shader => {
       shader.uniforms.riverTime = this.time;
       shader.vertexShader = 'attribute vec2 riverUV;\nvarying vec2 vRiver;\nvarying float vHeight;\n' + shader.vertexShader;
@@ -74,6 +78,7 @@ export class RiverLayer {
         vec3 deep = diffuseColor.rgb * 0.72;
         vec3 shallow = mix(diffuseColor.rgb, vec3(0.5, 0.78, 0.74), 0.45);
         diffuseColor.rgb = mix(shallow, deep, smoothstep(0.0, 0.85, depth));
+        diffuseColor.a *= mix(0.86, 1.0, smoothstep(0.0, 0.8, depth));
         float flow = rFlow(vRiver, riverTime);
         float streak = smoothstep(0.58, 0.82, flow) * (0.35 + 0.65 * depth);
         diffuseColor.rgb += vec3(0.08, 0.12, 0.13) * streak;
@@ -81,7 +86,8 @@ export class RiverLayer {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.93, 0.92), foam * 0.5);
         // White water wherever the bed is tilted: the chute foams, the flats below do not.
         float slope = clamp(length(vec2(dFdx(vHeight), dFdy(vHeight))) * 26.0, 0.0, 1.0);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.92, 0.94), slope * (0.5 + flow * 0.45));`);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.92, 0.94), slope * (0.5 + flow * 0.45));
+        diffuseColor.a = mix(diffuseColor.a, 0.95, max(slope, foam * 0.5));`);
       shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         float e = 0.08, f0 = rFlow(vRiver, riverTime);
         vec2 grad = vec2(rFlow(vRiver + vec2(e, 0.0), riverTime) - f0, rFlow(vRiver + vec2(0.0, e), riverTime) - f0) / e;
@@ -111,17 +117,30 @@ export class RiverLayer {
     const count = samples.length;
     const elevate = (geometry: THREE.BufferGeometry, offset: number): void => {
       const p = geometry.getAttribute('position');
-      for (let i = 0; i < samples.length; i++) {
-        p.setY(i * 2, samples[i].y + offset); p.setY(i * 2 + 1, samples[i].y + offset);
+      for (let i = 0; i < p.count / 2; i++) {
+        const sample = samples[i % samples.length];
+        p.setY(i * 2, sample.y + offset); p.setY(i * 2 + 1, sample.y + offset);
       }
       geometry.computeVertexNormals(); geometry.computeBoundingSphere();
     };
 
     const bb = new MeshBuilder();
     bb.ribbon(pts, count, widths.map((w, i) => w + 0.85 + Math.sin(i * 0.73) * 0.16), 0.006, 0xcdbf8f);
+    // A cool gravel bed beneath the translucent water; kept in the bank's existing draw call.
+    // Its tiny height offset avoids z-fighting without exposing terrain through the river.
+    const bedStart = bb.ribbon(pts, count, widths.map(w => w + WATER_EDGE), 0.009, 0x718b80)[0];
     this.bank.geometry.dispose();
     this.bank.geometry = bb.build();
     elevate(this.bank.geometry, 0.006);
+    const bedPositions = this.bank.geometry.getAttribute('position');
+    const bedColors = this.bank.geometry.getAttribute('color');
+    const gravel = new THREE.Color();
+    for (let i = bedStart; i < bedPositions.count; i++) {
+      bedPositions.setY(i, bedPositions.getY(i) + 0.003);
+      gravel.setHex(0x718b80).multiplyScalar(0.94 + Math.sin(Math.floor((i - bedStart) / 2) * 1.73) * 0.06);
+      bedColors.setXYZ(i, gravel.r, gravel.g, gravel.b);
+    }
+    this.bank.geometry.computeBoundingSphere();
 
     const wb = new MeshBuilder();
     this.range = wb.ribbon(pts, count, widths.map((w) => w + WATER_EDGE), 0.014, WATER.getHex());

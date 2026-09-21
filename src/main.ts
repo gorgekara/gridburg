@@ -1,3 +1,6 @@
+import { ParkPathLayer } from './render/parkPaths';
+import { TrolleyWireLayer } from './render/trolleyWires';
+import { BikeLaneLayer } from './render/bikeLanes';
 import * as THREE from 'three';
 import { StructureLayer } from './render/structures';
 import { LandscapeLayer } from './render/landscape';
@@ -41,6 +44,12 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
 
 const { renderer, scene, camera, controls, grid, update: updateScene, setWalking } = createScene(canvas);
+const trolleyWires = new TrolleyWireLayer();
+scene.add(trolleyWires.group);
+const parkPaths = new ParkPathLayer();
+scene.add(parkPaths.group);
+const bikeLanes = new BikeLaneLayer();
+scene.add(bikeLanes.group);
 const landscape = new LandscapeLayer();
 const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
@@ -215,12 +224,12 @@ function blockedAt(x: number, z: number, y = 0): boolean {
 const walker = new Walker(camera, canvas, {
   blocked: blockedAt,
   ground: groundAt,
-  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
 });
 const driver = new Driver(camera, scene, {
   blocked: blockedAt,
   ground: groundAt,
-  onExit: () => { setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
 });
 /** Take the wheel on the nearest street to the middle of the view, driving on the right. */
 function startDriving(): void {
@@ -242,6 +251,7 @@ function startDriving(): void {
   const x = hit.x - tz * lane - GRID / 2, z = hit.z + tx * lane - GRID / 2;
   input.suspended = true;
   setWalking(true);
+  game.setStreetView(true);
   furniture.setVisible(true);
   driver.enter(x, z, Math.atan2(tx, tz));
   hud.setWalking(true, 'drive');
@@ -261,6 +271,7 @@ function startWalking(): void {
   camera.getWorldDirection(dir);
   input.suspended = true;
   setWalking(true);
+  game.setStreetView(true);
   furniture.setVisible(true);
   walker.enter(spot.x, spot.z, Math.atan2(-dir.x, -dir.z));
   hud.setWalking(true, 'walk');
@@ -282,7 +293,7 @@ const showGrid = (t: string): void => { grid.visible = !['none', 'inspect'].incl
 // Reaching for a service shows what the city already covers, so the gap is visible before placing.
 // A transport tool in hand opens that mode's route map, the way the metro tool opens the tunnels.
 const showTransitLines = (t: string): void => {
-  transitLines.setMode(t === 'bus' ? 'bus' : t === 'station' ? 'rail' : null);
+  transitLines.setMode(t === 'trolley' ? 'trolley' : t === 'bus' ? 'bus' : t === 'station' ? 'rail' : null);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
 };
 // Which entrances a railway can leave town through; recomputed with the network, not stored.
@@ -301,18 +312,21 @@ input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
 game.onTerrain = () => { alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
+  parkPaths.rebuild(game.parkPaths);
   showCoverage();
   boats.rebuild(game.kind, game.terrain);
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   roads.rebuild(game.net, game.terrain);
+  bikeLanes.rebuild(game.net);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
   pedestrians.rebuild(game.net);
   furniture.rebuild(game.net, game.kind, game.raster);
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
+  trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
@@ -320,8 +334,9 @@ game.onEdit = () => {
 game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water);
-  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
+  trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   helicopters.watch(game.incidents);
@@ -352,6 +367,9 @@ let playing = false;
 let resumeSpeed = 1;
 
 function applySettings(s: Settings): void {
+  buildings.setDetail(s.visualDetail);
+  landscape.setDetail(s.visualDetail);
+  cars.setDetail(s.visualDetail);
   renderer.shadowMap.enabled = s.shadows;
   scene.traverse(o => { const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material; if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true; });
   setDayLength(s.dayLength);

@@ -1,3 +1,4 @@
+import { T_TROLLEY, T_TAXI } from '../constants';
 import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, LEISURE_UNLOCK } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
 import { POLICIES, POLICY_IDS } from '../policies';
@@ -58,6 +59,7 @@ const CATEGORIES: Category[] = [
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
       { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
+      { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
       { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Widening costs the difference; narrowing is free' },
     ],
   },
@@ -105,7 +107,7 @@ const CATEGORIES: Category[] = [
   },
   {
     id: 'services', label: 'Services',
-    tools: (['park', 'playground', 'sports', 'garden', 'clinic', 'hospital', 'cityhospital', 'school', 'fire', 'police', 'policehq', 'recycling', 'university'] as Tool[]).map(id => {
+    tools: (['clinic', 'hospital', 'cityhospital', 'school', 'fire', 'police', 'policehq', 'recycling', 'university'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: `Base $${spec.upkeep}/s · ${spec.radius} cell radius`,
         hint: `${spec.name}: serves ${spec.capacity?.toLocaleString()} residents within ${spec.radius} cells. Both building and homes need highway-connected roads. Unlocks at ${MILESTONES[spec.unlock ?? 0].name}` };
@@ -116,8 +118,25 @@ const CATEGORIES: Category[] = [
       { id: 'bus', label: 'Bus stop', price: svc(T_BUS), note: '9-cell catchment · $0.45/s', hint: 'Place two stops near homes and jobs. Automatic return routes follow roads; congestion reduces capacity. Needs utilities' },
       { id: 'station', label: 'Railway station', price: svc(T_STATION), note: '3 × 2 cells · $3/s', hint: 'Two stations connect automatically by elevated tracks along road corridors. A station near a city entrance also runs a service out of town. 18-cell catchment, 120 passenger capacity per connection' },
       { id: 'subway', label: 'Metro station', price: svc(T_SUBWAY), note: '1 cell · $2.5/s', hint: 'Metro stations link to each other automatically through underground tunnels, so trains skip road traffic. 14-cell catchment, 100 passenger capacity per connection. Needs utilities' },
-      { id: 'airport', label: 'Regional airport', price: svc(T_AIRPORT), note: '8 × 3 cells · $7/s', hint: 'Clear a runway-sized site beside a road. Flights replace some incoming car trips within 24 cells; needs utilities' },
+      { id: 'taxi', label: 'Taxi stop', price: svc(T_TAXI), note: '4 cabs · On-demand rides', hint: 'One stop dispatches up to four taxis for nearby passengers. Cabs drive directly to destinations through traffic. Needs road access and utilities' },
+      { id: 'trolley', label: 'Trolleybus stop', price: svc(T_TROLLEY), note: 'Electric road transit', hint: 'Place two stops beside connected surface streets or avenues. Operating stops create trolleybus routes automatically and need utilities' },
+      { id: 'airport', label: 'Regional airport', price: svc(T_AIRPORT), note: '8 × 3 cells · $7/s', hint: 'Clear an 8 × 3 site, its perimeter and 12 cells beyond each runway end. Rotate to aim the flight path. Flights replace some incoming car trips within 24 cells; needs utilities' },
     ],
+  },
+  {
+    id: 'parks', label: 'Parks',
+    tools: (['parkpath', 'lawn', 'plaza', 'pond', 'parkshop', 'park', 'playground', 'sports', 'garden'] as Tool[]).map(id => {
+      const spec = SERVICES[SERVICE_TOOL[id]!];
+      return { id, label: spec.name, price: money(spec.cost), note: id === 'parkpath' ? 'Straight or curved · $15 / cell' : ['lawn', 'plaza'].includes(id) ? 'Drag to paint' : 'Place and rotate',
+        hint: spec.decoration ? 'Create your own park on clear land. Join paths, plazas or lawns to a road; ponds and kiosks belong beside them. Paths connect automatically. Right-click or G rotates a piece' : `Place ${spec.name.toLowerCase()} near residents for recreation` };
+    }),
+  },
+  {
+    id: 'decorations', label: 'Decorations',
+    tools: (['tree', 'flowers', 'bench', 'fountain'] as Tool[]).map(id => {
+      const spec = SERVICES[SERVICE_TOOL[id]!];
+      return { id, label: spec.name, price: money(spec.cost), note: 'Landscape your city', hint: 'Place on clear land, or replace another decoration. Connect to park paths or a road to benefit nearby residents. G rotates; Bulldoze removes' };
+    }),
   },
   {
     id: 'bulldoze', label: 'Bulldoze',
@@ -181,7 +200,7 @@ export class Hud {
   private demandBars: HTMLElement[] = [];
   private toolBtns = new Map<Tool, HTMLButtonElement>();
   private catBtns = new Map<string, HTMLButtonElement>();
-  private modeBtns = new Map<RoadMode, HTMLButtonElement>();
+  private modeBtns = new Map<string, HTMLButtonElement>();
   private heightBtns = new Map<number, HTMLButtonElement>();
   private elevation = 0;
   private panels = new Map<string, HTMLElement>();
@@ -527,6 +546,8 @@ export class Hud {
           height.append(b);
         }
         body.append(height);
+      }
+      if (c.id === 'roads' || c.id === 'parks') {
         const seg = el('div', 'modes');
         seg.append(el('span', 'mlabel', 'Draw'));
         for (const m of MODES) {
@@ -534,7 +555,7 @@ export class Hud {
           b.append(icon(m.id, 20), el('span', undefined, m.label));
           b.title = `${m.hint} (C cycles)`;
           b.addEventListener('click', () => actions.setMode(m.id));
-          this.modeBtns.set(m.id, b);
+          this.modeBtns.set(`${c.id}:${m.id}`, b);
           seg.append(b);
         }
         body.append(seg);
@@ -710,14 +731,14 @@ export class Hud {
 
   setMode(m: RoadMode): void {
     this.mode = m;
-    for (const [id, b] of this.modeBtns) b.classList.toggle('active', id === m);
+    for (const [id, b] of this.modeBtns) b.classList.toggle('active', id.endsWith(`:${m}`));
     this.refreshHint();
   }
 
   private refreshHint(): void {
     const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
     if (!def) { this.hint.textContent = ''; return; }
-    if (['lane', 'road', 'avenue', 'highway'].includes(this.tool)) {
+    if (['lane', 'road', 'avenue', 'highway', 'parkpath'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
       const height = this.elevation > 0 ? 'Bridge: minimum 14 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 14 cells, clear portals. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
@@ -813,7 +834,7 @@ export class Hud {
       value.classList.toggle('neg', s.civic[key] < 35);
     }
     this.milestoneRows.forEach((row, i) => { row.classList.toggle('earned', i <= s.cityLevel); row.classList.toggle('next', i === s.cityLevel + 1); });
-    this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.railLines} rail lines · ${s.transport.intercityLines} intercity lines · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · ${s.transport.railPassengers} intercity rail passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
+    this.transportStats.textContent = `${s.entries} city entrances · ${s.transport.busLines} bus routes · ${s.transport.trolleyLines ?? 0} trolley routes · ${s.transport.railLines} rail lines · ${s.transport.intercityLines} intercity lines · ${s.transport.subwayLines ?? 0} metro links · ${s.transport.airports} airports · ${s.transport.taxiStops ?? 0} taxi stops · ${s.transport.taxiRiders ?? 0} taxi riders/min · ${s.transport.riders} transit riders/min · ${s.transport.airPassengers} air passengers/min · ${s.transport.railPassengers} intercity rail passengers/min · fares $${s.transport.fareIncome.toFixed(2)}/s`;
     this.incidentStats.textContent = `${s.incidents.patrols} police cars · ${s.incidents.fireEngines} fire engines · ${s.incidents.extinguished} fires extinguished · ${s.incidents.prevented} crimes prevented · ${s.incidents.foiled} robberies foiled · ${s.incidents.robbed} got away`;
     this.treatmentStats.textContent = `${s.treatedSewage} sewage units filtered`;
     for (const id of ['office', 'leisure', 'entry'] as Tool[]) {

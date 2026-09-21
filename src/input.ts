@@ -1,3 +1,7 @@
+import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
+import { airportPlacementBlocked, airportClearanceTiles } from './airports';
+import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
+import { canAddBikeLane, bikeLaneCost } from './roads/network';
 import { structurePlan, roadHeight, BRIDGE_RISE, STRUCTURE_COST } from './roads/structures';
 import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
@@ -18,6 +22,7 @@ import type { Game } from './game';
 
 export type Tool =
   | 'none' | 'inspect'
+  | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
@@ -28,6 +33,7 @@ export type Tool =
 export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
+  taxi: 0xe9bb43, bikelane: 0x58b58d, trolley: 0x72b58d, parkpath: 0xd0be98, pond: 0x5199a5, parkshop: 0xd8c49b, tree: 0x4c7b49, flowers: 0xc7667d, bench: 0xa27e53, fountain: 0x73b3be, plaza: 0xb7b3a6, lawn: 0x749858,
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
@@ -36,7 +42,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   bulldoze: 0xe04b3a,
 };
-export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
+export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE, farm: T_FARM, leisure: T_LEISURE };
 
 const BAD = 0xe04b3a;
@@ -163,11 +169,11 @@ export class Input {
   }
 
   private isRoadTool(): boolean {
-    return ['road', 'avenue', 'lane', 'highway'].includes(this.tool);
+    return ['road', 'avenue', 'lane', 'highway', 'parkpath'].includes(this.tool);
   }
 
   private isRectTool(): boolean {
-    return this.tool in ZONE_TOOL || this.tool === 'bulldoze';
+    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze'].includes(this.tool);
   }
 
   private onKey = (e: KeyboardEvent): void => {
@@ -202,7 +208,7 @@ export class Input {
     this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
-    if (this.roadTarget && ['upgrade', 'oneway'].includes(this.tool)) {
+    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
     }
@@ -220,17 +226,22 @@ export class Input {
   }
 
   private gridSnap(p: P): P {
-    return gridPoint(p);
+    return this.tool === 'parkpath' ? { x: Math.max(0.25, Math.min(GRID - 0.25, Math.round(p.x * 4) / 4)), z: Math.max(0.25, Math.min(GRID - 0.25, Math.round(p.z * 4) / 4)) } : gridPoint(p);
   }
 
   /** Snap a road point to an existing node, then an existing road, then the grid intersection. */
   private snap(p: P): P {
+    if (this.tool === 'parkpath') {
+      for (const path of this.game.parkPaths) for (const end of [{ x: path.ax, z: path.az }, { x: path.bx, z: path.bz }]) if (Math.hypot(end.x - p.x, end.z - p.z) < 0.3) return end;
+      return this.gridSnap(p);
+    }
     const hit = this.game.net.nearestSeg(p.x, p.z, 0.8);
     if (hit?.seg.structure && hit.s > 0.9 && hit.seg.len - hit.s > 0.9) return gridPoint(p);
     return roadPoint(this.game.net, p);
   }
 
   private onRoad(p: P): boolean {
+    if (this.tool === 'parkpath') return false;
     const net = this.game.net;
     return !!net.nearestNode(p.x, p.z, 0.9) || !!net.nearestSeg(p.x, p.z, 0.8);
   }
@@ -348,6 +359,15 @@ export class Input {
   // ---- roads ---------------------------------------------------------------------------------------
   /** Heading of an existing dead-end road at this point, so Smooth mode can continue it. */
   private tangentAt(p: P): P | null {
+    if (this.tool === 'parkpath') {
+      for (const path of this.game.parkPaths) {
+        for (const [x, z, cx, cz] of [[path.ax, path.az, path.cx, path.cz], [path.bx, path.bz, path.cx, path.cz]]) {
+          const len = Math.hypot(x - cx, z - cz);
+          if (len && Math.hypot(p.x - x, p.z - z) < 0.05) return { x: (x - cx) / len, z: (z - cz) / len };
+        }
+      }
+      return null;
+    }
     const net = this.game.net;
     const n = net.nearestNode(p.x, p.z, 0.05);
     if (!n || net.degree(n.id) !== 1) return null;
@@ -397,6 +417,7 @@ export class Input {
   }
 
   private roadStructure(path: P[]): Structure {
+    if (this.tool === 'parkpath') return 0;
     if (this.elevation < 0) return 2;
     // Raised by hand, or automatically where the road would otherwise run through the river.
     return this.elevation > 0 || measurePath(path, this.game.terrain.water).wet > 0 ? 1 : 0;
@@ -415,6 +436,7 @@ export class Input {
   }
 
   private roadProblem(path: P[]): string | null {
+    if (this.tool === 'parkpath') return this.game.parkPathProblem(buildPieces(path));
     const structure = this.roadStructure(path);
     if (structure) {
       const plan = structurePlan(this.game.net, this.game.terrain, this.game.kind, path, this.drawKind(), structure);
@@ -443,6 +465,7 @@ export class Input {
   }
 
   private roadCost(path: P[]): number {
+    if (this.tool === 'parkpath') return Math.ceil(buildPieces(path).reduce((n, p) => n + sampleCurve(p).len, 0) * PARK_PATH_COST);
     const unit = ROAD_COST[this.drawKind()];
     const m = measurePath(path, this.game.terrain.water);
     return Math.round(m.len * unit * STRUCTURE_COST[this.roadStructure(path)]);
@@ -472,10 +495,11 @@ export class Input {
     if (problem) { this.onToast?.(problem); return; }
     if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
     const joins = this.onRoad(end);
-    const added = g.net.insertPath(path, this.drawKind(), false, this.roadStructure(path));
-    if (added.length) {
-      g.spend(cost);
-      g.flush();
+    if (this.tool === 'parkpath') {
+      if (g.addParkPaths(buildPieces(path))) g.flush();
+    } else {
+      const added = g.net.insertPath(path, this.drawKind(), false, this.roadStructure(path));
+      if (added.length) { g.spend(cost); g.flush(); }
     }
     // Keep laying from where this piece ended, unless it joined an existing road.
     const prev = path[path.length - 2];
@@ -516,7 +540,7 @@ export class Input {
         const cost = this.roadCost(path);
         const problem = this.roadProblem(path);
         ok = !problem && this.game.canAfford(cost);
-        const hw = HALF_WIDTH[this.drawKind()];
+        const hw = this.tool === 'parkpath' ? PARK_PATH_HALF : HALF_WIDTH[this.drawKind()];
         for (const c of buildPieces(path)) {
           const sm = sampleCurve(c);
           const pts = new Float32Array((sm.n + 1) * 2);
@@ -537,7 +561,7 @@ export class Input {
           b.disc(c.x - half, c.z - half, 0.16, 0.11, GUIDE);
         }
         b.disc(end.x - half, end.z - half, 0.26, 0.11, GUIDE);
-        label = problem ?? `$${cost.toLocaleString()} · ${this.roadStructure(path) === 1 ? "Bridge" : this.roadStructure(path) === 2 ? "Tunnel" : "Road"}`;
+        label = problem ?? `$${cost.toLocaleString()} · ${this.tool === 'parkpath' ? "Park path" : this.roadStructure(path) === 1 ? "Bridge" : this.roadStructure(path) === 2 ? "Tunnel" : "Road"}`;
       }
     }
     b.disc(start.x - half, start.z - half, 0.26, 0.11, GUIDE);
@@ -588,6 +612,15 @@ export class Input {
       const sx = this.startTile % GRID, sz = (this.startTile / GRID) | 0;
       const cx = this.curTile % GRID, cz = (this.curTile / GRID) | 0;
       changed += g.net.removeInRect(Math.min(sx, cx), Math.min(sz, cz), Math.max(sx, cx) + 1, Math.max(sz, cz) + 1);
+    } else if (['parkpath', 'plaza', 'lawn'].includes(this.tool)) {
+      const k = SERVICE_TOOL[this.tool]!;
+      for (const t of tiles) {
+        if (g.kind[t] === k) continue;
+        const problem = this.serviceProblem(t, k);
+        if (problem === 'Not enough money') { broke = true; break; }
+        if (problem) continue;
+        if (g.setKind(t, k, SERVICES[k].cost)) changed++;
+      }
     } else {
       const zk = ZONE_TOOL[this.tool]!;
       if (zk === T_OFFICE && g.stats.cityLevel < OFFICE_UNLOCK) { this.onToast?.('Offices unlock at Thriving town (900 residents)'); return; }
@@ -621,6 +654,7 @@ export class Input {
       const cost = Math.max(0, Math.round((ROAD_COST[next] - ROAD_COST[h.seg.kind]) * h.seg.len * STRUCTURE_COST[h.seg.structure ?? 0]));
       if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
       h.seg.kind = next;
+      if (!canAddBikeLane(h.seg, net)) h.seg.bike = false;
       net.version++;
       g.spend(cost);
       g.flush();
@@ -644,6 +678,14 @@ export class Input {
       net.version++;
       g.spend(n.stop ? COST_STOP : 0);
       g.flush();
+    } else if (this.tool === 'bikelane') {
+      const h = this.roadHit(p, 0.9);
+      if (!h || (!h.seg.bike && !canAddBikeLane(h.seg, net))) { this.onToast?.('Bike lanes need a surface street or avenue away from roundabouts'); return; }
+      const cost = h.seg.bike ? 0 : bikeLaneCost(h.seg);
+      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
+      h.seg.bike = !h.seg.bike;
+      net.version++;
+      g.spend(cost); g.flush();
     } else if (this.tool === 'calm') {
       const h = this.roadHit(p, 0.9);
       if (!h || h.seg.fixed) { this.onToast?.('Pick a street to calm'); return; }
@@ -678,7 +720,7 @@ export class Input {
       const t = this.tileOf(p);
       const why = this.serviceProblem(t, k);
       if (why) { this.onToast?.(why); return; }
-      g.setKind(t, k, SERVICES[k].cost, this.placeRotation);
+      g.setKind(t, k, SERVICES[k].cost, k === T_PATH ? 0 : this.placeRotation);
       g.flush();
     }
   }
@@ -713,10 +755,13 @@ export class Input {
     const spec = SERVICES[k];
     if (g.stats.cityLevel < (spec.unlock ?? 0)) return `Unlocks at ${MILESTONES[spec.unlock!].name} (${MILESTONES[spec.unlock!].population} residents)`;
     const cells = footprint(t, k, this.placeRotation);
+    if (cells.some(i => g.airportClearance[i])) return 'Keep the airport runway and flight path clear';
+    if (k === T_AIRPORT && airportPlacementBlocked(t, this.placeRotation, g.kind, g.level, g.rot)) return 'Clear buildings beside the runway and along both flight paths first';
     if (!cells.length || cells.some(i => !g.buildable(i, spec.needsWater))) return 'Cannot build on water or roads';
     if (spec.footprint && cells.some(i => g.kind[i] !== T_EMPTY)) return 'Clear the whole building footprint first';
-    if (isService(g.kind[t])) return 'There is already a service building here';
-    if (g.raster.accSeg[t] < 0) return 'Too far from a road';
+    if (isService(g.kind[t]) && !(spec.decoration && isDecoration(g.kind[t]))) return 'There is already a service building here';
+    if (spec.decoration && g.kind[t] && !isDecoration(g.kind[t])) return 'Clear this tile before decorating it';
+    if (!spec.decoration && g.raster.accSeg[t] < 0) return 'Too far from a road';
     if (spec.needsWater && !touchesWater(g.terrain, t % GRID, (t / GRID) | 0)) return `${spec.name} must sit on the river bank`;
     if (!g.canAfford(spec.cost)) return 'Not enough money';
     return null;
@@ -763,11 +808,15 @@ export class Input {
         hx = n.x; hz = n.z; size = 1.4;
         label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Remove signal' : `$${COST_LIGHT}`;
       } else { size = 0.5; color = BAD; }
-    } else if (['oneway', 'upgrade', 'calm'].includes(this.tool)) {
+    } else if (['oneway', 'upgrade', 'calm', 'bikelane'].includes(this.tool)) {
       const h = this.roadHit(p, 0.9);
       if (h && !h.seg.fixed) {
         hx = h.x; hz = h.z; size = 0.8;
-        if (this.tool === 'calm') {
+        if (this.tool === 'bikelane') {
+          ok = !!h.seg.bike || (canAddBikeLane(h.seg, this.game.net) && this.game.canAfford(bikeLaneCost(h.seg)));
+          label = h.seg.bike ? 'Remove bike lanes' : !canAddBikeLane(h.seg, this.game.net) ? 'Needs a surface street or avenue' : `$${bikeLaneCost(h.seg).toLocaleString()} · Bike lanes`;
+          if (!ok) color = BAD;
+        } else if (this.tool === 'calm') {
           label = h.seg.kind === KIND_HIGHWAY ? 'Expressways cannot be calmed'
             : h.seg.calm ? 'Remove calming' : `$${Math.round(COST_CALM * h.seg.len).toLocaleString()}`;
         } else if (this.tool === 'upgrade') {
@@ -781,7 +830,7 @@ export class Input {
       if (k !== undefined) {
         const spec = SERVICES[k];
         const tile = this.tileOf(p);
-        hx = this.game.raster.lotX[tile]; hz = this.game.raster.lotZ[tile];
+        if (!spec.decoration) { hx = this.game.raster.lotX[tile]; hz = this.game.raster.lotZ[tile]; }
         if (spec.footprint) {
           [size, depth] = footprintSize(k, this.placeRotation);
           hx = tile % GRID + size / 2; hz = Math.floor(tile / GRID) + depth / 2;
@@ -790,6 +839,14 @@ export class Input {
           this.serviceRadius.scale.set(spec.radius, 1, spec.radius);
           this.serviceRadius.position.set(hx - half, 0.1, hz - half);
           this.serviceRadius.visible = true;
+        }
+        if (k === T_AIRPORT) {
+          const b = new MeshBuilder();
+          for (const tile of airportClearanceTiles(this.tileOf(p), this.placeRotation)) {
+            const x = tile % GRID - half, z = Math.floor(tile / GRID) - half;
+            b.ribbon([x + 0.5, z, x + 0.5, z + 1], 2, 0.48, 0.08, 0xd9aa53);
+          }
+          this.shape.geometry.dispose(); this.shape.geometry = b.build(); this.shape.visible = true;
         }
         const why = this.serviceProblem(this.tileOf(p), k);
         ok = !why;

@@ -40,6 +40,18 @@ export const T_NUCLEAR = 33;
 /** Two specialised zones: farmland counts towards industry, leisure & tourism towards commerce. */
 export const T_FARM = 34;
 export const T_LEISURE = 35;
+export const T_PATH = 36;
+export const T_POND = 37;
+export const T_PARK_SHOP = 38;
+export const T_TREE = 39;
+export const T_FLOWERS = 40;
+export const T_BENCH = 41;
+export const T_FOUNTAIN = 42;
+export const T_PLAZA = 43;
+export const T_LAWN = 44;
+export const T_TROLLEY = 45;
+export const T_TAXI = 46;
+export const isDecoration = (kind: number): boolean => kind >= T_PATH && kind <= T_LAWN;
 export const LEISURE_UNLOCK = 2;
 /** Jobs at a fishing dock, and dollars a second its boats land from a clean river. */
 export const DOCK_JOBS = 24;
@@ -73,7 +85,9 @@ export interface ServiceSpec {
   name: string;
   unlock?: number;
   footprint?: [number, number];
-  transport?: 'bus' | 'rail' | 'subway' | 'air';
+  transport?: 'bus' | 'rail' | 'subway' | 'air' | 'trolley' | 'taxi';
+  /** Landscaping pieces can be built without direct road access. */
+  decoration?: boolean;
   treatment?: number;
   civic?: CivicNeed;
   capacity?: number;
@@ -129,6 +143,25 @@ Object.assign(SERVICES, {
   [T_AIRPORT]: { name: 'Regional airport', cost: 12000, upkeep: 7, unlock: 5, transport: 'air', footprint: [8, 3], radius: 24, capacity: 240, power: 0, water: 0, sewage: 0, pollution: 0.5, needsWater: false },
   [T_SUBWAY]: { name: 'Metro station', cost: 4200, upkeep: 2.5, unlock: 4, transport: 'subway', radius: 14, capacity: 100, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
   [T_TREATMENT]: { name: 'Sewage treatment plant', cost: 3200, upkeep: 2, unlock: 2, treatment: 0.95, sewage: 2200, power: 0, water: 0, pollution: 0, needsWater: true },
+});
+
+const decoration = (name: string, cost: number, capacity = 0): ServiceSpec => ({
+  name, cost, upkeep: cost * 0.0003, decoration: true, power: 0, water: 0, sewage: 0,
+  pollution: 0, needsWater: false,
+  ...(capacity ? { civic: 'leisure' as const, capacity, radius: 6 } : {}),
+});
+Object.assign(SERVICES, {
+  [T_PATH]: decoration('Park path', 15),
+  [T_POND]: decoration('Park pond', 160, 60),
+  [T_PARK_SHOP]: decoration('Park kiosk', 260, 100),
+  [T_TREE]: decoration('Tree grove', 45, 30),
+  [T_FLOWERS]: decoration('Flower bed', 35, 20),
+  [T_BENCH]: decoration('Bench', 25, 15),
+  [T_FOUNTAIN]: decoration('Fountain', 240, 90),
+  [T_PLAZA]: decoration('Paved plaza', 40),
+  [T_LAWN]: decoration('Park lawn', 10),
+  [T_TAXI]: { name: 'Taxi stop', cost: 650, upkeep: 0.5, unlock: 2, transport: 'taxi', radius: 10, capacity: 4, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
+  [T_TROLLEY]: { name: 'Trolleybus stop', cost: 850, upkeep: 0.7, unlock: 2, transport: 'trolley', radius: 10, capacity: 40, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });
 
 // Capacity per level (index 0 = zoned but empty).

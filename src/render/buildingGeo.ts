@@ -1,3 +1,6 @@
+import { parkGeometry } from './parkGeo';
+import { isDecoration, T_TROLLEY, T_TAXI } from '../constants';
+import type { VisualDetail } from './detail';
 import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES, T_FARM, T_LEISURE } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -16,7 +19,10 @@ export class Builder {
   /** Where the model's own centre sits; lets a multi-tile site be authored around its middle. */
   shift = { x: 0, z: 0 };
 
-  constructor(seed: number) {
+  detail: VisualDetail;
+
+  constructor(seed: number, detail: VisualDetail = 1) {
+    this.detail = detail;
     this.rnd = mulberry32(seed);
   }
 
@@ -42,6 +48,16 @@ export class Builder {
     const g = new THREE.BoxGeometry(w, h, d);
     g.translate(x, y + h / 2, z);
     this.paint(g, color);
+    if (w > 0.3 && d > 0.3 && h > 0.3) {
+      const part = this.parts[this.parts.length - 1];
+      const positions = part.getAttribute('position'), colors = part.getAttribute('color');
+      // Subtle baked grounding; retain the authored color at the top of each volume.
+      for (let i = 0; i < positions.count; i++) {
+        const height = Math.max(0, Math.min(1, (positions.getY(i) - y) / h));
+        const shade = 0.88 + height * 0.12;
+        colors.setXYZ(i, colors.getX(i) * shade, colors.getY(i) * shade, colors.getZ(i) * shade);
+      }
+    }
   }
 
   /** Vertical cylinder with its base at y. */
@@ -83,7 +99,54 @@ export class Builder {
       g.rotateZ(-side * slope);
       g.translate((side * w) / 4, y + rise / 2 + 0.015, 0);
       this.paint(g, roofColor);
+      // Tile courses lie on the roof surface: two triangles each, no hidden faces.
+      const courses = Math.max(2, Math.ceil(plankLen / 0.09));
+      const tile = new THREE.Color(roofColor).multiplyScalar(0.78).getHex();
+      for (let row = 1; row < courses && this.detail > 0; row++) {
+        const seam = new THREE.PlaneGeometry(0.009, d + 0.095);
+        seam.rotateX(-Math.PI / 2);
+        seam.translate(-plankLen / 2 + row * plankLen / courses, 0.021, 0);
+        seam.rotateZ(-side * slope);
+        seam.translate(side * w / 4, y + rise / 2 + 0.015, 0);
+        this.paint(seam, tile);
+        if (this.detail === 2) for (let z = -d / 2 + 0.05; z < d / 2; z += 0.12) {
+          const joint = new THREE.PlaneGeometry(plankLen / courses * 0.75, 0.006);
+          joint.rotateX(-Math.PI / 2);
+          joint.translate(-plankLen / 2 + (row - 0.4) * plankLen / courses, 0.022, z + (row % 2) * 0.025);
+          joint.rotateZ(-side * slope);
+          joint.translate(side * w / 4, y + rise / 2 + 0.015, 0);
+          this.paint(joint, tile);
+        }
+      }
     }
+    if (this.detail > 0) this.box(0.045, 0.035, d + 0.11, 0, y + rise + 0.022, 0,
+      new THREE.Color(roofColor).multiplyScalar(0.85).getHex());
+  }
+
+  /** A facade decal with outward winding; no hidden back or edge faces to render. */
+  pane(w: number, h: number, x: number, y: number, z: number, turn: number, color: number): void {
+    const g = new THREE.PlaneGeometry(w, h);
+    g.rotateY(turn);
+    g.translate(x, y + h / 2, z);
+    this.paint(g, color);
+  }
+
+  /** Frames, glass, a central mullion and a sill: eight triangles versus twelve for a plain box. */
+  window(w: number, h: number, along: number, y: number, depth: number, turn: number, color: number): void {
+    const sn = Math.sin(turn), cs = Math.cos(turn);
+    const layer = (width: number, height: number, bottom: number, offset: number, tint: number): void => {
+      this.pane(width, height, along * cs + (depth + offset) * sn, bottom,
+        -along * sn + (depth + offset) * cs, turn, tint);
+    };
+    if (this.detail === 0) { layer(w, h, y, 0, color); return; }
+    if (this.detail === 2) {
+      layer(w + 0.026, 0.012, y + h + 0.009, 0.003, 0xc2b9a7);
+      layer(w, 0.008, y + h * 0.53, 0.004, 0x9aa49e);
+    }
+    layer(w + 0.018, h + 0.018, y - 0.009, 0, 0x7b817e);
+    layer(w, h, y, 0.002, color);
+    layer(0.009, h, y, 0.003, 0x9aa49e);
+    layer(w + 0.026, 0.012, y - 0.009, 0.004, 0xc2b9a7);
   }
 
   /**
@@ -99,10 +162,10 @@ export class Builder {
       for (let j = 0; j < perSide; j++) {
         const t = -0.5 + (j + 0.5) / perSide;
         const color = this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK;
-        this.box(ww, wh, 0.02, t * w * 0.85, y, d / 2 + 0.005, color);
-        this.box(ww, wh, 0.02, t * w * 0.85, y, -d / 2 - 0.005, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
-        this.box(0.02, wh, ww, w / 2 + 0.005, y, t * d * 0.85, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
-        this.box(0.02, wh, ww, -w / 2 - 0.005, y, t * d * 0.85, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
+        this.window(ww, wh, t * w * 0.85, y, d / 2 + 0.012, 0, color);
+        this.window(ww, wh, -t * w * 0.85, y, d / 2 + 0.012, Math.PI, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
+        this.window(ww, wh, -t * d * 0.85, y, w / 2 + 0.012, Math.PI / 2, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
+        this.window(ww, wh, t * d * 0.85, y, w / 2 + 0.012, -Math.PI / 2, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
       }
     }
   }
@@ -118,10 +181,10 @@ export class Builder {
       const y = y0 + f * fh + fh * bandY - ph * 0.1;
       for (let j = 0; j < perSide; j++) {
         const t = -0.5 + (j + 0.5) / perSide;
-        if (this.rnd() < lit) this.box(pw, ph, 0.02, t * w * 0.82, y, d / 2 + 0.018, OFFICE_LIT);
-        if (this.rnd() < lit) this.box(pw, ph, 0.02, t * w * 0.82, y, -d / 2 - 0.018, OFFICE_LIT);
-        if (this.rnd() < lit) this.box(0.02, ph, pw, w / 2 + 0.018, y, t * d * 0.82, OFFICE_LIT);
-        if (this.rnd() < lit) this.box(0.02, ph, pw, -w / 2 - 0.018, y, t * d * 0.82, OFFICE_LIT);
+        if (this.rnd() < lit) this.pane(pw, ph, t * w * 0.82, y, d / 2 + 0.028, 0, OFFICE_LIT);
+        if (this.rnd() < lit) this.pane(pw, ph, t * w * 0.82, y, -d / 2 - 0.028, Math.PI, OFFICE_LIT);
+        if (this.rnd() < lit) this.pane(pw, ph, w / 2 + 0.028, y, t * d * 0.82, Math.PI / 2, OFFICE_LIT);
+        if (this.rnd() < lit) this.pane(pw, ph, -w / 2 - 0.028, y, t * d * 0.82, -Math.PI / 2, OFFICE_LIT);
       }
     }
   }
@@ -224,6 +287,7 @@ function logo(b: Builder, w: number, h: number, d: number, v: number): void {
 
 /** Distinct roof silhouettes, all contained inside the building footprint. */
 function roofDetail(b: Builder, y: number, variant: number): void {
+  if (b.detail === 0) return;
   if (variant === 0) {
     b.box(0.2, 0.12, 0.22, 0.12, y, -0.12, 0x8c9397); // HVAC
     for (const x of [0.06, 0.12, 0.18]) b.box(0.014, 0.012, 0.17, x, y + 0.12, -0.12, 0x4d5960);
@@ -231,9 +295,14 @@ function roofDetail(b: Builder, y: number, variant: number): void {
     b.box(0.34, 0.26, 0.3, 0, y, -0.08, 0xd8d2c6); // rooftop room
     b.box(0.37, 0.035, 0.33, 0, y + 0.26, -0.08, 0x5f6a73);
     b.box(0.18, 0.1, 0.02, 0, y + 0.08, 0.08, GLASS);
+    // Roof-access ladder, kept inside the rooftop room's width.
+    for (const x of [-0.11, -0.05]) b.box(0.008, 0.29, 0.008, x, y, 0.078, 0x879398);
+    for (let rung = 0; rung < 5; rung++) b.box(0.06, 0.008, 0.008, -0.08, y + 0.035 + rung * 0.05, 0.079, 0x879398);
   } else if (variant === 2) {
     for (const x of [-0.17, 0.17]) { // solar panels and planters
       b.box(0.23, 0.05, 0.28, x, y + 0.04, -0.08, 0x245683);
+      for (const z of [-0.15, -0.08, -0.01]) b.box(0.225, 0.003, 0.004, x, y + 0.09, z, 0x718f9b);
+      b.box(0.004, 0.003, 0.275, x, y + 0.09, -0.08, 0x718f9b);
       b.box(0.2, 0.08, 0.12, x, y, 0.2, 0xa78058);
       b.box(0.18, 0.07, 0.1, x, y + 0.08, 0.2, 0x548454);
     }
@@ -243,6 +312,86 @@ function roofDetail(b: Builder, y: number, variant: number): void {
     b.cyl(0.012, 0.4, 0.19, y, -0.18, 0xb9c7d1, 6);
     b.box(0.18, 0.012, 0.012, 0.19, y + 0.31, -0.18, 0xb9c7d1);
   }
+}
+
+/** Open balconies, capped at three per facade so tower detail has a fixed budget. */
+function balconies(b: Builder, w: number, d: number, y0: number, floors: number, floorHeight: number): void {
+  if (b.detail !== 2) return;
+  const x = w * 0.26, depth = Math.min(0.085, 0.49 - d / 2);
+  for (let f = 1; f < floors; f += Math.max(1, Math.ceil((floors - 1) / 3))) {
+    const y = y0 + f * floorHeight, z = d / 2 + depth;
+    b.box(0.2, 0.018, depth + 0.02, x, y, d / 2 + depth / 2, 0xb2b2a6);
+    b.box(0.2, 0.008, 0.008, x, y + 0.095, z, 0x74888b);
+    for (const dx of [-0.09, 0, 0.09]) b.box(0.006, 0.077, 0.006, x + dx, y + 0.018, z, 0x74888b);
+    for (const side of [-1, 1]) b.box(0.006, 0.008, depth, x + side * 0.095, y + 0.095, d / 2 + depth / 2, 0x74888b);
+    b.box(0.065, 0.04, 0.035, x + 0.045, y + 0.02, z - 0.023, 0x9b7559);
+    b.box(0.07, 0.025, 0.04, x + 0.045, y + 0.06, z - 0.023, 0x577d4c);
+  }
+}
+
+/** A small roof terrace along the front edge, clear of central roof equipment. */
+function terrace(b: Builder, w: number, d: number, y: number, variant: number): void {
+  if (b.detail !== 2 || variant === 2) return; // this roof already has solar panels and planters
+  const x = -w * 0.15, z = d / 2 - 0.087;
+  b.box(0.25, 0.008, 0.145, x, y + 0.002, z, 0x9a8466);
+  for (const dx of [-0.09, -0.03, 0.03, 0.09]) b.box(0.004, 0.002, 0.14, x + dx, y + 0.01, z, 0x70634f);
+  for (const dx of [-0.12, 0.12]) {
+    b.box(0.008, 0.095, 0.008, x + dx, y + 0.008, z + 0.065, 0x728185);
+    b.box(0.008, 0.008, 0.13, x + dx, y + 0.1, z, 0x728185);
+  }
+  b.box(0.25, 0.008, 0.008, x, y + 0.1, z + 0.065, 0x728185);
+  b.box(0.075, 0.045, 0.055, x - 0.065, y + 0.01, z, 0x526a6d);
+  b.box(0.075, 0.035, 0.012, x - 0.065, y + 0.055, z - 0.025, 0x708b87);
+  b.box(0.065, 0.045, 0.055, x + 0.065, y + 0.01, z, 0x997357);
+  b.box(0.07, 0.04, 0.06, x + 0.065, y + 0.055, z, 0x59834d);
+}
+
+/** Shop display, sign motif and a small menu board, all on the building's own frontage. */
+function shopDisplay(b: Builder, w: number, h: number, d: number, variant: number): void {
+  if (b.detail !== 2) return;
+  const z = d / 2;
+  b.pane(w * 0.53, 0.012, -w * 0.12, 0.18, z + 0.025, 0, 0x71817e);
+  for (let item = 0; item < 4; item++) {
+    const x = -w * 0.34 + item * w * 0.145;
+    b.pane(w * 0.075, 0.03 + (item % 2) * 0.025, x, 0.192, z + 0.026, 0,
+      [0xb98158, 0x819c74, 0xc1ad79, 0x9e7794][(item + variant) % 4]);
+  }
+  for (const dx of [-0.11, 0, 0.11]) b.pane(0.065, 0.021, -w * 0.12 + dx, h + 0.047, z - 0.003, 0, AWNINGS[variant]);
+  const bx = -w * 0.32;
+  b.box(0.09, 0.13, 0.022, bx, 0.015, z + 0.06, 0x916e50);
+  b.pane(0.074, 0.096, bx, 0.033, z + 0.072, 0, 0x314e49);
+  for (let line = 0; line < 3; line++) b.pane(line === 0 ? 0.05 : 0.036, 0.006, bx, 0.105 - line * 0.021, z + 0.073, 0, 0xc2c5ac);
+}
+
+/** Small entrances and planted pots make the ground floor legible from street level. */
+function entrance(b: Builder, d: number, x: number, house: boolean): void {
+  if (b.detail === 0) return;
+  const z = d / 2;
+  b.box(house ? 0.19 : 0.36, 0.025, 0.09, x, 0.004, z + 0.055, 0xb7b1a3);
+  b.box(house ? 0.16 : 0.32, 0.025, 0.055, x, 0.029, z + 0.035, 0xd0c9ba);
+  if (house) {
+    b.box(0.21, 0.025, 0.13, x, 0.23, z + 0.05, 0x6d7970);
+    for (const side of [-1, 1]) b.box(0.012, 0.2, 0.012, x + side * 0.089, 0.03, z + 0.105, 0xc8bda7);
+    b.pane(0.012, 0.024, x + 0.037, 0.105, z + 0.017, 0, 0xc7af73);
+  } else {
+    for (const side of [-1, 0, 1]) b.pane(0.012, 0.22, x + side * 0.13, 0.03, z + 0.037, 0, 0xb4c2c5);
+    for (const side of [-1, 1]) b.pane(0.008, 0.055, x + side * 0.025, 0.1, z + 0.04, 0, 0xd3d5ce);
+  }
+  if (b.detail === 2) {
+    // A planted window box for homes; paired flowering entrance pots for larger buildings.
+    const fx = house ? -0.13 : -0.25, fy = house ? 0.14 : 0.07;
+    b.box(0.14, 0.04, 0.055, fx, fy, z + 0.04, 0x997252);
+    b.box(0.13, 0.024, 0.05, fx, fy + 0.04, z + 0.04, 0x4f7949);
+    for (const dx of [-0.04, 0, 0.04]) b.box(0.022, 0.015, 0.022, fx + dx, fy + 0.062, z + 0.04, 0xc86976);
+    if (house) for (const side of [-1, 1]) {
+      b.pane(0.025, 0.11, -0.13 + side * 0.065, 0.175, z + 0.022, 0, 0x597267);
+      for (let slat = 0; slat < 4; slat++) b.pane(0.021, 0.004, -0.13 + side * 0.065, 0.187 + slat * 0.022, z + 0.023, 0, 0x8a9b87);
+    }
+  }
+  const px = house ? -0.2 : 0.25;
+  b.box(0.09, 0.065, 0.075, px, 0.01, z + 0.055, 0x977357);
+  b.box(0.1, 0.055, 0.08, px, 0.075, z + 0.055, 0x497348);
+  b.box(0.064, 0.026, 0.056, px - 0.012, 0.13, z + 0.05, 0x71944c);
 }
 
 const CROPS = [0xc9a94e, 0x5f8f3e, 0x8a78b8, 0x79a553, 0xa9b548, 0xd4b13a];
@@ -348,10 +497,12 @@ function leisure(b: Builder, level: number, v: number): void {
 }
 
 /** Build the geometry for a (kind, level, variant) triple. Front of the building faces +z. */
-export function buildingGeometry(kind: number, level: number, variant: number): THREE.BufferGeometry {
-  const b = new Builder(kind * 100 + level * 10 + variant);
+export function buildingGeometry(kind: number, level: number, variant: number, detail: VisualDetail = 1): THREE.BufferGeometry {
+  const b = new Builder(kind * 100 + level * 10 + variant, detail);
   const v = variant % VARIANTS;
-  if (kind === T_RES) {
+  if (isDecoration(kind)) {
+    parkGeometry(b, kind, variant);
+  } else if (kind === T_RES) {
     if (level === 1) {
       const w = [0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v], h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
       b.box(w, h, d, 0, 0, 0, RES_WALLS[v]);
@@ -366,6 +517,15 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.02, 0.1, 0.1, w / 2 + 0.005, 0.18, 0.05, WINDOW_DARK);
       b.box(0.07, 0.24, 0.07, -0.15, h + 0.05, -0.12, 0x6b6560);
       b.box(0.62, 0.02, 0.68, 0, -0.005, 0, 0x8a9a6a);
+      entrance(b, d, 0.1, true);
+      if (b.detail === 2) {
+        for (const side of [-1, 1]) {
+          b.box(0.025, 0.022, d + 0.065, side * (w / 2 + 0.018), h - 0.012, 0, 0x6b7879);
+          b.box(0.015, h - 0.025, 0.015, side * (w / 2 + 0.012), 0.025, -d / 2 + 0.025, 0x6b7879);
+        }
+        b.box(0.092, 0.022, 0.092, -0.15, h + 0.29, -0.12, 0x80796b);
+        b.box(0.05, 0.015, 0.05, -0.15, h + 0.312, -0.12, 0x3d4544);
+      }
     } else if (level === 2) {
       const floors = [3, 4, 5, 4, 2, 6][v];
       const w = [0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
@@ -380,6 +540,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.16, 0.24, 0.03, 0, 0, d / 2 + 0.005, 0x3d2c22);
       b.box(0.3, 0.03, 0.12, 0, 0.26, d / 2 + 0.06, 0x6f6a62);
       roofDetail(b, h + 0.05, v);
+      balconies(b, w, d, 0.22, floors, 0.31);
+      terrace(b, w, d, h + 0.05, v);
     } else {
       const floors = [7, 9, 6, 11, 5, 8][v];
       const w = [0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
@@ -387,6 +549,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469);
       b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53);
       b.windows(w, h, d, 0.28, floors, 3, 0.25, 0.12);
+      balconies(b, w, d, 0.28, floors, 0.34);
+      terrace(b, w, d, h + 0.05, v);
       roofDetail(b, h + 0.05, v);
       b.box(0.16, 0.26, 0.03, 0, 0, d / 2 + 0.005, 0x3d2c22);
     }
@@ -396,9 +560,21 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(w, h, d, 0, 0, 0, SHOP_WALLS[v]);
       b.box(w * 0.6, 0.28, 0.03, -w * 0.12, 0.12, d / 2 + 0.005, GLASS);
       b.box(0.14, 0.38, 0.03, w * 0.36, 0, d / 2 + 0.005, 0x3d2c22);
-      if (v !== 3 && v !== 5) b.box(w * 0.96, 0.04, 0.24, 0, Math.min(0.44, h - 0.1), d / 2 + 0.1, AWNINGS[v]);
+      if (v !== 3 && v !== 5) {
+        const ay = Math.min(0.44, h - 0.1);
+        b.box(w * 0.96, 0.04, 0.24, 0, ay, d / 2 + 0.1, AWNINGS[v]);
+        for (let stripe = 0; stripe < 5; stripe++) {
+          const x = (stripe - 2) * w * 0.18;
+          b.box(w * 0.085, 0.004, 0.238, x, ay + 0.04, d / 2 + 0.1, 0xe4dcc7);
+          b.pane(w * 0.085, 0.045, x, ay - 0.005, d / 2 + 0.221, 0, 0xe4dcc7);
+        }
+      }
+      // Shopfront glazing bars and door handle sit just in front of the existing glass.
+      for (const side of [-1, 0, 1]) b.pane(0.012, 0.28, -w * 0.12 + side * w * 0.27, 0.12, d / 2 + 0.022, 0, 0xb8c1bc);
+      b.pane(0.008, 0.07, w * 0.36 - 0.035, 0.14, d / 2 + 0.022, 0, 0xd2c6a6);
       b.box(w * 0.6, 0.12, 0.05, -w * 0.12, h, d / 2 - 0.03, 0xfff4dc);
       banners(b, w, h, d, v, 11);
+      shopDisplay(b, w, h, d, v);
       roofDetail(b, h + 0.12, v);
       b.box(0.02, 0.18, 0.3, w / 2 + 0.005, 0.15, 0, WINDOW_DARK);
     } else if (level === 2) {
@@ -414,6 +590,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       banners(b, w, h, d, v, 27);
       roofDetail(b, h + (v === 1 || v === 4 ? 0.39 : 0.05), v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
+      entrance(b, d, 0, false);
     } else {
       const floors = [12, 9, 15, 11, 6, 8][v];
       const w = [0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
@@ -440,6 +617,8 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
     b.box(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270);
     b.box(0.3, 0.23, 0.03, 0, 0, d / 2 + 0.02, GLASS);
     roofDetail(b, h + 0.08, v);
+    terrace(b, w, d, h + 0.08, v);
+    entrance(b, d, 0, false);
   } else if (kind === T_IND) {
     const h = [0.42, 0.62, 0.52, 0.7, 0.48, 0.58][v] + (level - 1) * 0.32;
     const wall = IND_WALLS[v];
@@ -713,14 +892,31 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
       b.box(0.2, 0.12, 0.02, 0.37, height + 0.46, 0, accent);
     }
   }
-  if (kind === T_BUS) {
+  if (kind === T_TAXI) {
+    b.box(0.94, 0.025, 0.88, 0, 0, 0, 0x657073);
+    for (const x of [-0.39, 0.39]) b.box(0.025, 0.008, 0.72, x, 0.026, 0, 0xf4ce4f);
+    b.box(0.8, 0.008, 0.025, 0, 0.026, -0.35, 0xf4ce4f);
+    b.cyl(0.018, 0.75, 0.36, 0.025, -0.3, 0x596775, 6);
+    b.box(0.29, 0.2, 0.035, 0.36, 0.65, -0.3, 0xf7c62f);
+    // A black cab pictogram on the yellow stand sign.
+    b.box(0.19, 0.055, 0.004, 0.36, 0.695, -0.28, 0x26343a);
+    b.box(0.1, 0.04, 0.004, 0.36, 0.75, -0.28, 0x26343a);
+    b.box(0.42, 0.05, 0.13, -0.13, 0.16, -0.25, 0xa58d69);
+    for (const x of [-0.29, 0.03]) b.box(0.035, 0.16, 0.1, x, 0.03, -0.25, 0x44515a);
+  } else if (kind === T_BUS || kind === T_TROLLEY) {
     b.box(0.92, 0.03, 0.7, 0, 0, 0, 0xb9b6ad);
     for (const x of [-0.35, 0.35]) b.box(0.035, 0.55, 0.035, x, 0.03, -0.16, 0x405566);
     b.box(0.75, 0.36, 0.025, 0, 0.13, -0.17, GLASS);
     b.box(0.82, 0.045, 0.48, 0, 0.58, -0.02, 0xeab75c);
     b.box(0.56, 0.08, 0.12, 0, 0.16, -0.05, 0x8a7458);
     b.box(0.025, 0.72, 0.025, 0.41, 0.03, 0.2, 0x56606b);
-    b.box(0.17, 0.2, 0.03, 0.41, 0.55, 0.2, 0x2f86af);
+    b.box(0.17, 0.2, 0.03, 0.41, 0.55, 0.2, kind === T_TROLLEY ? 0x4b9472 : 0x2f86af);
+    if (kind === T_TROLLEY) {
+      for (const x of [-0.34, 0.34]) b.cyl(0.015, 1.15, x, 0.03, 0.29, 0x73837d, 6);
+      b.box(0.72, 0.014, 0.015, 0, 1.17, 0.29, 0x73837d);
+      b.pane(0.09, 0.018, 0.41, 0.68, 0.217, 0, 0xe7e8d5);
+      b.pane(0.02, 0.085, 0.41, 0.595, 0.217, 0, 0xe7e8d5);
+    }
   } else if (kind === T_STATION) {
     // Two-level station hall: street-level ticket hall, then an upper concourse whose floor sits at
     // viaduct height (1.12) so the footbridge from the elevated platforms (TransportLayer) lands on it
@@ -787,7 +983,7 @@ export function buildingGeometry(kind: number, level: number, variant: number): 
   // The frontmost building detail meets the lot's +z boundary; rotation then faces it
   // toward the road. Keep the tile center fixed so zoning, picking and saves agree.
   geometry.computeBoundingBox();
-  if (kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
+  if (!isDecoration(kind) && kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
     geometry.translate(0, 0, 0.5 - geometry.boundingBox.max.z);
     geometry.computeBoundingBox();
   }
