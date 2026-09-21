@@ -10,7 +10,7 @@ import {
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
 import { MeshBuilder } from './render/meshBuilder';
@@ -38,7 +38,7 @@ const TOOL_COLOR: Record<Tool, number> = {
 };
 export const SERVICE_TOOL: Partial<Record<Tool, number>> = { bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE };
-const ROUNDABOUT_R = 2.3, ROUNDABOUT_R_AVENUE = 3.4;
+
 const BAD = 0xe04b3a;
 const GUIDE = 0xffffff;
 
@@ -662,8 +662,8 @@ export class Input {
     } else if (this.tool === 'roundabout') {
       const c = this.roundaboutCenter(p);
       if (!g.canAfford(COST_ROUNDABOUT)) { this.onToast?.('Not enough money'); return; }
-      const r = this.roundaboutRadius(c), kind = r === ROUNDABOUT_R_AVENUE ? KIND_AVENUE : KIND_ROAD;
-      if (!net.addRoundabout(c.x, c.z, r, kind)) { this.onToast?.('No room for a roundabout here'); return; }
+      const kind = this.roundaboutKind(c);
+      if (!net.addRoundabout(c.x, c.z, ROUNDABOUT_RADIUS[kind], kind)) { this.onToast?.('No room for a roundabout here'); return; }
       g.spend(COST_ROUNDABOUT);
       g.flush();
     } else {
@@ -683,10 +683,18 @@ export class Input {
     this.onRotate?.(this.placeRotation);
   }
 
-  /** Avenue rings need a wider island to fit the four-lane corridor. */
+  /** A ring takes after the widest road that meets it, so an avenue circle is bigger than a lane one. */
+  private roundaboutKind(c: P): number {
+    let kind = KIND_LANE;
+    for (const s of this.game.net.segs.values()) {
+      if (s.structure || Network.nearestOn(s, c.x, c.z).dist > ROUNDABOUT_RADIUS[s.kind] + 0.8) continue;
+      if (ROUNDABOUT_RADIUS[s.kind] > ROUNDABOUT_RADIUS[kind]) kind = s.kind;
+    }
+    return kind;
+  }
+
   private roundaboutRadius(c: P): number {
-    const avenue = [...this.game.net.segs.values()].some(s => s.kind === KIND_AVENUE && Network.nearestOn(s, c.x, c.z).dist < ROUNDABOUT_R + 0.5);
-    return avenue ? ROUNDABOUT_R_AVENUE : ROUNDABOUT_R;
+    return ROUNDABOUT_RADIUS[this.roundaboutKind(c)];
   }
 
   private roundaboutCenter(p: P): P {

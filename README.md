@@ -43,7 +43,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   pops out for a few seconds, clicking the bell lists everything outstanding, and clicking a message
   takes the camera to what it is about.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
-  through at a time; signals move a whole approach at once; roundabouts never stop.
+  through at a time; signals move a whole approach at once; roundabouts never stop. A ring takes its
+  size from the widest road that meets it, from a 1.7-cell lane circle to a 4-cell expressway one.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.
 - **Traffic from outside arrives by road.** Every entrance carries on sixteen cells past the map edge.
   Regional traffic is created and retired out there and drives in, so cars never appear on the doorstep and
@@ -230,6 +231,8 @@ Bridges and tunnels are not separate tools: pick any road and change its height.
 bridge, **−** lowers it to a tunnel, and the Height control in the Roads panel shows where you are.
 Any kind of road can be raised or buried, so an avenue viaduct or an expressway tunnel is a matter of
 drawing it at that height. Allow at least 14 cells and two clear, dry ends for the automatic ramps.
+A tunnel shows its portals above ground at each end, and a dark band with pale ticks marks the ground
+over the bore, so the route is legible without opening the underground view.
 A surface road crossing water still becomes a bridge by itself. Spans connect at their ends and pass
 crossing roads without a junction; Upgrade widens one a step. Structural cost and upkeep are 3× for
 bridges and 4× for tunnels. Surface zoning cannot use a bridge or tunnel as frontage; underground

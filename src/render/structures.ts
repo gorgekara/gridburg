@@ -122,12 +122,18 @@ export class StructureLayer {
   readonly group = new THREE.Group();
   private solids = new THREE.Group();
   private guides = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false, depthTest: false }));
+  /** A dark strip on the ground over every bore, so a tunnel reads from above even when closed up. */
+  private traces = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false }));
   private material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
   private builtNet: Network | null = null;
   private builtVersion = -1;
   /** Finished geometry per span, so an edit elsewhere in the city rebuilds nothing. */
   private built = new Map<number, Built>();
-  constructor() { this.guides.visible = true; this.guides.renderOrder = 2; this.group.add(this.solids, this.guides); }
+  constructor() {
+    this.guides.visible = true; this.guides.renderOrder = 2;
+    this.traces.renderOrder = 1; this.traces.frustumCulled = false;
+    this.group.add(this.solids, this.traces, this.guides);
+  }
   showUnderground(show: boolean): void { this.guides.visible = show; }
 
   /** Everything a span's geometry depends on: its own shape, and for bridges the roads that suppress piers. */
@@ -156,7 +162,7 @@ export class StructureLayer {
   rebuild(net: Network): void {
     if (net === this.builtNet && net.version === this.builtVersion) return;
     this.builtNet = net; this.builtVersion = net.version;
-    const guides = new MeshBuilder(), pose = { x: 0, z: 0, tx: 0, tz: 0 };
+    const guides = new MeshBuilder(), traces = new MeshBuilder(), pose = { x: 0, z: 0, tx: 0, tz: 0 };
     const surface = [...net.segs.values()].filter(s => !s.structure);
     const live = new Set<number>();
     for (const seg of net.segs.values()) {
@@ -176,6 +182,30 @@ export class StructureLayer {
           Network.poseAt(seg, d, pose);
           guides.ribbon([pose.x - OFFSET, pose.z - OFFSET, pose.x - OFFSET + pose.tx * 0.65, pose.z - OFFSET + pose.tz * 0.65], 2, 0.12, 0.12, 0x86d9e7);
         }
+        // The ground above the bore: one dark band the whole way between the portals, with paler
+        // ticks along it, so the route is legible without opening the underground view.
+        const hw = HALF_WIDTH[seg.kind];
+        const step = 0.4;
+        // Start past the portal mouth: the ramps are real road, and the band belongs over the bore.
+        const from = Math.min(2.2, seg.len * 0.2), to = seg.len - from;
+        const pts: number[] = [];
+        for (let d = from; d <= to + 1e-6; d = Math.min(to, d + step)) {
+          Network.poseAt(seg, d, pose);
+          pts.push(pose.x - OFFSET, pose.z - OFFSET);
+          if (d >= to) break;
+        }
+        const count = pts.length / 2;
+        if (count > 1) {
+          traces.ribbon(pts, count, hw + 0.12, 0.02, 0x232a31);
+          traces.ribbon(pts, count, hw * 0.78, 0.022, 0x39434c);
+          for (let d = from + 0.6; d < to - 0.3; d += 1.4) {
+            Network.poseAt(seg, d, pose);
+            traces.ribbon([
+              pose.x - OFFSET - pose.tz * hw, pose.z - OFFSET + pose.tx * hw,
+              pose.x - OFFSET + pose.tz * hw, pose.z - OFFSET - pose.tx * hw,
+            ], 2, 0.055, 0.024, 0x6d7a84);
+          }
+        }
       }
     }
     for (const [id, entry] of this.built) {
@@ -184,5 +214,6 @@ export class StructureLayer {
       this.built.delete(id);
     }
     this.guides.geometry.dispose(); this.guides.geometry = guides.build();
+    this.traces.geometry.dispose(); this.traces.geometry = traces.build();
   }
 }

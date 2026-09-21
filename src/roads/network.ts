@@ -17,6 +17,11 @@ export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway'];
 export const ROAD_FRONTAGE = [true, true, true, false];
 /** Upgrade order: lane, street, avenue, expressway, and back to a lane. */
 export const UPGRADE_ORDER = [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY];
+/**
+ * How wide a roundabout has to be for each kind of road: the circle needs room for the arms to meet it
+ * at a sane angle, and a wider carriageway needs a wider circle before its lanes stop fighting.
+ */
+export const ROUNDABOUT_RADIUS = [2.1, 3.0, 1.7, 4.0];
 export const nextRoadKind = (kind: number): number => UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
 export const LIGHT_CYCLE = 18;
 

@@ -15,7 +15,7 @@ const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry, BANNER_COLORS } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const { newCity } = await import('../src/game.ts');
-const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
+const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
@@ -491,6 +491,30 @@ test('external traffic drives in from off the map without stalling the entrance'
   assert.ok(inCity > offMap, 'Most traffic still belongs to the city itself');
   assert.ok(stats.gaveUp < 5, `Cars should not be stranded at the entrance: ${stats.gaveUp} gave up`);
   console.log(`  External approach: ${offMap} off-map car samples, ${inCity} inside the map, ${stats.gaveUp} gave up`);
+});
+test('a roundabout takes its size from the widest road that meets it', () => {
+  // Every ring must clear the carriageway that circulates on it, or the lanes fight on the circle.
+  for (const kind of [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY]) {
+    assert.ok(ROUNDABOUT_RADIUS[kind] >= HALF_WIDTH[kind] * 2 + 0.6, `${ROAD_LABEL[kind]} ring is too tight`);
+  }
+  assert.ok(ROUNDABOUT_RADIUS[KIND_LANE] < ROUNDABOUT_RADIUS[KIND_ROAD]);
+  assert.ok(ROUNDABOUT_RADIUS[KIND_ROAD] < ROUNDABOUT_RADIUS[KIND_AVENUE]);
+  assert.ok(ROUNDABOUT_RADIUS[KIND_AVENUE] < ROUNDABOUT_RADIUS[KIND_HIGHWAY]);
+
+  for (const kind of [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY]) {
+    const net = new Network();
+    net.insertPath([{ x: 20.5, z: 40.5 }, { x: 60.5, z: 40.5 }], kind);
+    net.insertPath([{ x: 40.5, z: 20.5 }, { x: 40.5, z: 60.5 }], kind);
+    assert.ok(net.addRoundabout(40.5, 40.5, ROUNDABOUT_RADIUS[kind], kind), `${ROAD_LABEL[kind]} roundabout should fit`);
+    const ring = net.roundabouts()[0];
+    assert.ok(ring, `${ROAD_LABEL[kind]} ring should be recoverable`);
+    assert.ok(Math.abs(ring.r - ROUNDABOUT_RADIUS[kind]) < 0.35, `${ROAD_LABEL[kind]} ring came out at ${ring.r.toFixed(2)}`);
+    // Every arm still reaches the circle, so traffic can get on and off it.
+    const arms = [...net.nodes.values()].filter(n => n.ring);
+    assert.ok(arms.length >= 4, `${ROAD_LABEL[kind]} ring should keep its four arms`);
+    const island = rasterize(net);
+    assert.ok(Array.from(island.cover).some(Boolean));
+  }
 });
 test('stop signs make every approach halt, and calming slows a street', () => {
   const net = new Network();
