@@ -1,5 +1,7 @@
 import { visualDetail, type VisualDetail } from '../render/detail';
 import { icon } from './icons';
+import { SCENARIOS } from '../scenarios';
+import { deleteSlot, listSlots } from '../slots';
 
 export interface Settings {
   shadows: boolean;
@@ -7,9 +9,10 @@ export interface Settings {
   dayLength: number;
   autosave: boolean;
   infiniteMoney: boolean;
+  disasters: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { shadows: true, visualDetail: 1, dayLength: 480, autosave: true, infiniteMoney: false };
+export const DEFAULT_SETTINGS: Settings = { shadows: true, visualDetail: 1, dayLength: 480, autosave: true, infiniteMoney: false, disasters: true };
 
 const KEY = 'gridburg.settings.v1';
 
@@ -33,6 +36,8 @@ export interface MenuActions {
   resume(): void;
   help(): void;
   apply(settings: Settings): void;
+  startScenario(id: string): void;
+  loadSlot(name: string): void;
 }
 
 interface SaveInfo { population: number; day: number }
@@ -57,6 +62,7 @@ export class MainMenu {
   private seed = randomSeed();
   private seedField = el('input', 'menu-seed') as HTMLInputElement;
   private actions: MenuActions;
+  private slotsPage = el('div', 'menu-page');
   settings: Settings;
   open = false;
 
@@ -75,6 +81,10 @@ export class MainMenu {
     this.buildHome();
     this.buildNew();
     this.buildSettings();
+    this.buildScenarios();
+    this.slotsPage.className = 'menu-page';
+    this.pages.set('slots', this.slotsPage);
+    this.panels.append(this.slotsPage);
     this.show('home');
     this.root.hidden = true;
   }
@@ -112,6 +122,8 @@ export class MainMenu {
       this.continueBtn,
       this.button('New city', 'A fresh river valley to build on', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
       this.button('Demo city', 'A finished city to look around', () => this.actions.demoCity(), 'city'),
+      this.button('Scenarios', 'Prepared cities with goals and a deadline', () => this.show('scenarios'), 'flag'),
+      this.button('Saved cities', 'Cities you saved by name', () => { this.buildSlots(); this.show('slots'); }, 'save'),
       this.button('Settings', 'Graphics, day length and cheats', () => this.show('settings'), 'menu'),
       this.button('How to play', 'The basics, in five steps', () => this.actions.help(), 'help'),
     );
@@ -148,6 +160,43 @@ export class MainMenu {
     this.panels.append(page);
   }
 
+  private back(): HTMLElement {
+    const row = el('div', 'menu-row end');
+    const back = el('button', 'menu-mini', 'Back');
+    back.addEventListener('click', () => this.show('home'));
+    row.append(back);
+    return row;
+  }
+
+  private buildScenarios(): void {
+    const page = el('div', 'menu-page');
+    page.append(el('h2', 'menu-heading', 'Scenarios'), el('p', 'menu-note', 'Meet every goal at the same time before the deadline. The city stays yours to keep building afterwards.'));
+    for (const sc of SCENARIOS) {
+      const b = this.button(sc.title, `${sc.days} days · ${sc.goals.map(g => g.label).join(' · ')}`, () => this.actions.startScenario(sc.id), 'flag');
+      b.title = sc.brief;
+      page.append(b);
+    }
+    page.append(this.back());
+    this.pages.set('scenarios', page);
+    this.panels.append(page);
+  }
+
+  private buildSlots(): void {
+    const page = this.slotsPage;
+    page.replaceChildren(el('h2', 'menu-heading', 'Saved cities'));
+    const slots = listSlots();
+    if (!slots.length) page.append(el('p', 'menu-note', 'Nothing saved yet. In a city, open the menu and choose “Save or load cities”.'));
+    for (const slot of slots) {
+      const row = el('div', 'menu-row');
+      const load = this.button(slot.name, `${slot.population.toLocaleString()} residents · day ${slot.day} · ${new Date(slot.savedAt).toLocaleDateString()}`, () => this.actions.loadSlot(slot.name), 'city');
+      const del = el('button', 'menu-mini', 'Delete');
+      del.addEventListener('click', () => { if (confirm(`Delete “${slot.name}”?`)) { deleteSlot(slot.name); this.buildSlots(); } });
+      row.append(load, del);
+      page.append(row);
+    }
+    page.append(this.back());
+  }
+
   private toggle(label: string, hint: string, get: () => boolean, set: (v: boolean) => void): HTMLElement {
     const row = el('label', 'menu-setting');
     const text = el('span', 'menu-label');
@@ -179,6 +228,7 @@ export class MainMenu {
     page.append(detailRow);
     page.append(this.toggle('Shadows', 'Turn off for more speed on weak hardware', () => this.settings.shadows, v => { this.settings.shadows = v; }));
     page.append(this.toggle('Save automatically', 'Keeps your city in this browser', () => this.settings.autosave, v => { this.settings.autosave = v; }));
+    page.append(this.toggle('Disasters', 'Floods and tornadoes, from Small town on', () => this.settings.disasters, v => { this.settings.disasters = v; }));
     page.append(this.toggle('Infinite money', 'Building is free and the treasury stays full', () => this.settings.infiniteMoney, v => { this.settings.infiniteMoney = v; }));
 
     const row = el('label', 'menu-setting');

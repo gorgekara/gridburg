@@ -1,4 +1,4 @@
-import { HALF_WIDTH, KIND_HIGHWAY, Network } from '../roads/network';
+import { HALF_WIDTH, isMotorway, Network } from '../roads/network';
 import type { Pose, RSeg } from '../roads/network';
 
 /** Distance from each junction to its zebra crossing, indexed by segment and endpoint. */
@@ -12,7 +12,7 @@ export function crossingApproaches(net: Network): Map<number, [number, number]> 
   };
   for (const node of net.nodes.values()) {
     const arms = net.segsAt(node.id);
-    if (node.ring || node.entry || arms.length < 3 || arms.some(s => s.structure || s.kind === KIND_HIGHWAY)) continue;
+    if (node.ring || node.entry || arms.length < 3 || arms.some(s => s.structure || isMotorway(s.kind))) continue;
     for (const seg of arms) {
       const [tx, tz] = direction(seg, node.id), hw = HALF_WIDTH[seg.kind];
       let reach = Math.max(...arms.map(s => HALF_WIDTH[s.kind])) + 0.24;

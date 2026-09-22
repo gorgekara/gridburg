@@ -7,8 +7,12 @@ import { noPolicies, policiesFromMask, policyMask } from './policies';
 import type { Policies } from './policies';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
+import { defaultExtras, extrasFromJson, extrasToJson } from './extras';
+import type { CityExtras } from './extras';
 
 export interface SaveData {
+  /** Per-zone taxes, districts, dug and filled ground, scenario and disaster settings (v13). */
+  extras?: CityExtras;
   parkPaths?: ParkPath[];
   /** Quarter turns for placed buildings, sparse: most tiles face their road. */
   rot?: Uint8Array;
@@ -29,7 +33,7 @@ export interface SaveData {
 
 // Keep the storage key to migrate existing cities in place. Versions 3–6 remain readable.
 const KEY = 'gridburg.save.v3';
-const VERSION = 12;
+const VERSION = 13;
 // v9 appends a two-byte policy mask to the v8 header. v10 cities, which stored drawn railway lines
 // after the incidents, still load; their lines are ignored now that railways pair up again. v11 puts
 // the quarter turn of every rotated building in that spot instead.
@@ -93,6 +97,12 @@ export function encode(d: SaveData): string {
   if (paths.length > 2000) throw new Error('Too many park paths');
   u16(paths.length);
   for (const path of paths) for (const key of ['ax', 'az', 'cx', 'cz', 'bx', 'bz'] as const) u16(packC(path[key]));
+  // v13: everything newer as one JSON block, so later additions need no new binary layout.
+  // The segment flag byte is full, so the one-way highway and ramp kinds keep their high bit here.
+  const segHi = segs.flatMap((s, k) => (s[5] & 256 ? [k] : []));
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}) }));
+  bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
+  for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
   const dv = new DataView(all.buffer);
   all[0] = VERSION;
@@ -113,7 +123,7 @@ export function decode(str: string): SaveData | null {
     const bytes = fromBase64Url(str);
     const legacy = bytes[0] === 3;
     const version = bytes[0];
-    if (![3, 4, 5, 6, 7, 8, 9, 10, 11, VERSION].includes(version)) return null;
+    if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, VERSION].includes(version)) return null;
     const header = legacy ? 14 : version === 4 ? 15 : version >= 9 ? HEAD : HEAD_V8;
     if (bytes.length < header) return null;
     const dv = new DataView(bytes.buffer, bytes.byteOffset);
@@ -194,7 +204,7 @@ export function decode(str: string): SaveData | null {
     const parkPaths: ParkPath[] = [];
     if (version >= 12) {
       const count = dv.getUint16(p); p += 2;
-      if (count > 2000 || p + count * 12 !== bytes.length) return null;
+      if (count > 2000 || p + count * 12 > bytes.length || (version === 12 && p + count * 12 !== bytes.length)) return null;
       for (let n = 0; n < count; n++) {
         const values: number[] = [];
         for (let j = 0; j < 6; j++, p += 2) values.push(unpackC(dv.getUint16(p)));
@@ -203,13 +213,27 @@ export function decode(str: string): SaveData | null {
         parkPaths.push({ ax, az, cx, cz, bx, bz });
       }
     }
+    let extras: CityExtras | undefined;
+    if (version >= 13) {
+      if (p + 4 > bytes.length) return null;
+      const length = dv.getUint32(p); p += 4;
+      if (length > 200000 || p + length !== bytes.length) return null;
+      const json = JSON.parse(new TextDecoder().decode(bytes.subarray(p, p + length)));
+      const parsed = extrasFromJson(json, tax);
+      if (!parsed) return null;
+      if (json.segHi !== undefined) {
+        if (!Array.isArray(json.segHi) || !json.segHi.every((k: unknown) => Number.isInteger(k) && (k as number) >= 0 && (k as number) < net.segs.length)) return null;
+        for (const k of json.segHi as number[]) net.segs[k][5] |= 256;
+      }
+      extras = parsed; p += length;
+    }
     // Cities saved while the map kinds existed carry one extra byte; skip it.
     if (bytes.length - p === 1) p += 1;
     if (p !== bytes.length) return null;
     const population = kind.reduce((n, k, j) => n + (k === T_RES ? RES_POP[level[j]] : 0), 0);
     const cityLevel = legacy ? levelForPopulation(population) : bytes[14];
     if (cityLevel >= MILESTONES.length) return null;
-    return { seed, kind, level, rot, parkPaths, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
+    return { extras, seed, kind, level, rot, parkPaths, net, money, tick, tax, cityLevel, funding, policies, debt, neglect, incidents };
   } catch {
     return null;
   }

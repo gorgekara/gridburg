@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { HALF_WIDTH, KIND_HIGHWAY } from '../roads/network';
+import { HALF_WIDTH, isMotorway } from '../roads/network';
 import type { Network, RSeg } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 
@@ -88,7 +88,7 @@ export class PedestrianLayer {
   }
 
   private walkable(seg: RSeg): boolean {
-    return seg.structure !== 2 && seg.kind !== KIND_HIGHWAY;
+    return seg.structure !== 2 && !isMotorway(seg.kind);
   }
 
   private spawn(): Person | null {
@@ -150,7 +150,8 @@ export class PedestrianLayer {
         else if (this.random() < dt * 0.02) p.pause = 1 + this.random() * 3;
       }
       const at = sample(p.seg, Math.max(0, Math.min(p.seg.len, p.s)));
-      const off = HALF_WIDTH[p.seg.kind] + 0.045;
+      // The outer half of the pavement: parked cars take the kerb side.
+      const off = HALF_WIDTH[p.seg.kind] + 0.066;
       // Right of travel along a → b is (-tz, tx) in this map's axes.
       const x = at.x - at.tz * off * p.side - half, z = at.z + at.tx * off * p.side - half;
       const y = roadHeight(p.seg, p.s) + CURB_TOP;

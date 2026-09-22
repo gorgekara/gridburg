@@ -8,13 +8,16 @@ import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint, roadPoint } from './placement';
+import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from './constants';
+import { terraformAllowed } from './extras';
 import * as THREE from 'three';
 import {
   T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
+import { isMotorway, isOneWayKind, KIND_MOTORWAY, KIND_RAMP } from './roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, RING_KIND_LIMIT, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
 import { MeshBuilder } from './render/meshBuilder';
@@ -23,11 +26,13 @@ import type { Game } from './game';
 export type Tool =
   | 'none' | 'inspect'
   | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
-  | 'road' | 'avenue' | 'lane' | 'highway' | 'upgrade'
+  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'ramp' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
+  | 'cemetery' | 'crematorium' | 'postoffice' | 'barrier' | 'landmark'
+  | 'district' | 'undistrict' | 'dig' | 'fill'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
 export type RoadMode = 'straight' | 'curve' | 'smooth';
@@ -37,12 +42,14 @@ const TOOL_COLOR: Record<Tool, number> = {
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
-  road: 0x8fa3b8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
+  road: 0x8fa3b8, motorway: 0xdfe6ec, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
+  cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a,
+  district: 0xffffff, undistrict: 0xe04b3a, dig: 0x4f9fcf, fill: 0xa98a5a,
   bulldoze: 0xe04b3a,
 };
-export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS };
+export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS, cemetery: T_CEMETERY, crematorium: T_CREMATORIUM, postoffice: T_POST_OFFICE, barrier: T_FLOOD_BARRIER, landmark: T_LANDMARK };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE, farm: T_FARM, leisure: T_LEISURE };
 
 const BAD = 0xe04b3a;
@@ -73,6 +80,9 @@ export class Input {
   placeRotation = 0;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
+  /** Which district the district brush paints (1..8). */
+  districtBrush = 1;
+  onDistrict: (() => void) | null = null;
   /** Live label next to the cursor; null hides it. */
   onCost: ((text: string | null, x: number, y: number, ok: boolean) => void) | null = null;
 
@@ -169,11 +179,11 @@ export class Input {
   }
 
   private isRoadTool(): boolean {
-    return ['road', 'avenue', 'lane', 'highway', 'parkpath'].includes(this.tool);
+    return ['road', 'avenue', 'lane', 'highway', 'motorway', 'ramp', 'parkpath'].includes(this.tool);
   }
 
   private isRectTool(): boolean {
-    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze'].includes(this.tool);
+    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze', 'district', 'undistrict', 'dig', 'fill'].includes(this.tool);
   }
 
   private onKey = (e: KeyboardEvent): void => {
@@ -461,7 +471,7 @@ export class Input {
 
   /** The kind of road the tool in hand draws, at whatever height it is set to. */
   private drawKind(): number {
-    return this.tool === 'avenue' ? KIND_AVENUE : this.tool === 'lane' ? KIND_LANE : this.tool === 'highway' ? KIND_HIGHWAY : KIND_ROAD;
+    return this.tool === 'avenue' ? KIND_AVENUE : this.tool === 'lane' ? KIND_LANE : this.tool === 'highway' ? KIND_HIGHWAY : this.tool === 'motorway' ? KIND_MOTORWAY : this.tool === 'ramp' ? KIND_RAMP : KIND_ROAD;
   }
 
   private roadCost(path: P[]): number {
@@ -498,7 +508,8 @@ export class Input {
     if (this.tool === 'parkpath') {
       if (g.addParkPaths(buildPieces(path))) g.flush();
     } else {
-      const added = g.net.insertPath(path, this.drawKind(), false, this.roadStructure(path));
+      // One-way highways and ramps run the way they were drawn, start to finish.
+      const added = g.net.insertPath(path, this.drawKind(), isOneWayKind(this.drawKind()), this.roadStructure(path));
       if (added.length) { g.spend(cost); g.flush(); }
     }
     // Keep laying from where this piece ended, unless it joined an existing road.
@@ -587,9 +598,11 @@ export class Input {
     const half = GRID / 2;
     let n = 0;
     q.identity();
-    const zoning = this.tool !== 'bulldoze';
+    const zoning = !['bulldoze', 'district', 'undistrict', 'dig', 'fill'].includes(this.tool);
+    const shaping = this.tool === 'dig' || this.tool === 'fill';
     for (const t of this.rectTiles()) {
       if (zoning && !this.game.buildable(t)) continue;
+      if (shaping && !terraformAllowed(this.game.baseTerrain, this.game.extras.terraform, t, this.tool as 'dig' | 'fill')) continue;
       m4.compose(new THREE.Vector3((t % GRID) - half + 0.5, 0, ((t / GRID) | 0) - half + 0.5), q, one);
       this.rect.setMatrixAt(n, m4);
       // Tiles too far from any road are shown gray: they can be zoned but nothing will grow there yet.
@@ -607,7 +620,16 @@ export class Input {
     const tiles = this.rectTiles();
     let changed = 0;
     let broke = false;
-    if (this.tool === 'bulldoze') {
+    if (this.tool === 'district' || this.tool === 'undistrict') {
+      g.paintDistrict(tiles, this.tool === 'district' ? this.districtBrush : 0);
+      this.onDistrict?.();
+      return;
+    } else if (this.tool === 'dig' || this.tool === 'fill') {
+      const result = g.terraform(tiles, this.tool);
+      if (result.broke) this.onToast?.('Not enough money');
+      else if (!result.changed) this.onToast?.(this.tool === 'dig' ? 'Dig on open ground, clear of roads and buildings' : 'Fill in along the bank; the river keeps a channel at least two cells wide');
+      return;
+    } else if (this.tool === 'bulldoze') {
       for (const t of tiles) if ((g.kind[t] !== T_EMPTY || g.owners[t] >= 0) && g.setKind(t, T_EMPTY, 0)) changed++;
       const sx = this.startTile % GRID, sz = (this.startTile / GRID) | 0;
       const cx = this.curTile % GRID, cz = (this.curTile / GRID) | 0;
@@ -689,7 +711,7 @@ export class Input {
     } else if (this.tool === 'calm') {
       const h = this.roadHit(p, 0.9);
       if (!h || h.seg.fixed) { this.onToast?.('Pick a street to calm'); return; }
-      if (h.seg.kind === KIND_HIGHWAY) { this.onToast?.('Expressways cannot be calmed'); return; }
+      if (isMotorway(h.seg.kind)) { this.onToast?.('Expressways and ramps cannot be calmed'); return; }
       const cost = h.seg.calm ? 0 : Math.round(COST_CALM * h.seg.len);
       if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
       h.seg.calm = !h.seg.calm;
@@ -738,7 +760,8 @@ export class Input {
       if (s.structure || Network.nearestOn(s, c.x, c.z).dist > ROUNDABOUT_RADIUS[s.kind] + 0.8) continue;
       if (ROUNDABOUT_RADIUS[s.kind] > ROUNDABOUT_RADIUS[kind]) kind = s.kind;
     }
-    return kind;
+    // An expressway arriving at a roundabout slows to avenue size: a six-lane circle would be enormous.
+    return kind === KIND_HIGHWAY || kind === KIND_MOTORWAY ? RING_KIND_LIMIT : kind === KIND_RAMP ? KIND_ROAD : kind;
   }
 
   private roundaboutRadius(c: P): number {
@@ -817,7 +840,7 @@ export class Input {
           label = h.seg.bike ? 'Remove bike lanes' : !canAddBikeLane(h.seg, this.game.net) ? 'Needs a surface street or avenue' : `$${bikeLaneCost(h.seg).toLocaleString()} · Bike lanes`;
           if (!ok) color = BAD;
         } else if (this.tool === 'calm') {
-          label = h.seg.kind === KIND_HIGHWAY ? 'Expressways cannot be calmed'
+          label = isMotorway(h.seg.kind) ? 'Expressways and ramps cannot be calmed'
             : h.seg.calm ? 'Remove calming' : `$${Math.round(COST_CALM * h.seg.len).toLocaleString()}`;
         } else if (this.tool === 'upgrade') {
           const next = nextRoadKind(h.seg.kind);

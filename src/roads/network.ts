@@ -4,25 +4,36 @@ export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
 export const KIND_LANE = 2;
 export const KIND_HIGHWAY = 3;
+/** One carriageway of a motorway: three lanes, one way, drawn separately for each direction as in Cities: Skylines 2. */
+export const KIND_MOTORWAY = 4;
+/** A single-lane, one-way slip road on and off the highways. */
+export const KIND_RAMP = 5;
+/** Kinds that are always one way, in the direction they were drawn. */
+export const isOneWayKind = (kind: number): boolean => kind === KIND_MOTORWAY || kind === KIND_RAMP;
+/** Expressway-class roads: fast, no frontage, no pedestrians, no parking, no crossings. */
+export const isMotorway = (kind: number): boolean => kind === KIND_HIGHWAY || kind === KIND_MOTORWAY || kind === KIND_RAMP;
 /**
  * Four kinds of road, in the order the upgrade tool walks them. A lane is a single shared track, a
  * street carries two lanes, an avenue four and an expressway six; each sits inside its corridor with
  * a verge either side rather than paving it kerb to kerb. An expressway carries traffic fast but has
  * no frontage: nothing can be zoned or built off it, so cities need ordinary streets behind it.
  */
-export const HALF_WIDTH = [0.36, 0.86, 0.24, 1.32];
-export const SPEED = [3, 4.5, 2.4, 6.8]; // units per second
-export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway'];
+export const HALF_WIDTH = [0.36, 0.86, 0.24, 1.32, 0.72, 0.3];
+export const SPEED = [3, 4.5, 2.4, 6.8, 6.8, 4.6]; // units per second
+export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway', 'One-way highway', 'Highway ramp'];
 /** Whether buildings may use this kind of road as their access. */
-export const ROAD_FRONTAGE = [true, true, true, false];
+export const ROAD_FRONTAGE = [true, true, true, false, false, false];
 /** Upgrade order: lane, street, avenue, expressway, and back to a lane. */
 export const UPGRADE_ORDER = [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY];
 /**
  * How wide a roundabout has to be for each kind of road: the circle needs room for the arms to meet it
  * at a sane angle, and a wider carriageway needs a wider circle before its lanes stop fighting.
  */
-export const ROUNDABOUT_RADIUS = [2.1, 3.0, 1.7, 4.0];
-export const nextRoadKind = (kind: number): number => UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
+export const ROUNDABOUT_RADIUS = [1.9, 2.6, 1.5, 4.0, 2.6, 1.9];
+/** The widest carriageway a roundabout circulates on: an expressway arm still meets an avenue-sized ring. */
+export const RING_KIND_LIMIT = 1; // KIND_AVENUE
+// A ramp widens into a one-way highway and back; the rest walk the ordinary order.
+export const nextRoadKind = (kind: number): number => kind === KIND_RAMP ? KIND_MOTORWAY : kind === KIND_MOTORWAY ? KIND_RAMP : UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
 export const LIGHT_CYCLE = 18;
 
 export interface RNode {
@@ -547,7 +558,7 @@ export class Network {
       // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
       // the extra kinds set bit 5 as well. Bit 6 stores bike tracks in the existing byte;
       // old saves leave it clear, and structure bits 3–4 remain unchanged.
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0)]);
+      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0) | ((s.kind & 4) << 6)]);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -561,7 +572,7 @@ export class Network {
     for (const [id, a, b, cx, cz, f] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2) | ((f >> 6) & 4), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       net.resample(s);

@@ -1,7 +1,8 @@
+import { T_CEMETERY, T_POST_OFFICE } from './constants';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
 import { footprint, siteOwners } from './sites';
 import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
-import { Network, KIND_AVENUE, KIND_ROAD } from './roads/network';
+import { Network, KIND_AVENUE, KIND_ROAD, ROUNDABOUT_RADIUS } from './roads/network';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import { newCity } from './game';
@@ -104,7 +105,7 @@ export function demoCity(expanded = false): SaveData {
 
   // Traffic control on the avenue.
   const rb = P(22, 0);
-  net.addRoundabout(rb.x, rb.z, 3.4, KIND_AVENUE);
+  net.addRoundabout(rb.x, rb.z, ROUNDABOUT_RADIUS[KIND_AVENUE], KIND_AVENUE);
   for (const along of [16, 28, 34]) {
     const p = P(along, 0);
     const n = net.nearestNode(p.x, p.z, 1.0);
@@ -234,6 +235,9 @@ export function demoCity(expanded = false): SaveData {
     placeLarge(P(14, -10), T_STATION); placeLarge(P(36, 10), T_STATION);
     place(P(17, 2), T_SUBWAY, any); place(P(29, -2), T_SUBWAY, any); place(P(24, -14), T_SUBWAY, any);
     placeLarge(P(48, 14), T_AIRPORT);
+    // Deathcare and a post office, which towers need once the city is a City.
+    placeLarge(P(33, -13), T_CEMETERY);
+    place(P(22, 5), T_POST_OFFICE, any);
   }
 
   const level = new Uint8Array(N_TILES);

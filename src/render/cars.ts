@@ -4,14 +4,14 @@ import * as THREE from 'three';
 import { MAX_CARS } from '../constants';
 import { Builder } from './buildingGeo';
 
-/** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer, 8 trolleybus, 9 taxi. */
+/** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer, 8 trolleybus, 9 taxi, 10 garbage truck. */
 export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.BufferGeometry {
   const emergency = type === 5 || type === 6;
   const b = new Builder(type);
-  const model = type === 5 || type === 7 || type === 9 ? 1 : type === 6 ? 3 : type === 8 ? 4 : type;
+  const model = type === 5 || type === 7 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   // Cars and vans are painted white and tinted per vehicle, so the palette lives in CarLayer.
-  const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434, 0x2a2f36, 0x38b49b, 0xf7c62f][type];
+  const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434, 0x2a2f36, 0x38b49b, 0xf7c62f, 0x3f8a4a][type];
   b.box(0.25, 0.11, length, 0, 0.1, 0, body);
   if (model === 1) {
     b.box(0.22, 0.1, 0.25, 0, 0.21, -0.01, body);
@@ -19,7 +19,7 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
     b.box(0.19, 0.06, 0.015, 0, 0.23, -0.14, 0x283d50);
   } else if (model === 3) {
     b.box(0.25, 0.18, 0.22, 0, 0.2, 0.25, body);
-    b.box(0.27, 0.26, 0.48, 0, 0.16, -0.12, type === 6 ? 0xcc4434 : 0xe1e0d7);
+    b.box(0.27, 0.26, 0.48, 0, 0.16, -0.12, type === 6 ? 0xcc4434 : type === 10 ? 0x3f8a4a : 0xe1e0d7);
     for (let z = -0.3; z < 0.1; z += 0.08) b.box(0.275, 0.23, 0.012, 0, 0.18, z, 0xb7c1bf);
     b.box(0.22, 0.08, 0.012, 0, 0.28, 0.365, 0x294354);
   } else {
@@ -108,7 +108,7 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
 }
 /** Head and tail lamps, drawn additively after dark. The lamps light up; the road stays dark. */
 function lightGeometry(type: number): THREE.BufferGeometry {
-  const model = type === 5 || type === 9 ? 1 : type === 6 ? 3 : type === 8 ? 4 : type;
+  const model = type === 5 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   const pos: number[] = [], col: number[] = [];
   const lamp = (x: number, y: number, z: number, w: number, h: number, c: number[]): void => {
@@ -131,7 +131,7 @@ function lightGeometry(type: number): THREE.BufferGeometry {
 // Weighted like a real car park: mostly white, black, silver and grey, with a few bright ones.
 const CAR_COLORS = [0xf1f1ec, 0xf1f1ec, 0x26292d, 0x26292d, 0xb4b9bd, 0xb4b9bd, 0x6b7076, 0xa8312b, 0x2e5c9a, 0x1f3350, 0x355d45, 0xd9a93a, 0xcdbb97, 0xd66f2c, 0x6fa6c8, 0x6a2230];
 const VAN_COLORS = [0xf1f1ec, 0xf1f1ec, 0xf1f1ec, 0xb4b9bd, 0x6b7076, 0x2e4f7c, 0xb13a2f, 0x3f6b4a, 0xe0b43c, 0x26292d];
-const vehicleColor = (type: number, id: number): number => {
+export const vehicleColor = (type: number, id: number): number => {
   const palette = type === 1 ? CAR_COLORS : VAN_COLORS;
   const h = Math.imul(id ^ (id >>> 15), 0x2c1b3c6d) >>> 0;
   return palette[(h ^ (h >>> 12)) % palette.length];
@@ -147,7 +147,7 @@ export class CarLayer {
   private lights: THREE.InstancedMesh[] = [];
   private lightMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
   constructor() {
-    for (let type = 1; type <= 9; type++) {
+    for (let type = 1; type <= 10; type++) {
       const mesh = new THREE.InstancedMesh(vehicleGeometry(type), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }), MAX_CARS);
       if (type === 1 || type === 2) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_CARS * 3).fill(1), 3);
       mesh.castShadow = true; mesh.count = 0; mesh.frustumCulled = false;
@@ -174,10 +174,10 @@ export class CarLayer {
     for (const m of this.lights) m.visible = on;
   }
   update(prev: Float32Array, next: Float32Array, alpha: number, prevIds?: Uint32Array, nextIds?: Uint32Array, heights?: Float32Array, prevHeights?: Float32Array, pitch?: Float32Array): void {
-    const counts = new Array(9).fill(0);
+    const counts = new Array(10).fill(0);
     for (let i = 0; i < MAX_CARS; i++) {
       const o = i * 4, type = Math.round(next[o + 3]);
-      if (type < 1 || type > 9) continue;
+      if (type < 1 || type > 10) continue;
       let y = heights?.[i] ?? 0;
       let x = next[o], z = next[o + 1], a = next[o + 2];
       if ((!prevIds || !nextIds || prevIds[i] === nextIds[i]) && prev[o + 3] === type && Math.abs(prev[o] - x) + Math.abs(prev[o + 1] - z) < 1.5) {

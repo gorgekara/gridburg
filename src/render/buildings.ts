@@ -1,6 +1,6 @@
 import { isDecoration, T_PATH, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_FARM, T_LEISURE } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER } from '../constants';
 import { buildingRotation } from '../placement';
 import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
@@ -147,7 +147,7 @@ export class BuildingLayer {
       let facing = k === T_PATH ? 0 : turn * Math.PI / 2;
       if (!turn && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
       // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
-      if ((k === T_DOCKS || k === T_HYDRO) && water) {
+      if ((k === T_DOCKS || k === T_HYDRO || k === T_FLOOD_BARRIER) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);
         for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
           const nx = x + dx, nz = z + dz;

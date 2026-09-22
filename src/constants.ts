@@ -51,6 +51,14 @@ export const T_PLAZA = 43;
 export const T_LAWN = 44;
 export const T_TROLLEY = 45;
 export const T_TAXI = 46;
+/** Deathcare, post, flood defence and a landmark that draws visitors. */
+export const T_CEMETERY = 47;
+export const T_CREMATORIUM = 48;
+export const T_POST_OFFICE = 49;
+export const T_FLOOD_BARRIER = 50;
+export const T_LANDMARK = 51;
+/** A barrier on the bank keeps floodwater out of the streets behind it. */
+export const FLOOD_BARRIER_RADIUS = 7;
 export const isDecoration = (kind: number): boolean => kind >= T_PATH && kind <= T_LAWN;
 export const LEISURE_UNLOCK = 2;
 /** Jobs at a fishing dock, and dollars a second its boats land from a clean river. */
@@ -59,9 +67,9 @@ export const DOCK_CATCH = 2.4;
 export const OFFICE_UNLOCK = 3;
 export const ENTRY_UNLOCK = 2;
 export const COST_ENTRY = 3500;
-export type CivicNeed = 'health' | 'education' | 'fire' | 'safety' | 'leisure' | 'waste';
+export type CivicNeed = 'health' | 'education' | 'fire' | 'safety' | 'leisure' | 'waste' | 'deathcare' | 'mail';
 export const CIVIC_LABELS: Record<CivicNeed, string> = {
-  health: 'Healthcare', education: 'Education', fire: 'Fire protection', safety: 'Public safety', leisure: 'Recreation', waste: 'Waste collection',
+  health: 'Healthcare', education: 'Education', fire: 'Fire protection', safety: 'Public safety', leisure: 'Recreation', waste: 'Waste collection', deathcare: 'Deathcare', mail: 'Post',
 };
 
 export const COST_ROAD = 25; // per unit of length
@@ -75,11 +83,13 @@ export const COST_ROUNDABOUT = 900;
 export const START_MONEY = 14000;
 export const COST_LANE = 14;
 export const COST_HIGHWAY = 430;
+export const COST_MOTORWAY = 240;
+export const COST_RAMP = 110;
 export const ROAD_UPKEEP = 0.015; // per unit length per second, scaled per kind for the tiles it takes
 /** Build cost per unit length, indexed by road kind. */
-export const ROAD_COST = [COST_ROAD, COST_AVENUE, COST_LANE, COST_HIGHWAY];
+export const ROAD_COST = [COST_ROAD, COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_MOTORWAY, COST_RAMP];
 /** Upkeep multiplier per road kind: wider roads cost more to keep. */
-export const ROAD_UPKEEP_FACTOR = [1, 3, 0.6, 4.5];
+export const ROAD_UPKEEP_FACTOR = [1, 3, 0.6, 4.5, 2.4, 1];
 
 export interface ServiceSpec {
   name: string;
@@ -99,6 +109,10 @@ export interface ServiceSpec {
   sewage: number;
   pollution: number; // ground pollution emitted per tick
   needsWater: boolean; // must touch the river
+  /** Visitors a landmark draws to the city, per minute. */
+  attraction?: number;
+  /** Holds back floodwater within FLOOD_BARRIER_RADIUS cells. */
+  barrier?: boolean;
 }
 
 export const SERVICES: Record<number, ServiceSpec> = {
@@ -130,9 +144,15 @@ Object.assign(SERVICES, {
   [T_HOSPITAL]: { ...civic('Hospital', 5200, 2.6, 3, 'health', 2200, 24), footprint: [2, 2] as [number, number] },
   [T_CITY_HOSPITAL]: { ...civic('City hospital', 11000, 5, 5, 'health', 5000, 34), footprint: [3, 2] as [number, number] },
   [T_POLICE_HQ]: { ...civic('Police headquarters', 6800, 3.2, 4, 'safety', 3200, 28), footprint: [2, 2] as [number, number] },
+  // Deathcare and the post: needed before homes reach towers once the city is a real city.
+  [T_CEMETERY]: { ...civic('Cemetery', 1600, 0.8, 3, 'deathcare', 1600, 20), footprint: [2, 2] as [number, number] },
+  [T_CREMATORIUM]: { ...civic('Crematorium', 5200, 2.4, 4, 'deathcare', 4500, 32), pollution: 0.8 },
+  [T_POST_OFFICE]: civic('Post office', 2400, 1.4, 3, 'mail', 1800, 22),
   [T_SOLAR]: { name: 'Solar farm', cost: 4800, upkeep: 1.5, unlock: 3, power: 1800, water: 0, sewage: 0, pollution: 0, needsWater: false },
   // Gas burns cleaner than coal for less output; the river turns a dam; the reactor runs a region.
   [T_GAS]: { name: 'Gas power plant', cost: 2200, upkeep: 2.2, unlock: 1, power: 1100, water: 0, sewage: 0, pollution: 3, needsWater: false },
+  [T_FLOOD_BARRIER]: { name: 'Flood barrier', cost: 1800, upkeep: 0.6, unlock: 2, barrier: true, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: true },
+  [T_LANDMARK]: { name: 'Observation tower', cost: 9000, upkeep: 2.2, unlock: 4, footprint: [2, 2] as [number, number], attraction: 60, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
   [T_HYDRO]: { name: 'Hydroelectric dam', cost: 7500, upkeep: 3, unlock: 3, power: 2600, water: 0, sewage: 0, pollution: 0, needsWater: true },
   [T_NUCLEAR]: { name: 'Nuclear power plant', cost: 18000, upkeep: 9, unlock: 5, footprint: [3, 3] as [number, number], power: 7000, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });

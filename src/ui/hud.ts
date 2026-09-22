@@ -1,4 +1,6 @@
-import { T_TROLLEY, T_TAXI } from '../constants';
+import { T_TROLLEY, T_TAXI, T_FLOOD_BARRIER, T_LANDMARK, FLOOD_BARRIER_RADIUS } from '../constants';
+import { COST_DIG, COST_FILL, TAX_LABELS } from '../extras';
+import type { Taxes } from '../extras';
 import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, LEISURE_UNLOCK } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
 import { POLICIES, POLICY_IDS } from '../policies';
@@ -11,6 +13,7 @@ import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
 import { T_DOCKS, DOCK_JOBS, T_GAS, T_HYDRO, T_NUCLEAR } from '../constants';
+import { COST_MOTORWAY, COST_RAMP } from '../constants';
 import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
 
@@ -22,6 +25,7 @@ export interface HudActions {
   setMode(m: RoadMode): void;
   setSpeed(v: number): void;
   setTax(v: number): void;
+  setTaxes(t: Taxes): void;
   setFunding(key: FundingKey, value: number): void;
   loan(action: 'take' | 'repay'): void;
   rotatePlacement(): void;
@@ -58,6 +62,8 @@ const CATEGORIES: Category[] = [
       { id: 'road', label: 'Road', key: 'R', price: `${money(COST_ROAD)} / cell`, note: 'Two lanes', hint: 'Click to start, click again to finish. It keeps going from the last point until you join a road, right-click, or press Esc' },
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
       { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
+      { id: 'motorway', label: 'One-way highway', price: `${money(COST_MOTORWAY)} / cell`, note: '3 lanes · one way', hint: 'One carriageway of a motorway, three lanes in the direction you draw it. Draw the other direction as a second road beside it, as in Cities: Skylines 2. No frontage' },
+      { id: 'ramp', label: 'Highway ramp', price: `${money(COST_RAMP)} / cell`, note: '1 lane · one way', hint: 'A slip road on or off a highway, one way in the direction you draw it. Start it from a highway to make an exit, end it on one to make an on-ramp; press + for a flyover or − to dive under' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
       { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
       { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Widening costs the difference; narrowing is free' },
@@ -103,11 +109,26 @@ const CATEGORIES: Category[] = [
       { id: 'treatment', label: 'Sewage treatment', price: svc(T_TREATMENT), note: '2,200 sewage · 95% filtered', hint: 'Build on the river bank. Electricity powers filtration, reducing pollution from treated sewage by 95%' },
       { id: 'docks', label: 'Fishing docks', price: svc(T_DOCKS), note: `${DOCK_JOBS} jobs · boats`, hint: 'Build on the river bank. The docks put fishing boats on the river and sell the catch; sewage upstream thins it, so keep outlets downstream or treated. Unlocks at Small town' },
       { id: 'outlet', label: 'Sewage outlet', price: svc(T_OUTLET), note: `${SERVICES[T_OUTLET].sewage.toLocaleString()} sewage`, hint: 'Must touch the river. Fouls the water downstream of it' },
+      { id: 'barrier', label: 'Flood barrier', price: svc(T_FLOOD_BARRIER), note: `Protects ${FLOOD_BARRIER_RADIUS} cells`, hint: 'Build on the river bank. When the river floods, nothing within seven cells of a barrier is flooded. Unlocks at Small town' },
+    ],
+  },
+  {
+    id: 'land', label: 'Land',
+    tools: [
+      { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Drag over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
+      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Drag along the river bank to fill it in as buildable land. The river always keeps a channel at least two cells wide. Filling a dug pond restores the ground' },
+    ],
+  },
+  {
+    id: 'districts', label: 'Districts',
+    tools: [
+      { id: 'district', label: 'Paint district', price: 'Free', note: 'Local policies', hint: 'Drag to paint cells into the district chosen in the district panel. Each district can have its own policies, such as a high-rise ban or a tax break' },
+      { id: 'undistrict', label: 'Erase district', price: 'Free', note: 'Back to citywide', hint: 'Drag to take cells out of any district' },
     ],
   },
   {
     id: 'services', label: 'Services',
-    tools: (['clinic', 'hospital', 'cityhospital', 'school', 'fire', 'police', 'policehq', 'recycling', 'university'] as Tool[]).map(id => {
+    tools: (['clinic', 'hospital', 'cityhospital', 'school', 'fire', 'police', 'policehq', 'recycling', 'university', 'cemetery', 'crematorium', 'postoffice'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: `Base $${spec.upkeep}/s · ${spec.radius} cell radius`,
         hint: `${spec.name}: serves ${spec.capacity?.toLocaleString()} residents within ${spec.radius} cells. Both building and homes need highway-connected roads. Unlocks at ${MILESTONES[spec.unlock ?? 0].name}` };
@@ -125,11 +146,11 @@ const CATEGORIES: Category[] = [
   },
   {
     id: 'parks', label: 'Parks',
-    tools: (['parkpath', 'lawn', 'plaza', 'pond', 'parkshop', 'park', 'playground', 'sports', 'garden'] as Tool[]).map(id => {
+    tools: [...(['parkpath', 'lawn', 'plaza', 'pond', 'parkshop', 'park', 'playground', 'sports', 'garden'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: id === 'parkpath' ? 'Straight or curved · $15 / cell' : ['lawn', 'plaza'].includes(id) ? 'Drag to paint' : 'Place and rotate',
         hint: spec.decoration ? 'Create your own park on clear land. Join paths, plazas or lawns to a road; ponds and kiosks belong beside them. Paths connect automatically. Right-click or G rotates a piece' : `Place ${spec.name.toLowerCase()} near residents for recreation` };
-    }),
+    }), { id: 'landmark' as Tool, label: SERVICES[T_LANDMARK].name, price: svc(T_LANDMARK), note: '2 × 2 · draws tourists', hint: `A landmark that draws ${SERVICES[T_LANDMARK].attraction} visitors a minute to the city and lifts land values around it. Unlocks at ${MILESTONES[SERVICES[T_LANDMARK].unlock ?? 0].name}` }],
   },
   {
     id: 'decorations', label: 'Decorations',
@@ -213,6 +234,9 @@ export class Hud {
   private speedBtns = new Map<number, HTMLButtonElement>();
   private taxLabel = el('span', 'val');
   private taxInput = el('input');
+  private zoneTaxInputs: HTMLInputElement[] = [];
+  private zoneTaxLabels: HTMLElement[] = [];
+  private goodsLine = el('p', 'pnote');
   private toastEl = el('div', 'toast');
   private hint = el('div', 'hint');
   private messagePanel = el('div', 'popover messages');
@@ -228,6 +252,9 @@ export class Hud {
   private about = el('div', 'help about');
   private clock = el('div', 'city-clock');
   private walkHint = el('div', 'walk-hint');
+  /** The top-right button bar and the menu popover, for panels that live outside the HUD. */
+  rightBar!: HTMLElement;
+  menuPopover!: HTMLElement;
   private walkBtn: HTMLButtonElement = el('button');
   private driveBtn: HTMLButtonElement = el('button');
   private walkTitle = el('strong', undefined, 'Walking');
@@ -366,19 +393,35 @@ export class Hud {
       actions.setTax(Number(this.taxInput.value));
     });
     this.taxLabel.textContent = '10%';
-    taxRow.append(el('span', 'label', 'Tax rate'), this.taxInput, this.taxLabel);
+    taxRow.append(el('span', 'label', 'All taxes'), this.taxInput, this.taxLabel);
+    // One rate per zone; the single slider above sets them all at once.
+    const zoneTaxRows: HTMLElement[] = [];
+    TAX_LABELS.forEach((label) => {
+      const row = el('label', 'funding-row');
+      const slider = el('input');
+      slider.type = 'range'; slider.min = '0'; slider.max = '30'; slider.value = '10';
+      slider.setAttribute('aria-label', `${label} tax`);
+      const value = el('span', 'funding-value', '10%');
+      slider.addEventListener('input', () => {
+        value.textContent = `${slider.value}%`;
+        actions.setTaxes(this.zoneTaxInputs.map(i => Number(i.value)) as Taxes);
+      });
+      row.append(el('span', undefined, `${label} tax`), slider, value);
+      this.zoneTaxInputs.push(slider); this.zoneTaxLabels.push(value);
+      zoneTaxRows.push(row);
+    });
     const incRow = el('div', 'prow');
     incRow.append(el('span', 'label', 'Net income'), this.budgetIncome);
-    budget.append(el('div', 'ptitle', 'City budget'), taxRow);
+    budget.append(el('div', 'ptitle', 'City budget'), taxRow, ...zoneTaxRows, el('p', 'pnote', 'Farms pay the industrial rate and leisure the commercial one. A district tax break takes four points off.'));
     this.taxInput.setAttribute('aria-label', 'Tax rate');
-    for (const [key, label] of [['fareIncome', 'Transport fares'], ['tollIncome', 'Congestion charge'], ['fishingIncome', 'Fishing'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['policyExpense', 'Policies'], ['loanExpense', 'Loan payment']]) {
+    for (const [key, label] of [['fareIncome', 'Transport fares'], ['tollIncome', 'Congestion charge'], ['fishingIncome', 'Fishing'], ['exportIncome', 'Goods exports'], ['tourismIncome', 'Tourism'], ['taxIncome', 'Tax revenue'], ['roadExpense', 'Road upkeep'], ['serviceExpense', 'Service upkeep'], ['policyExpense', 'Policies'], ['districtExpense', 'District policies'], ['loanExpense', 'Loan payment']]) {
       const row = el('div', 'finance-row');
       const value = el('strong');
       row.append(el('span', undefined, label), value);
       this.financeValues.set(key, value);
       budget.append(row);
     }
-    budget.append(incRow, el('div', 'ptitle', 'Service funding'));
+    budget.append(incRow, this.goodsLine, el('div', 'ptitle', 'Service funding'));
     for (const key of FUNDING_KEYS) {
       const row = el('label', 'funding-row');
       const slider = el('input');
@@ -422,6 +465,7 @@ export class Hud {
 
     // ---- top-right: view toggle, share, help, and a small menu ---------------------------------
     const right = el('div', 'topright');
+    this.rightBar = right;
     const iconBtn = (ic: string, title: string, fn: () => void): HTMLButtonElement => {
       const b = el('button', 'iconbtn');
       b.title = title;
@@ -432,6 +476,7 @@ export class Hud {
     this.help = this.buildHelp();
     this.buildAbout();
     const menu = el('div', 'popover menu');
+    this.menuPopover = menu;
     const menuItem = (ic: string, label: string, fn: () => void): HTMLButtonElement => {
       const b = el('button', 'mitem');
       b.append(icon(ic, 17), el('span', undefined, label));
@@ -738,7 +783,7 @@ export class Hud {
   private refreshHint(): void {
     const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
     if (!def) { this.hint.textContent = ''; return; }
-    if (['lane', 'road', 'avenue', 'highway', 'parkpath'].includes(this.tool)) {
+    if (['lane', 'road', 'avenue', 'highway', 'motorway', 'ramp', 'parkpath'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
       const height = this.elevation > 0 ? 'Bridge: minimum 14 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 14 cells, clear portals. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
@@ -755,6 +800,7 @@ export class Hud {
   setTax(v: number): void {
     this.taxInput.value = String(v);
     this.taxLabel.textContent = v + '%';
+    this.zoneTaxInputs.forEach((input, z) => { input.value = String(v); this.zoneTaxLabels[z].textContent = `${v}%`; });
   }
 
   setCost(text: string | null, x: number, y: number, ok: boolean): void {
@@ -788,7 +834,17 @@ export class Hud {
   }
 
   update(s: Stats): void {
-    for (const [key, value] of this.financeValues) value.textContent = `$${(key === 'fareIncome' ? s.transport.fareIncome : s[key as 'taxIncome' | 'tollIncome' | 'fishingIncome' | 'roadExpense' | 'serviceExpense' | 'policyExpense' | 'loanExpense']).toFixed(2)}/s`;
+    for (const [key, value] of this.financeValues) {
+      const amount = key === 'fareIncome' ? s.transport.fareIncome : key === 'exportIncome' ? s.goods.income : key === 'tourismIncome' ? s.tourism.income
+        : s[key as 'taxIncome' | 'tollIncome' | 'fishingIncome' | 'roadExpense' | 'serviceExpense' | 'policyExpense' | 'loanExpense' | 'districtExpense'];
+      value.textContent = `$${amount.toFixed(2)}/s`;
+    }
+    this.zoneTaxInputs.forEach((input, z) => {
+      if (document.activeElement === input || !s.taxes) return;
+      input.value = String(s.taxes[z]); this.zoneTaxLabels[z].textContent = `${s.taxes[z]}%`;
+    });
+    const g = s.goods;
+    this.goodsLine.textContent = `Goods: ${fmt(g.produced)} made, ${fmt(g.needed)} needed a minute · ${fmt(g.exported)} exported of ${fmt(g.capacity)} capacity · ${fmt(g.imported)} imported${g.importShare > 0.3 ? ' — shops lose takings buying in stock, so zone more industry or farms' : ''}. ${fmt(s.tourism.visitors)} visitors a minute.`;
     for (const key of FUNDING_KEYS) {
       const slider = this.fundingInputs.get(key)!;
       if (document.activeElement !== slider) {
@@ -890,7 +946,11 @@ export class Hud {
     if (s.incidents.racers) say('racers', `${s.incidents.racers} street racers are out: calmed streets and signals slow them down`);
     if (s.incidents.crashes) say('crashes', `${s.incidents.crashes} traffic collisions: blocked vehicles await police or recovery`);
     if (s.incidents.crime) say('crime', `${s.incidents.crime} crime hotspots: police visits deter crime and restore tax revenue`);
-    if (s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the end of the highway, then zone beside it');
+    if (s.disasters?.active === 'flood') say('disaster', 'Flood! Low ground by the river is under water. Flood barriers on the bank protect the streets behind them');
+    if (s.disasters?.active === 'tornado') say('disaster', 'Tornado crossing the valley: buildings in its path are being damaged');
+    if (s.garbage > 40) say('garbage', 'Rubbish is piling up: build recycling centres so garbage trucks can collect it');
+    if (s.goods?.importShare > 0.5 && s.buildings > 20) say('goods', 'Shops are importing most of their stock: zone industry or farmland to supply them');
+    if (!s.placeholder && s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the end of the highway, then zone beside it');
     if (s.money < 0) say('budget', 'Treasury in debt: open Budget to reduce funding or take a recovery loan. Existing zones can still grow.');
     if (s.declining > 0) say('declining', `${s.declining} homes losing services: inspect the amber markers before they downgrade`);
     if (s.buildings > 0) {

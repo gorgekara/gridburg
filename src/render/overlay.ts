@@ -28,6 +28,9 @@ export class OverlayLayer {
   private coverTex: THREE.DataTexture;
   private coverData: Uint8Array;
   private coverPlane: THREE.Mesh;
+  private viewTex: THREE.DataTexture;
+  private viewData: Uint8Array;
+  private viewPlane: THREE.Mesh;
 
   constructor() {
     this.data = new Uint8Array(GRID * GRID * 4);
@@ -60,6 +63,21 @@ export class OverlayLayer {
     this.coverPlane.renderOrder = 3;
     this.coverPlane.visible = false;
     this.group.add(this.coverPlane);
+
+    // Map views (land value, noise, crime...) sit with the coverage wash, above the streets.
+    this.viewData = new Uint8Array(GRID * GRID * 4);
+    this.viewTex = new THREE.DataTexture(this.viewData, GRID, GRID, THREE.RGBAFormat);
+    this.viewTex.magFilter = THREE.LinearFilter;
+    this.viewTex.minFilter = THREE.LinearFilter;
+    this.viewPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(GRID, GRID),
+      new THREE.MeshBasicMaterial({ map: this.viewTex, transparent: true, depthWrite: false }),
+    );
+    this.viewPlane.rotation.x = -Math.PI / 2;
+    this.viewPlane.position.y = 0.095;
+    this.viewPlane.renderOrder = 3;
+    this.viewPlane.visible = false;
+    this.group.add(this.viewPlane);
 
     this.markers = new THREE.InstancedMesh(
       new THREE.OctahedronGeometry(0.17),
@@ -124,6 +142,25 @@ export class OverlayLayer {
       }
     }
     this.coverTex.needsUpdate = true;
+  }
+
+  /**
+   * Paint a map view over the city, or hide it with null. `color` turns a cell's 0..255 value into
+   * RGBA; cells it returns null for stay clear.
+   */
+  setView(values: ArrayLike<number> | null, color?: (v: number, i: number) => [number, number, number, number] | null): void {
+    this.viewPlane.visible = !!values;
+    if (!values || !color) return;
+    for (let z = 0; z < GRID; z++) {
+      const row = GRID - 1 - z;
+      for (let x = 0; x < GRID; x++) {
+        const i = z * GRID + x, o = (row * GRID + x) * 4;
+        const c = color(values[i], i);
+        if (!c) { this.viewData[o + 3] = 0; continue; }
+        this.viewData[o] = c[0]; this.viewData[o + 1] = c[1]; this.viewData[o + 2] = c[2]; this.viewData[o + 3] = c[3];
+      }
+    }
+    this.viewTex.needsUpdate = true;
   }
 
   setFlags(kind: Uint8Array, level: Uint8Array, flags: Uint8Array, raster: Raster): void {

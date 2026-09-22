@@ -1,7 +1,7 @@
 import { parkGeometry } from './parkGeo';
 import { isDecoration, T_TROLLEY, T_TAXI } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES, T_FARM, T_LEISURE } from '../constants';
+import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES, T_FARM, T_LEISURE, T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from '../constants';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
@@ -690,6 +690,60 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.64, 0.05, 0.38, 0.05, 0.35, 0.14, 0x3a6b8c);
     b.windows(0.6, 0.3, 0.34, 0.1, 1, 3, 0.35, 0.08);
     for (const x of [-0.34, 0.36]) { b.box(0.04, 0.5, 0.04, x, 0.05, 0.3, 0x7c8084); b.box(0.22, 0.03, 0.03, x, 0.52, 0.3, 0x7c8084); }
+  } else if (kind === T_CEMETERY) {
+    // Lawns in rows of headstones, a gravel path, yew trees and a small chapel, on a 2 x 2 site.
+    b.shift = { x: 0.5, z: 0.5 };
+    b.box(1.92, 0.02, 1.92, 0, 0, 0, 0x6f9a55);
+    b.box(0.16, 0.022, 1.9, 0, 0, 0, 0xcfc4a8); // path
+    for (let row = 0; row < 6; row++) for (const side of [-1, 1]) for (let k = 0; k < 4; k++) {
+      const x = side * (0.22 + k * 0.17), z = -0.75 + row * 0.26;
+      b.box(0.07, 0.07 + ((row + k) % 3) * 0.015, 0.025, x, 0.02, z, row % 2 ? 0xb9b6ad : 0xa7a49b);
+    }
+    for (const [x, z] of [[-0.85, 0.85], [0.85, 0.85], [-0.85, -0.85], [0.85, -0.85]] as [number, number][]) b.taper(0.01, 0.1, 0.34, x, 0.02, z, 0x2f5a37, 8);
+    b.box(0.34, 0.3, 0.4, 0, 0.02, 0.72, 0xd9d2c3); // chapel
+    b.gable(0.34, 0.4, 0.32, 0.18, 0xd9d2c3, 0x5b5f66);
+    b.box(0.06, 0.18, 0.06, 0, 0.5, 0.88, 0xd9d2c3);
+    b.box(0.1, 0.012, 0.012, 0, 0.62, 0.88, 0xd9d2c3); // cross arm
+    for (const x of [-0.95, 0.95]) b.box(0.02, 0.12, 1.92, x, 0.02, 0, 0x4a4f4a); // railings
+    b.box(1.92, 0.12, 0.02, 0, 0.02, -0.95, 0x4a4f4a);
+  } else if (kind === T_CREMATORIUM) {
+    b.box(0.92, 0.03, 0.92, 0, 0, 0, 0xb8b4aa);
+    b.box(0.62, 0.34, 0.5, -0.06, 0.03, 0.05, 0xd6d0c4);
+    b.box(0.66, 0.05, 0.54, -0.06, 0.37, 0.05, 0x55595e);
+    b.windows(0.62, 0.34, 0.5, 0.12, 1, 3, 0.2, 0.08);
+    b.cyl(0.05, 0.75, 0.3, 0.03, -0.25, 0x8f8a80, 10); // chimney
+    b.box(0.3, 0.2, 0.03, -0.06, 0.03, 0.31, 0x3a2e28);
+    for (const x of [-0.38, 0.38]) b.taper(0.01, 0.08, 0.28, x, 0.03, 0.38, 0x2f5a37, 8);
+  } else if (kind === T_POST_OFFICE) {
+    b.box(0.92, 0.03, 0.92, 0, 0, 0, 0xb4b2aa);
+    b.box(0.74, 0.46, 0.56, 0, 0.03, -0.05, 0xe9e3d6);
+    b.box(0.78, 0.06, 0.6, 0, 0.49, -0.05, 0xd9503f);
+    b.windows(0.74, 0.46, 0.56, 0.1, 1, 3, 0.35, 0.1);
+    b.box(0.5, 0.06, 0.03, 0, 0.36, 0.24, 0xd9503f); // sign band
+    b.box(0.2, 0.26, 0.03, 0, 0.03, 0.24, 0x3a4a5a);
+    for (const x of [-0.28, 0.28]) { b.box(0.14, 0.08, 0.2, x, 0.03, 0.36, 0xe0a021); b.box(0.12, 0.08, 0.02, x, 0.07, 0.46, 0x2a2f36); } // parked vans
+    b.box(0.05, 0.1, 0.05, 0.38, 0.03, 0.42, 0xd9503f); // post box
+  } else if (kind === T_FLOOD_BARRIER) {
+    // A concrete wall along the bank (-z faces the river) with a pump house behind it.
+    b.box(0.98, 0.02, 0.98, 0, 0, 0, 0x9c9a92);
+    b.box(0.98, 0.34, 0.16, 0, 0, -0.38, 0xb4b1a8);
+    b.box(0.98, 0.04, 0.2, 0, 0.34, -0.38, 0x8a877f);
+    for (const x of [-0.3, 0, 0.3]) b.box(0.12, 0.2, 0.03, x, 0.08, -0.47, 0x2d4d63); // gates
+    b.box(0.4, 0.26, 0.32, 0.18, 0.02, 0.2, 0xcfc9bb);
+    b.box(0.44, 0.04, 0.36, 0.18, 0.28, 0.2, 0x3a6b8c);
+    b.pipe(0.035, 0.5, -0.2, 0.12, -0.05, 0x5f6a73);
+  } else if (kind === T_LANDMARK) {
+    // An observation tower: a slim shaft, a glazed deck near the top, a mast, and a plaza at its foot.
+    b.shift = { x: 0.5, z: 0.5 };
+    b.box(1.92, 0.025, 1.92, 0, 0, 0, 0xcfc9bb);
+    for (let k = 0; k < 4; k++) b.box(0.3, 0.03, 0.3, (k % 2 ? 1 : -1) * 0.6, 0.02, (k < 2 ? 1 : -1) * 0.6, 0x6f9a55);
+    b.taper(0.14, 0.26, 3.4, 0, 0.025, 0, 0xe4e0d6, 16);
+    b.taper(0.46, 0.2, 0.2, 0, 3.0, 0, 0xd7d2c6, 18);
+    b.cyl(0.46, 0.3, 0, 3.2, 0, 0x7fb6d6, 18); // glazed deck
+    b.cyl(0.5, 0.06, 0, 3.5, 0, 0xc9453b, 18);
+    b.taper(0.03, 0.08, 0.9, 0, 3.56, 0, 0xd7d2c6, 8);
+    b.cyl(0.04, 0.04, 0, 4.44, 0, 0xc9453b, 8);
+    for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2; b.box(0.05, 0.05, 0.05, Math.cos(a) * 0.9, 0.03, Math.sin(a) * 0.9, 0x3a4149); }
   } else if (kind === T_NUCLEAR) {
     // Two hyperbolic cooling towers, a domed reactor and a turbine hall on a 3 x 3 site.
     b.shift = { x: 1, z: 1 };

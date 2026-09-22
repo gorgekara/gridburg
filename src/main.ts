@@ -17,6 +17,7 @@ import { Walker } from './render/walker';
 import { Driver } from './render/driver';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
+import { ParkedCarLayer } from './render/parkedCars';
 import './style.css';
 import { Game, newCity, randomSeed } from './game';
 import { createScene } from './render/scene';
@@ -39,6 +40,20 @@ import { serviceCoverage } from './coverage';
 import { entryGate } from './roads/entries';
 import { footprintSize } from './sites';
 import { SERVICE_TOOL } from './input';
+import { TerraformLayer } from './render/terraform';
+import { DisasterLayer } from './render/disasters';
+import { DistrictLabels } from './render/districts';
+import { CyclistLayer } from './render/cyclists';
+import { CityPanels } from './ui/cityPanels';
+import type { MapView } from './ui/cityPanels';
+import { CityAudio } from './audio';
+import { AchievementLog } from './achievements';
+import { TouchControls } from './ui/touch';
+import { scenarioById } from './scenarios';
+import { loadSlot } from './slots';
+import { DISTRICT_COLORS } from './extras';
+import { Disasters } from './sim/disasters';
+import { waterDistance } from './sim/economy';
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui') as HTMLElement;
@@ -67,8 +82,15 @@ const boats = new BoatLayer();
 const incidents = new IncidentLayer();
 const pedestrians = new PedestrianLayer();
 const furniture = new StreetFurnitureLayer();
+const parked = new ParkedCarLayer();
+const terraformLayer = new TerraformLayer();
+const disasterLayer = new DisasterLayer();
+const districtLabels = new DistrictLabels();
+const cyclists = new CyclistLayer();
+const audio = new CityAudio();
+const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(terraformLayer.group, disasterLayer.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -80,6 +102,7 @@ const hud = new Hud(uiRoot, {
   setMode: (m) => input.setMode(m),
   setSpeed: (v) => { game.setSpeed(v); hud.setSpeed(v); },
   setTax: (v) => game.setTax(v),
+  setTaxes: (t) => game.setTaxes(t),
   setFunding: (key, value) => game.setFunding(key, value),
   setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
@@ -161,6 +184,77 @@ const hud = new Hud(uiRoot, {
 });
 
 input.onInspect = (tile) => game.inspect(tile);
+
+// ---- map views, statistics, districts, achievements, scenarios, saves ---------------------------
+const cityDay = (): number => Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1;
+const hex = (c: number): [number, number, number] => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
+/** Colour for a 0..255 map value on a red → yellow → green scale (or reversed for bad things). */
+const ramp = (v: number, good: boolean, alpha = 150): [number, number, number, number] => {
+  const t = Math.max(0, Math.min(1, v / 255)), u = good ? t : 1 - t;
+  return [Math.round(230 - 170 * Math.max(0, u - 0.5) * 2), Math.round(70 + 170 * Math.min(1, u * 2)), 70, alpha];
+};
+let panelsReady = false;
+function renderView(): void {
+  if (!panelsReady) return;
+  const view = panels.view, maps = game.maps;
+  districtLabels.setVisible(view === 'districts' || input.tool === 'district' || input.tool === 'undistrict');
+  if (view === 'none') { overlay.setView(null); return; }
+  if (view === 'districts' || input.tool === 'district' || input.tool === 'undistrict') {
+    overlay.setView(game.extras.district, v => v ? [...hex(DISTRICT_COLORS[v - 1]), 120] : null);
+    return;
+  }
+  if (view === 'flood') {
+    const zone = new Set(Disasters.floodZone(game.terrain.water, waterDistance(game.terrain.water), game.kind));
+    overlay.setView(game.extras.district, (_, i) => zone.has(i) ? [60, 130, 230, 140] : null);
+    return;
+  }
+  if (!maps) { overlay.setView(null); return; }
+  const isBuilt = (i: number): boolean => isZone(game.kind[i]) && game.level[i] > 0;
+  if (view === 'land') overlay.setView(maps.land, (v, i) => isBuilt(i) || game.kind[i] ? ramp(v, true) : ramp(v, true, 70));
+  else if (view === 'wellbeing') overlay.setView(maps.wellbeing, (v, i) => game.kind[i] === 2 && game.level[i] ? ramp(v, true) : null);
+  else if (view === 'noise') overlay.setView(maps.noise, v => v < 20 ? null : [150, 80, 220, Math.min(190, v)]);
+  else if (view === 'crime') overlay.setView(maps.crime, v => v < 10 ? null : [220, 50, 50, Math.min(200, 40 + v)]);
+  else if (view === 'garbage') overlay.setView(maps.garbage, v => v < 25 ? null : [140, 95, 40, Math.min(210, 30 + v)]);
+}
+const panels = new CityPanels(uiRoot, hud.rightBar, hud.menuPopover, game, achievements, {
+  setView: (view: MapView) => { renderView(); void view; },
+  undo: () => undo(),
+  toggleSound: () => audio.toggle(),
+  soundOn: () => audio.enabled,
+  loadCity: (d) => startCity(d, 'City loaded'),
+  districtChanged: () => { districtLabels.rebuild(game.extras.district, game.extras.districtNames); renderView(); },
+  day: cityDay,
+}, d => { input.districtBrush = d; });
+panelsReady = true;
+panels.onScenarioDone = (result) => { audio.play(result === 'won' ? 'achievement' : 'error'); };
+input.onDistrict = () => { panels.refreshDistrict(); };
+function undo(): void {
+  if (game.undo()) { audio.play('bulldoze'); hud.toast('Undone: the last change was taken back and refunded'); }
+  else hud.toast('Nothing to undo');
+}
+window.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey && (e.target as HTMLElement).tagName !== 'INPUT') { e.preventDefault(); undo(); }
+});
+let lastDisaster: string | null = null;
+function afterState(): void {
+  const s = game.stats;
+  disasterLayer.set(game.disaster);
+  if (s.disasters.active && s.disasters.active !== lastDisaster) audio.play('alarm');
+  lastDisaster = s.disasters.active;
+  panels.record(s, cityDay());
+  renderView();
+  let districts = 0, shaped = 0;
+  const seen = new Set<number>();
+  for (let i = 0; i < game.extras.district.length; i++) { if (game.extras.district[i]) seen.add(game.extras.district[i]); if (game.extras.terraform[i]) shaped++; }
+  districts = seen.size;
+  const counts = new Map<number, number>();
+  for (const k of game.kind) counts.set(k, (counts.get(k) ?? 0) + 1);
+  const fresh = achievements.check({ stats: s, count: k => counts.get(k) ?? 0, districts, shaped, scenarioWon: game.extras.scenario?.done === 'won' });
+  for (const a of fresh) { hud.toast(`Achievement: ${a.title} — ${a.text}`); audio.play('achievement'); }
+  if (s.cityLevel > lastLevel && lastLevel >= 0) audio.play('chime');
+  lastLevel = s.cityLevel;
+}
+let lastLevel = -1;
 game.onInspection = (report) => hud.showInspection(report);
 game.onNotice = (message) => hud.toast(message);
 
@@ -224,13 +318,15 @@ function blockedAt(x: number, z: number, y = 0): boolean {
 const walker = new Walker(camera, canvas, {
   blocked: blockedAt,
   ground: groundAt,
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); touch.setMode('map'); },
 });
 const driver = new Driver(camera, scene, {
-  blocked: blockedAt,
+  // Parked cars are in the way of a car, though a pedestrian squeezes past them.
+  blocked: (x, z, y) => blockedAt(x, z, y) || (y < 0.12 && parked.hits(x, z)),
   ground: groundAt,
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); touch.setMode('map'); },
 });
+const touch = new TouchControls(uiRoot, canvas, controls, walker, driver, () => { walker.exit(); driver.exit(); });
 /** Take the wheel on the nearest street to the middle of the view, driving on the right. */
 function startDriving(): void {
   if (driver.active || !playing) return;
@@ -255,6 +351,7 @@ function startDriving(): void {
   furniture.setVisible(true);
   driver.enter(x, z, Math.atan2(tx, tz));
   hud.setWalking(true, 'drive');
+  touch.setMode('drive');
 }
 /** Step down onto the nearest street to the middle of the view, facing the way the camera faced. */
 function startWalking(): void {
@@ -275,6 +372,7 @@ function startWalking(): void {
   furniture.setVisible(true);
   walker.enter(spot.x, spot.z, Math.atan2(-dir.x, -dir.z));
   hud.setWalking(true, 'walk');
+  touch.setMode('walk');
 }
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
@@ -304,13 +402,15 @@ const showCoverage = (): void => {
 };
 input.onElevation = (level) => hud.setElevation(level);
 input.onRotate = (quarter) => hud.setRotation(quarter, SERVICE_TOOL[input.tool] !== undefined);
-input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office', 'farm', 'leisure'].includes(t)); };
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'motorway', 'ramp', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office', 'farm', 'leisure'].includes(t)); panels.showDistricts(t === 'district' || t === 'undistrict'); touch.setTool(!['none', 'inspect'].includes(t)); if (t !== 'none') audio.play('click'); renderView(); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerrain = () => { alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+game.onTerraform = () => { terraformLayer.rebuild(game.extras.terraform); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
+game.onUndo = () => { terraformLayer.rebuild(game.extras.terraform); };
+game.onTerrain = () => { terraformLayer.rebuild(game.extras.terraform); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   parkPaths.rebuild(game.parkPaths);
   showCoverage();
@@ -324,6 +424,10 @@ game.onEdit = () => {
   streetlights.rebuild(game.net);
   pedestrians.rebuild(game.net);
   furniture.rebuild(game.net, game.kind, game.raster);
+  parked.rebuild(game.net, game.kind, game.level);
+  cyclists.rebuild(game.net);
+  districtLabels.rebuild(game.extras.district, game.extras.districtNames);
+  if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
@@ -340,11 +444,13 @@ game.onState = () => {
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
   helicopters.watch(game.incidents);
+  parked.rebuild(game.net, game.kind, game.level);
   pedestrians.setCrowd(game.stats.pop, daylight(game.cityTime).night);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
   river.tint(game.riverPollution);
   hud.update(game.stats);
+  afterState();
 };
 game.onFrame = () => {
   if (showTraffic) roads.tint(game.segOrder, game.segCong);
@@ -374,12 +480,20 @@ function applySettings(s: Settings): void {
   scene.traverse(o => { const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material; if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true; });
   setDayLength(s.dayLength);
   if (s.infiniteMoney !== game.infiniteMoney) game.setInfiniteMoney(s.infiniteMoney);
+  game.setDisasters(s.disasters);
   hud.setCheatLabel(s.infiniteMoney);
 }
 
+let quietEdits = false;
 function startCity(data: Parameters<typeof game.load>[0], message?: string): void {
   walker.exit(); driver.exit(); // a new map starts back on the overview
+  const scenario = data.extras?.scenario ? scenarioById(data.extras.scenario.id) : undefined;
+  game.disasterRate = scenario?.disasterRate ?? 1;
+  quietEdits = true;
   game.load(data);
+  quietEdits = false;
+  panels.resetHistory();
+  lastLevel = -1;
   hud.setTax(game.tax);
   game.setTax(game.tax);
   applySettings(settings);
@@ -406,6 +520,17 @@ const menu: MainMenu = new MainMenu(uiRoot, {
   resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
   help: () => { menu.setOpen(false); hud.showWelcome(); },
   apply: (s) => applySettings(s),
+  startScenario: (id) => {
+    const sc = scenarioById(id);
+    if (!sc) return;
+    history.replaceState(null, '', location.pathname);
+    const data = sc.setup();
+    data.extras = { ...data.extras!, scenario: { id, startTick: data.tick } };
+    startCity(data, sc.brief);
+    if (id !== 'floodplain') { game.warm(110); focusCity(true); }
+    input.setTool('none');
+  },
+  loadSlot: (name) => { const d = loadSlot(name); if (d) startCity(d, `Loaded “${name}”`); else hud.toast('That save could not be read'); },
 }, settings);
 
 function openMenu(): void {
@@ -445,7 +570,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 let last = performance.now();
@@ -481,6 +606,13 @@ renderer.setAnimationLoop((now: number) => {
   helicopters.update(now / 1000);
   boats.update(now / 1000);
   pedestrians.update(dt, now / 1000);
+  cyclists.update(dt);
+  disasterLayer.update(now / 1000);
+  audio.update({
+    traffic: game.stats.cars, height: camera.position.y, night: light.night,
+    emergencies: game.stats.incidents.fireEngines + (game.stats.incidents.fires + game.stats.incidents.heists ? game.stats.incidents.patrols : 0),
+    driving: driver.active ? driver.kmh : null, walking: walker.active && walker.moving, storm: !!game.disaster,
+  }, dt);
   transport.update(game.simTime);
   subway.update(game.simTime);
   transitLines.update(game.simTime);

@@ -3,10 +3,13 @@ import { CIVIC_LABELS } from '../constants';
 
 export function civicRequirements(targetLevel: number, cityLevel: number, maintenance = false): Partial<Record<CivicNeed, number>> {
   if (targetLevel < 2 || (targetLevel === 2 && cityLevel === 0)) return {};
-  const thresholds = targetLevel === 2
+  const thresholds: Partial<Record<CivicNeed, number>> = targetLevel === 2
     ? { health: 0.35, education: 0.35 }
     : { health: 0.5, education: 0.5, fire: 0.35, safety: 0.35, waste: 0.5, leisure: 0.25 };
-  return Object.fromEntries(Object.entries(thresholds).map(([k, v]) => [k, maintenance ? Math.max(0.1, v - 0.15) : v]));
+  // Once the town is a City, towers also want deathcare and a post office nearby. Only for building
+  // up: towers that stood before either service existed are not pulled down for want of one.
+  if (targetLevel === 3 && cityLevel >= 4 && !maintenance) Object.assign(thresholds, { deathcare: 0.3, mail: 0.3 });
+  return Object.fromEntries(Object.entries(thresholds).map(([k, v]) => [k, maintenance ? Math.max(0.1, v! - 0.15) : v]));
 }
 
 export function civicShortfalls(tile: number, targetLevel: number, cityLevel: number, coverage: Record<CivicNeed, Float32Array>, maintenance = false): string[] {

@@ -23,6 +23,14 @@ import { emptyStats } from './sim/messages';
 import type { EditPayload, MainToWorker, Stats, WorkerToMain, TileReport } from './sim/messages';
 
 import type { SaveData } from './save';
+import { cloneExtras, defaultExtras, shapeTerrain, terraformAllowed, DUG, FILLED, COST_DIG, COST_FILL } from './extras';
+import type { CityExtras, Taxes } from './extras';
+import type { CityMaps } from './sim/messages';
+import type { DisasterKind, DisasterView } from './sim/disasters';
+
+/** One step of undo: the city as it was before an edit, and what that edit cost. */
+interface UndoStep { before: SaveData; spent: number }
+const UNDO_LIMIT = 30;
 
 const CHEAT_FLOOR = 1_000_000;
 
@@ -32,6 +40,17 @@ export class Game {
   incidentSave?: IncidentSnapshot;
   seed = 1;
   terrain: Terrain = generateTerrain(1);
+  /** The river valley before the player dug or filled anything. */
+  baseTerrain: Terrain = this.terrain;
+  extras: CityExtras = defaultExtras();
+  maps: CityMaps | null = null;
+  disaster: DisasterView | null = null;
+  /** Scales how often disasters strike; scenarios set it. */
+  disasterRate = 1;
+  private undoStack: UndoStep[] = [];
+  private committed: SaveData | null = null;
+  onUndo: (() => void) | null = null;
+  onTerraform: (() => void) | null = null;
   net = new Network();
   parkPaths: ParkPath[] = [];
   parkPathMask: Uint8Array = new Uint8Array(N_TILES);
@@ -89,6 +108,8 @@ export class Game {
         this.flags = m.flags;
         this.pollution = m.pollution;
         this.riverPollution = m.riverPollution;
+        if (m.maps) this.maps = m.maps;
+        this.disaster = m.disaster ?? null;
         this.stats = m.stats;
         this.cityTime = Math.max(this.cityTime, m.stats.tick);
         this.onState?.();
@@ -250,6 +271,7 @@ export class Game {
     return {
       kind: this.kind.slice(), rot: this.rot.slice(), net, serial: this.serial,
       cover: this.raster.cover.slice(), accSeg: this.raster.accSeg.slice(), accS: this.raster.accS.slice(),
+      district: this.extras.district.slice(), terraform: this.extras.terraform.slice(),
     };
   }
 
@@ -258,18 +280,53 @@ export class Game {
     if (!this.dirty && this.rasterVersion === this.net.version) return;
     // A negative spend tops the worker's treasury back up.
     if (this.infiniteMoney) this.pendingSpent = Math.min(0, this.stats.money - CHEAT_FLOOR);
+    // Remember the city as it stood before this edit, so it can be taken back.
+    if (this.committed) {
+      this.undoStack.push({ before: this.committed, spent: this.pendingSpent });
+      if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    }
     this.send({ type: 'edit', spent: this.pendingSpent, ...this.payload() });
     this.stats.money -= this.pendingSpent;
     this.pendingSpent = 0;
     this.dirty = false;
+    this.committed = this.snapshotCopy();
     this.onEdit?.();
   }
 
-  load(d: SaveData): void {
+  get canUndo(): boolean { return this.undoStack.length > 0; }
+
+  /** Take back the last edit: the map returns to how it was and its cost is refunded. */
+  undo(): boolean {
+    this.flush();
+    const step = this.undoStack.pop();
+    if (!step) return false;
+    const now = this.snapshot();
+    const restored: SaveData = {
+      ...step.before, money: now.money + Math.max(0, step.spent), tick: now.tick, cityLevel: now.cityLevel,
+      incidents: now.incidents, debt: now.debt, funding: now.funding, policies: now.policies,
+      extras: { ...cloneExtras(step.before.extras ?? this.extras), taxes: [...this.extras.taxes] as Taxes, districtPolicies: [...this.extras.districtPolicies], districtNames: [...this.extras.districtNames], scenario: this.extras.scenario, disasters: this.extras.disasters },
+    };
+    const stack = this.undoStack;
+    this.load(restored, true);
+    this.undoStack = stack;
+    this.onUndo?.();
+    return true;
+  }
+
+  private snapshotCopy(): SaveData {
+    const s = this.snapshot();
+    return { ...s, kind: s.kind.slice(), level: s.level.slice(), rot: s.rot?.slice(), neglect: s.neglect?.slice() };
+  }
+
+  load(d: SaveData, keepHistory = false): void {
+    if (!keepHistory) this.undoStack = [];
+    this.extras = d.extras ? cloneExtras(d.extras) : defaultExtras(d.tax);
     this.incidentSave = d.incidents;
     this.incidents = { fires: d.incidents?.fires ?? [], heists: [], crashes: [], crime: [], patrol: [] };
     this.seed = d.seed;
-    this.terrain = generateTerrain(d.seed);
+    this.baseTerrain = generateTerrain(d.seed);
+    this.terrain = shapeTerrain(this.baseTerrain, this.extras.terraform);
+    this.maps = null; this.disaster = null;
     this.net = Network.fromPlain(d.net);
     ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
@@ -299,14 +356,15 @@ export class Game {
     this.carsPrev = new Float32Array(MAX_CARS * 4);
     this.carsNext = new Float32Array(MAX_CARS * 4);
     const payload = this.payload();
-    this.send({ type: 'load', incidents: d.incidents, policies: this.stats.policies, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
+    this.send({ type: 'load', extras: cloneExtras(this.extras), disasterRate: this.disasterRate, incidents: d.incidents, policies: this.stats.policies, funding: this.stats.funding, debt: this.stats.debt, neglect: this.neglect.slice(), cityLevel: this.stats.cityLevel, seed: d.seed, level: this.level.slice(), money, tick: d.tick, tax: d.tax, ...payload });
+    this.committed = this.snapshotCopy();
     this.onTerrain?.();
     this.onEdit?.();
   }
 
   snapshot(): SaveData {
     return {
-      parkPaths: this.parkPaths.map(p => ({ ...p })), incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, rot: this.rot, net: this.net.toPlain(),
+      extras: cloneExtras(this.extras), parkPaths: this.parkPaths.map(p => ({ ...p })), incidents: this.incidentSave, seed: this.seed, kind: this.kind, level: this.level, rot: this.rot, net: this.net.toPlain(),
       funding: this.stats.funding, policies: this.stats.policies, debt: this.stats.debt, neglect: this.neglect, cityLevel: this.stats.cityLevel, money: this.stats.money, tick: this.stats.tick, tax: this.tax,
     };
   }
@@ -322,7 +380,60 @@ export class Game {
 
   setTax(v: number): void {
     this.tax = v;
+    this.extras.taxes = [v, v, v, v];
     this.send({ type: 'tax', value: v });
+  }
+
+  /** Separate rates for homes, shops, industry and offices. */
+  setTaxes(taxes: Taxes): void {
+    this.extras.taxes = taxes.map(t => Math.max(0, Math.min(30, Math.round(t)))) as Taxes;
+    this.tax = this.extras.taxes[0];
+    this.send({ type: 'taxes', taxes: [...this.extras.taxes] as Taxes });
+  }
+
+  /** Paint tiles into a district (0 clears them). Free, like zoning a colour on a map. */
+  paintDistrict(tiles: number[], district: number): number {
+    let changed = 0;
+    for (const t of tiles) if (t >= 0 && t < N_TILES && this.extras.district[t] !== district) { this.extras.district[t] = district; changed++; }
+    if (changed) { this.dirty = true; this.flush(); }
+    return changed;
+  }
+
+  setDistrictPolicy(district: number, mask: number): void {
+    this.extras.districtPolicies[district - 1] = mask;
+    this.send({ type: 'districtPolicy', district, mask });
+  }
+
+  renameDistrict(district: number, name: string): void {
+    this.extras.districtNames[district - 1] = name.slice(0, 32) || `District ${district}`;
+  }
+
+  /** Dig tiles out to water or fill them in to land. Returns how many changed; stops when money runs out. */
+  terraform(tiles: number[], action: 'dig' | 'fill'): { changed: number; broke: boolean } {
+    let changed = 0, broke = false;
+    for (const t of tiles) {
+      if (!terraformAllowed(this.baseTerrain, this.extras.terraform, t, action)) continue;
+      if (this.raster.cover[t] || this.owners[t] >= 0 || (this.kind[t] && action === 'dig')) continue;
+      const cost = action === 'dig' ? COST_DIG : COST_FILL;
+      if (!this.canAfford(cost)) { broke = true; break; }
+      // Filling a dug pond, or digging out old fill, just puts the ground back as it was.
+      const undoes = (action === 'fill' && this.extras.terraform[t] === DUG) || (action === 'dig' && this.extras.terraform[t] === FILLED);
+      this.extras.terraform[t] = undoes ? 0 : action === 'dig' ? DUG : FILLED;
+      this.pendingSpent += cost;
+      changed++;
+    }
+    if (changed) {
+      this.terrain = shapeTerrain(this.baseTerrain, this.extras.terraform);
+      this.dirty = true;
+      this.flush();
+      this.onTerraform?.();
+    }
+    return { changed, broke };
+  }
+
+  setDisasters(on: boolean, trigger?: DisasterKind): void {
+    this.extras.disasters = on;
+    this.send({ type: 'disasters', on, rate: this.disasterRate, trigger });
   }
 
   setFunding(key: FundingKey, value: number): void {

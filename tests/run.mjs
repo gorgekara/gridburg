@@ -16,7 +16,11 @@ const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
+const X = await import('../src/extras.ts');
+/** Bytes the v13 extras block takes for a city that has changed none of them. */
+const extrasLength = (tax) => 4 + new TextEncoder().encode(JSON.stringify(X.extrasToJson(X.defaultExtras(tax)))).length;
 const { newCity } = await import('../src/game.ts');
+const N = await import('../src/roads/network.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
@@ -150,7 +154,7 @@ test('malformed save streams are rejected', () => {
   assert.equal(decode(bytes.toString('base64url')), null);
 });
 test('each new service has finite nonempty visible geometry inside its footprint', () => {
-  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN, C.T_HOSPITAL, C.T_CITY_HOSPITAL, C.T_POLICE_HQ, C.T_GAS, C.T_NUCLEAR]) {
+  for (const k of [...Array.from({ length: 8 }, (_, n) => 11 + n), C.T_PLAYGROUND, C.T_SPORTS, C.T_GARDEN, C.T_HOSPITAL, C.T_CITY_HOSPITAL, C.T_POLICE_HQ, C.T_GAS, C.T_NUCLEAR, C.T_CEMETERY, C.T_CREMATORIUM, C.T_POST_OFFICE, C.T_LANDMARK]) {
     const geo = buildingGeometry(k, 1, 0);
     assert.ok(geo.attributes.position.count > 30, `kind ${k}`);
     assert.ok([...geo.attributes.position.array].every(Number.isFinite), `kind ${k}`);
@@ -163,7 +167,8 @@ test('each new service has finite nonempty visible geometry inside its footprint
 });
 // Run the real worker with a controlled clock and deterministic randomness.
 const messages = [];
-globalThis.self = { postMessage: m => messages.push(m) };
+let lastState;
+globalThis.self = { postMessage: m => { if (m.type === 'state') lastState = m; messages.push(m); } };
 const originalInterval = globalThis.setInterval;
 let simulateFrame;
 globalThis.setInterval = callback => { simulateFrame = callback; return 0; };
@@ -172,7 +177,8 @@ globalThis.setInterval = originalInterval;
 const originalRandom = Math.random;
 Math.random = C.mulberry32(2026);
 const send = data => self.onmessage({ data });
-const latest = () => messages.filter(m => m.type === 'state').at(-1);
+// Loops trim old messages to save memory, so remember the newest state separately.
+const latest = () => messages.filter(m => m.type === 'state').at(-1) ?? lastState;
 function load(city) {
   const net = Network.fromPlain(city.net);
   ensureApproaches(net); // the app extends every entrance past the map edge before simulating
@@ -573,6 +579,8 @@ test('a roundabout takes its size from the widest road that meets it', () => {
   assert.ok(ROUNDABOUT_RADIUS[KIND_LANE] < ROUNDABOUT_RADIUS[KIND_ROAD]);
   assert.ok(ROUNDABOUT_RADIUS[KIND_ROAD] < ROUNDABOUT_RADIUS[KIND_AVENUE]);
   assert.ok(ROUNDABOUT_RADIUS[KIND_AVENUE] < ROUNDABOUT_RADIUS[KIND_HIGHWAY]);
+  assert.equal(N.RING_KIND_LIMIT, KIND_AVENUE, 'An expressway meets an avenue-sized ring, not a six-lane circle');
+  assert.ok(ROUNDABOUT_RADIUS[KIND_AVENUE] <= 2.6, 'Avenue rings stay compact');
 
   for (const kind of [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY]) {
     const net = new Network();
@@ -766,6 +774,61 @@ test('four kinds of road: widths, costs, upgrade order, frontage and saves', () 
   const saved = Network.fromPlain(decode(encode(city)).net);
   assert.deepEqual([...saved.segs.values()].map(s => s.kind).sort(), [KIND_LANE, KIND_HIGHWAY].sort(), 'Road kinds survive a save');
 });
+test('one-way highways and ramps: drawn direction, no frontage, saves, and traffic that uses them', () => {
+  const { KIND_MOTORWAY, KIND_RAMP, isOneWayKind } = N;
+  assert.ok(isOneWayKind(KIND_MOTORWAY) && isOneWayKind(KIND_RAMP) && !isOneWayKind(KIND_HIGHWAY));
+  assert.ok(HALF_WIDTH[KIND_RAMP] < HALF_WIDTH[KIND_MOTORWAY] && HALF_WIDTH[KIND_MOTORWAY] < HALF_WIDTH[KIND_HIGHWAY]);
+  assert.equal(nextRoadKind(KIND_RAMP), KIND_MOTORWAY);
+  const net = new Network();
+  // A motorway carriageway running east from the map edge, an exit and an on-ramp.
+  net.insertPath([{ x: 2.5, z: 40.5 }, { x: 74.5, z: 40.5 }], KIND_MOTORWAY, true);
+  [...net.nodes.values()].find(n => n.x === 2.5).entry = true;
+  // The other carriageway runs back west to the entrance on the far side, clear of the ramps.
+  net.insertPath([{ x: 74.5, z: 40.5 }, { x: 74.5, z: 36.5 }], KIND_MOTORWAY, true);
+  net.insertPath([{ x: 74.5, z: 36.5 }, { x: 8.5, z: 36.5 }], KIND_MOTORWAY, true);
+  net.insertPath([{ x: 8.5, z: 36.5 }, { x: 2.5, z: 40.5 }], KIND_MOTORWAY, true);
+  net.insertPath([{ x: 20.5, z: 40.5 }, { x: 28.5, z: 48.5 }], KIND_RAMP, true); // exit to the homes
+  net.insertPath([{ x: 28.5, z: 48.5 }, { x: 28.5, z: 72.5 }], KIND_ROAD);
+  net.insertPath([{ x: 28.5, z: 56.5 }, { x: 40.5, z: 40.5 }], KIND_RAMP, true); // back on again
+  net.insertPath([{ x: 52.5, z: 40.5 }, { x: 60.5, z: 48.5 }], KIND_RAMP, true); // exit to the jobs
+  net.insertPath([{ x: 60.5, z: 48.5 }, { x: 60.5, z: 72.5 }], KIND_ROAD);
+  const r = rasterize(net);
+  for (let x = 3; x < 74; x++) assert.equal(r.accSeg[39 * C.GRID + x] >= 0 && net.segs.get(r.accSeg[39 * C.GRID + x]).kind === KIND_MOTORWAY, false, 'Nothing fronts onto a highway');
+  const city = demoCity(); city.kind.fill(0); city.level.fill(0); city.cityLevel = 2; city.net = net.toPlain();
+  const kinds = s => [...s.segs.values()].map(q => q.kind).sort().join();
+  assert.equal(kinds(Network.fromPlain(decode(encode(city)).net)), kinds(net), 'Highway and ramp kinds survive a save');
+  for (let i = 0; i < C.N_TILES; i++) {
+    if (r.cover[i] || r.accSeg[i] < 0) continue;
+    const x = i % C.GRID, z = Math.floor(i / C.GRID);
+    if (z < 50) continue;
+    if (Math.abs(x - 28) <= 2) { city.kind[i] = C.T_RES; city.level[i] = 2; }
+    if (Math.abs(x - 60) <= 2) { city.kind[i] = C.T_COM; city.level[i] = 2; }
+  }
+  load(city); send({ type: 'speed', value: 1 });
+  const motorway = [...net.segs.values()].filter(q => q.kind === KIND_MOTORWAY), ramps = [...net.segs.values()].filter(q => q.kind === KIND_RAMP);
+  let onRamp = 0, east = 0, west = 0;
+  const rampUsers = new Set();
+  for (let f = 0; f < 120 * C.SIM_HZ; f++) {
+    simulateFrame();
+    const frame = messages.findLast(m => m.type === 'frame');
+    messages.length = 0;
+    if (!frame || f % 5) continue;
+    for (let n = 0; n < C.MAX_CARS; n++) {
+      if (!frame.cars[n * 4 + 3]) continue;
+      const x = frame.cars[n * 4] + 40, z = frame.cars[n * 4 + 1] + 40, a = frame.cars[n * 4 + 2];
+      if (ramps.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_RAMP] && Math.abs(z - 40.5) > 1.5)) { onRamp++; rampUsers.add(frame.carIds[n]); }
+      if (Math.abs(z - 40.5) < 0.7 && x > 8 && x < 70 && motorway.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_MOTORWAY])) {
+        if (Math.sin(a) > 0.9) east++; else if (Math.sin(a) < -0.9) west++;
+      }
+    }
+  }
+  send({ type: 'speed', value: 0 });
+  console.log(`  Highway: ${east} samples heading east, ${west} west, ${rampUsers.size} cars used the ramps`);
+  assert.ok(east > 20, 'Traffic runs along the one-way highway');
+  assert.equal(west, 0, 'Nobody drives the wrong way up a one-way highway');
+  assert.ok(onRamp > 5, 'Cars use the ramps to get on and off');
+  assert.ok(latest().stats.gaveUp <= 2 && rampUsers.size > 40, `Merges keep moving: ${rampUsers.size} cars used the ramps, ${latest().stats.gaveUp} gave up`);
+});
 test('policies cost money, change the simulation and survive a save', () => {
   assert.equal(policyExpense(noPolicies(), 5000), 0);
   const recycling = { ...noPolicies(), recycling: true };
@@ -876,6 +939,22 @@ test('farmland and leisure zones grow, employ, share demand and stay on their lo
   assert.equal(report.occupants, C.LEISURE_JOBS[2]);
   assert.ok(report.details.some(s => s.includes('Visitor appeal')), 'Leisure explains what draws visitors');
 });
+test('offices grow a floor at a time and only become towers in a City', () => {
+  const city = demoCity(true);
+  const offices = [...city.kind.keys()].filter(i => city.kind[i] === C.T_OFFICE);
+  for (const i of offices) city.level[i] = 2;
+  // Keep the town under 1,800 residents so it cannot earn City status during the test.
+  let homes = 0;
+  for (let i = 0; i < C.N_TILES; i++) if (city.kind[i] === C.T_RES) { if (++homes > 40) { city.kind[i] = 0; city.level[i] = 0; } else city.level[i] = 2; }
+  city.cityLevel = C.OFFICE_UNLOCK; // Thriving town: high-rises allowed for homes and shops, not office towers
+  load(city); send({ type: 'warm', ticks: 150 });
+  const level = latest().level;
+  assert.ok(latest().stats.cityLevel < 4, 'Still a town');
+  assert.equal(offices.filter(i => level[i] === 3).length, 0, 'No office tower before the city is a City');
+  send({ type: 'inspect', tile: offices[0] });
+  const report = messages.filter(m => m.type === 'inspection').at(-1).report;
+  if (report.level === 2) assert.ok(report.blockers.some(b => b.includes('Office towers')), 'The inspector says why');
+});
 test('powered sewage treatment reduces discharge and loses filtration without electricity', () => {
   const city = demoCity();
   // Supply a stable prebuilt population so outlet load cannot drop to zero.
@@ -954,8 +1033,8 @@ test('fires and patrol protection persist while old v5 saves still migrate', () 
   const city = demoCity(); city.incidents = { fires: [{ tile: 100, age: 48 }], crime: [[101, 50]], patrol: [[102, 150]] };
   const restored = decode(encode(city)); assert.deepEqual(restored.incidents, city.incidents);
   const empty = demoCity(); const bytes = Buffer.from(encode(empty), 'base64url');
-  // Strip the incident block and the empty rotation and park-path blocks that follow it.
-  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2 + 2;
+  // Strip the incident block and the empty rotation, park-path and extras blocks that follow it.
+  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2 + 2 + extrasLength(empty.tax);
   // A v5 stream has no policy mask: keep the first 28 header bytes and the body that follows the v9 header.
   const v5 = Buffer.concat([bytes.subarray(0, 28), bytes.subarray(30, bytes.length - tail)]); v5[0] = 5;
   const migrated = decode(v5.toString('base64url')); assert.ok(migrated); assert.equal(migrated.incidents, undefined);
@@ -1180,6 +1259,168 @@ test('dense traffic never overlaps vehicle bodies and produces recoverable colli
   assert.ok(crashSeen, 'Random collisions should create visible blocked-lane incidents');
 });
 
+const { ParkedCarLayer, PARK_INSET } = await import('../src/render/parkedCars.ts');
+test('cars park along built streets, clear of traffic lanes, junctions and roundabouts', () => {
+  const city = demoCity(), net = Network.fromPlain(city.net);
+  const level = Uint8Array.from(city.level).map((l, i) => C.isZone(city.kind[i]) ? Math.max(l, 1) : l);
+  const layer = new ParkedCarLayer();
+  layer.rebuild(net, city.kind, level);
+  const parked = [...layer.byTile.values()].flat();
+  assert.ok(parked.length > 50, `Expected a street full of parked cars, got ${parked.length}`);
+  // The outer traffic lane of a street runs 0.18 out and an avenue's 0.64: a parked car (0.15 wide)
+  // must clear a moving one (0.17 wide) in it, and every junction.
+  for (const p of parked) {
+    const hit = net.nearestSeg(p.x + 40, p.z + 40, 2);
+    assert.ok(hit, 'A parked car sits beside a street');
+    const lane = hit.seg.kind === KIND_AVENUE ? 0.64 : 0.18;
+    assert.ok(hit.dist - 0.075 >= lane + 0.085 - 1e-3, `Parked car ${hit.dist.toFixed(3)} from the centre of a ${ROAD_LABEL[hit.seg.kind]} blocks its lane`);
+    assert.ok(Math.abs(hit.dist - (HALF_WIDTH[hit.seg.kind] + PARK_INSET)) < 0.03, 'Parked at the kerb of its own street');
+    assert.ok(!net.nodes.get(hit.seg.a).ring && !net.nodes.get(hit.seg.b).ring, 'Nobody parks on a roundabout');
+    for (const node of [hit.seg.a, hit.seg.b]) {
+      const n = net.nodes.get(node);
+      const crossing = Math.max(...net.segsAt(node).map(o => HALF_WIDTH[o.kind]));
+      if (net.degree(node) > 1) assert.ok(Math.hypot(p.x + 40 - n.x, p.z + 40 - n.z) > crossing + 0.2, 'Parked clear of the junction');
+    }
+  }
+  const before = parked.length;
+  layer.rebuild(net, city.kind, new Uint8Array(C.N_TILES));
+  assert.equal([...layer.byTile.values()].flat().length, 0, 'Empty lots leave the kerb empty');
+  layer.rebuild(net, city.kind, level);
+  assert.equal([...layer.byTile.values()].flat().length, before, 'Each space keeps its car');
+});
+const E = await import('../src/sim/economy.ts');
+const { Disasters } = await import('../src/sim/disasters.ts');
+test('land value rewards parks, water and transit and punishes noise and rubbish', () => {
+  const blank = () => new Float32Array(C.N_TILES);
+  const coverage = Object.fromEntries(Object.keys(C.CIVIC_LABELS).map(k => [k, blank()]));
+  const kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES), water = new Uint8Array(C.N_TILES);
+  for (let z = 0; z < C.GRID; z++) water[z * C.GRID + 5] = 1; // a river down column 5
+  const extras = X.defaultExtras(10);
+  const input = { kind, level, water, pollution: blank(), noise: blank(), crime: blank(), garbage: blank(), coverage, transit: blank(), extras };
+  const dist = E.waterDistance(water);
+  const base = E.landValueMap(input, dist);
+  const at = (x, z) => z * C.GRID + x;
+  assert.ok(base[at(7, 40)] > base[at(40, 40)] + 5, 'A river view is worth something');
+  coverage.leisure.fill(1); input.transit.fill(1);
+  const parks = E.landValueMap(input, dist);
+  assert.ok(parks[at(40, 40)] > base[at(40, 40)] + 20, 'Parks and transit raise land value');
+  input.noise.fill(80); input.garbage.fill(90);
+  const loud = E.landValueMap(input, dist);
+  assert.ok(loud[at(40, 40)] < parks[at(40, 40)] - 25, 'Noise and rubbish pull it down');
+  extras.district.fill(1); extras.districtPolicies[0] = 1 << X.DISTRICT_POLICY_IDS.indexOf('green');
+  assert.ok(E.landValueMap(input, dist)[at(40, 40)] > loud[at(40, 40)], 'A green district adds a premium');
+});
+test('goods flow from industry to shops, and the surplus is exported up to capacity', () => {
+  const kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES);
+  for (let i = 0; i < 40; i++) { kind[i] = C.T_IND; level[i] = 2; }
+  for (let i = 100; i < 110; i++) { kind[i] = C.T_COM; level[i] = 1; }
+  const flow = E.goodsFlow(kind, level, 100, { entries: 1, railLines: 0, docks: 0, airports: 0 });
+  assert.ok(flow.produced > flow.needed && flow.exported > 0 && flow.exportIncome > 0);
+  assert.ok(flow.exported <= flow.exportCapacity);
+  const closed = E.goodsFlow(kind, level, 100, { entries: 0, railLines: 0, docks: 0, airports: 0 });
+  assert.equal(closed.exported, 0, 'With no way out of town nothing is exported');
+  assert.ok(closed.unsold > 0);
+  const shopsOnly = E.goodsFlow(new Uint8Array(C.N_TILES).map((_, i) => i < 30 ? C.T_COM : 0), new Uint8Array(C.N_TILES).map((_, i) => i < 30 ? 2 : 0), 500, { entries: 1, railLines: 0, docks: 0, airports: 0 });
+  assert.ok(shopsOnly.importShare > 0.9, 'Shops with no industry import their stock');
+});
+test('floods spare what a barrier protects, and tornadoes damage what they cross', () => {
+  const kind = new Uint8Array(C.N_TILES), level = new Uint8Array(C.N_TILES), water = new Uint8Array(C.N_TILES);
+  for (let z = 0; z < C.GRID; z++) water[z * C.GRID + 40] = 1;
+  for (let z = 0; z < C.GRID; z++) for (const x of [38, 39, 41, 42]) { kind[z * C.GRID + x] = C.T_RES; level[z * C.GRID + x] = 2; }
+  const dist = E.waterDistance(water);
+  const open = Disasters.floodZone(water, dist, kind);
+  kind[10 * C.GRID + 41] = C.T_FLOOD_BARRIER;
+  const guarded = Disasters.floodZone(water, dist, kind);
+  assert.ok(open.length > guarded.length && !guarded.includes(12 * C.GRID + 41), 'A barrier keeps the water out nearby');
+  const d = new Disasters();
+  let damaged = 0, notices = 0;
+  const ctx = { kind, level, water, riverDistance: dist, cityLevel: 3, enabled: true, rate: 1, random: C.mulberry32(5), damage: (t, n) => { level[t] = Math.max(0, level[t] - n); damaged++; }, notice: () => notices++ };
+  d.start('flood', ctx);
+  for (let t = 0; t < 45; t++) d.step(ctx);
+  assert.ok(damaged > 0 && d.active === null && notices >= 2, 'A flood damages some buildings and then subsides');
+  // A tornado straight across the houses along the river.
+  for (let z = 0; z < C.GRID; z++) for (const x of [38, 39, 41, 42]) level[z * C.GRID + x] = 2;
+  const before = damaged;
+  d.start('tornado', ctx);
+  d.active.path = Array.from({ length: 25 }, (_, k) => ({ x: 40.5, z: k * 80 / 24 }));
+  for (let t = 0; t < 40; t++) d.step(ctx);
+  assert.ok(damaged > before + 10, 'The funnel wrecks what it passes over');
+  ctx.enabled = false; d.cooldown = 0;
+  for (let t = 0; t < 5000; t++) d.step(ctx);
+  assert.equal(d.active, null, 'Switched off, nothing new starts');
+});
+test('districts, per-zone taxes, terraforming and scenarios survive a save', () => {
+  const city = demoCity(true);
+  city.extras = X.defaultExtras(10);
+  city.extras.taxes = [8, 14, 11, 16];
+  city.extras.district.fill(3, 1000, 1400);
+  city.extras.districtNames[2] = 'Harbour Heights';
+  city.extras.districtPolicies[2] = 0b101;
+  const t = generateTerrain(city.seed);
+  const dry = [...Array(C.N_TILES).keys()].find(i => { const x = i % C.GRID, z = Math.floor(i / C.GRID); return x > 2 && z > 2 && !t.water[i] && !city.kind[i]; });
+  city.extras.terraform[dry] = X.DUG;
+  city.extras.scenario = { id: 'rustbelt', startTick: 5 };
+  const back = decode(encode(city));
+  assert.deepEqual(back.extras.taxes, [8, 14, 11, 16]);
+  assert.equal(back.extras.district[1200], 3);
+  assert.equal(back.extras.districtNames[2], 'Harbour Heights');
+  assert.equal(back.extras.districtPolicies[2], 0b101);
+  assert.equal(back.extras.terraform[dry], X.DUG);
+  assert.equal(X.shapeTerrain(t, back.extras.terraform).water[dry], 1, 'Dug ground is water');
+  assert.deepEqual(back.extras.scenario, { id: 'rustbelt', startTick: 5, done: undefined });
+  // A filled bank becomes land, and the river keeps its channel.
+  const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i]);
+  const allowed = wet.filter(i => X.terraformAllowed(t, new Uint8Array(C.N_TILES), i, 'fill'));
+  assert.ok(allowed.length > 0 && allowed.length < wet.length, 'Only the edges of the river may be filled');
+});
+test('per-zone taxes, district policies and freight run in the simulation', () => {
+  const city = demoCity(true);
+  city.extras = X.defaultExtras(10);
+  load(city); send({ type: 'warm', ticks: 20 });
+  const base = latest().stats;
+  assert.ok(base.goods.produced > 0 && base.landValue > 0 && base.tourism.visitors > 0, 'Goods, land value and tourism are measured');
+  send({ type: 'taxes', taxes: [10, 10, 25, 10] });
+  const taxed = latest().stats;
+  assert.ok(taxed.demand[2] < base.demand[2], 'A high industrial tax cuts industrial demand only');
+  assert.ok(Math.abs(taxed.demand[0] - base.demand[0]) < 0.05);
+  city.extras.district.fill(1);
+  city.extras.districtPolicies[0] = 1 << X.DISTRICT_POLICY_IDS.indexOf('highriseBan');
+  load(city); send({ type: 'warm', ticks: 5 });
+  assert.ok(latest().stats.districtExpense > 0, 'District policies are paid for');
+  send({ type: 'speed', value: 1 });
+  let trucks = 0, garbage = 0;
+  for (let f = 0; f < 90 * C.SIM_HZ; f++) {
+    simulateFrame();
+    if (messages.length > 60) messages.splice(0, messages.length - 20);
+    const frame = messages.findLast(m => m.type === 'frame');
+    if (frame) for (let i = 0; i < C.MAX_CARS; i++) if ([2, 3].includes(Math.round(frame.cars[i * 4 + 3]))) trucks++;
+    garbage = Math.max(garbage, latest().stats.garbageTrucks);
+  }
+  send({ type: 'speed', value: 0 });
+  assert.ok(trucks > 0, 'Freight vans and trucks are on the road');
+  assert.ok(garbage > 0, 'Recycling centres send garbage trucks out');
+  const s = latest().stats;
+  assert.ok(Number.isFinite(s.income) && s.garbage < 60, `Rubbish stays under control with collection (${s.garbage}%)`);
+  console.log(`  Economy: ${s.goods.produced} goods made, ${s.goods.exported} exported for $${s.goods.income.toFixed(2)}/s, ${s.tourism.visitors} visitors for $${s.tourism.income.toFixed(2)}/s, land value ${s.landValue}, net $${s.income.toFixed(2)}/s`);
+});
+const { StreetlightLayer } = await import('../src/render/streetlights.ts');
+test('streetlights never stand on another road where two roads meet at a shallow angle', () => {
+  const net = new Network();
+  net.insertPath([{ x: 10.5, z: 40.5 }, { x: 60.5, z: 40.5 }], KIND_ROAD);
+  // A second road peeling off at a shallow angle, like a slip road.
+  net.insertPath([{ x: 20.5, z: 40.5 }, { x: 60.5, z: 44.5 }], KIND_ROAD);
+  const layer = new StreetlightLayer();
+  layer.rebuild(net);
+  const poles = layer.poles, m = new THREE.Matrix4(), p = new THREE.Vector3();
+  assert.ok(poles.count > 4, 'Both roads are lit');
+  for (let i = 0; i < poles.count; i++) {
+    poles.getMatrixAt(i, m); p.setFromMatrixPosition(m);
+    for (const seg of net.segs.values()) {
+      const d = Network.nearestOn(seg, p.x + 40, p.z + 40).dist;
+      assert.ok(d >= HALF_WIDTH[seg.kind] - 1e-6, `A lamp stands on the asphalt, ${d.toFixed(2)} from a road centre`);
+    }
+  }
+});
 const { daylight, DAY_SECONDS } = await import('../src/render/daylight.ts');
 const { LandscapeLayer, riverSamples, landscapeHeight } = await import('../src/render/landscape.ts');
 const { RiverLayer } = await import('../src/render/river.ts');
@@ -1218,8 +1459,8 @@ const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/st
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const current = Buffer.from(encode(demoCity()), 'base64url');
-  // Versions before 9 carry no policy mask, rotation block or park paths: drop them all.
-  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 4)]); legacy[0] = 6;
+  // Versions before 9 carry no policy mask, rotation block, park paths or extras: drop them all.
+  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 4 - extrasLength(10))]); legacy[0] = 6;
   assert.ok(decode(legacy.toString('base64url')), 'Version 6 cities remain readable');
   const net = new Network();
   net.insertPath([{ x: 30, z: 10 }, { x: 30, z: 65 }], 0);

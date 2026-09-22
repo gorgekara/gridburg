@@ -11,10 +11,32 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 ## Streets and custom parks
 
 - Ordinary surface junctions have pedestrian crossings. Roundabout islands have flower beds, trees and fountains; the river has translucent shallows over a gravel bed.
-- **Roads → Bike lanes** upgrades a surface street or avenue for $12 per cell. Click again to remove. Bike lanes sit outside motor lanes; narrow lanes, expressways, structures and roundabouts are excluded. This adds cycling infrastructure, not simulated cyclist trips.
+- **Roads → Bike lanes** upgrades a surface street or avenue for $12 per cell. Click again to remove. Bike lanes sit outside motor lanes; narrow lanes, expressways, structures and roundabouts are excluded. Cyclists ride the tracks in both directions; they are scenery rather than simulated trips.
 - **Parks** lets you compose parks from paths, lawns, plazas, ponds and kiosks. Drag paths, lawns or plazas to paint; paths join neighbouring pieces automatically. **Decorations** adds trees, flowers, benches and fountains. Pieces can be rotated, replaced or bulldozed and are saved with your city. Connect walkable park pieces to a road to activate nearby amenities' recreation coverage. Kiosks are recreation amenities rather than commercial zones.
 - **Transport → Trolleybus stop** creates electric road transit between operating stops on connected surface streets and avenues. Stops need utilities and two-way routes. Overhead wires follow the routes, trolleybuses obey traffic, and ridership appears in the overview. Narrow lanes, expressways, roundabouts, bridges and tunnels cannot carry trolley routes.
 - Airports reserve a one-cell perimeter and three-cell-wide flight corridors extending twelve cells beyond either runway end. Rotate an airport to aim its approach. New buildings and zoning cannot obstruct these areas; saved buildings remain intact. Amber placement shading shows the clearance.
+
+## Economy, districts and the wider world
+
+- **Land value.** Every cell has a value from 0 to 100: parks, a river view, transit stops, landmarks and good services raise it; pollution, noise, crime and uncollected rubbish lower it. Better addresses pay more tax, grow faster, and towers need a land value of at least 30.
+- **Goods.** Factories and farms make goods, shops and offices use them. The surplus is exported through the city's entrances, intercity rail, docks and the airport (up to their capacity) and earns money; a shortfall is imported, which eats into shop takings and raises industrial demand. Vans deliver round town and lorries carry exports away.
+- **Tourism.** Leisure zones, parks, landmarks and the waterfront draw visitors, brought in by entrances, trains and the airport. Tourism appears in the budget and pushes commercial demand up. The **Observation tower** (Parks, from City) is a landmark that draws sixty visitors a minute.
+- **Tax per zone.** The budget has a rate each for homes, shops, industry and offices (farms pay the industrial rate, leisure the commercial one), plus a slider that sets them all.
+- **Rubbish.** Buildings put out rubbish every second. Recycling centres send garbage trucks to the fullest bins nearby; rubbish nobody collects lowers land value, and at its worst knocks buildings down a level.
+- **Deathcare and post.** Cemeteries, crematoria and post offices (Services, from Thriving town). Once the city is a City, new towers need 30% deathcare and post coverage.
+- **Power and water follow the roads.** Each connected road network shares only its own power plants, pumps and outlets, so a neighbourhood cut off from the grid goes dark.
+- **Districts.** Paint up to eight named districts (Districts menu) and give each its own policies: high-rise ban, quiet streets, green district, tourist quarter, tax break or neighbourhood watch. Local policies are billed per building.
+- **Land.** Dig out ponds and inlets, or fill in the river bank to make building land (Land menu). The river always keeps a channel at least two cells wide.
+- **Disasters.** From Small town, the river occasionally floods the low ground beside it and tornadoes cross the valley, knocking buildings down a level or two. Flood barriers on the bank protect everything within seven cells. Switch disasters off in Settings.
+- **Map views.** Land value, well-being, noise, crime, rubbish, districts and flood risk, from the layers button.
+- **Statistics.** Charts of population, treasury, income, happiness, land value, visitors and demand since the city was loaded.
+- **Undo.** Ctrl+Z (or the undo button) takes back the last edit and refunds it, up to thirty steps.
+- **Saved cities.** Save and load named cities from the menu, beside the autosave.
+- **Achievements.** Twenty-two, from the first family moving in to a World city, remembered in this browser.
+- **Two more milestones.** Megalopolis at 10,000 residents and World city at 15,000, each with a grant.
+- **Scenarios.** Rust belt revival, Gridlock, Flood plain and Tourist trap: a prepared city, goals to meet together and a deadline in days.
+- **Sound.** A city hum that follows the traffic, birdsong by day and crickets at night, sirens while emergency services are out, building and bulldozing cues, an engine when driving and footsteps when walking. All synthesised; toggle it from the speaker button.
+- **Touch.** On phones and tablets one finger pans and two pinch and turn (one finger draws while a tool is in hand), and walking and driving get an on-screen joystick.
 
 ## What is in it
 
@@ -35,6 +57,13 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   Every kind sits inside its corridor with a verge either side. Upgrade widens a road one step and
   charges the difference; keep clicking and it wraps back to a lane. City entrances arrive on
   expressway, so the first street has to be drawn from the end of it.
+- **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**
+  ($240/cell, three lanes) and a **highway ramp** ($110/cell, one lane). Both run in the direction you
+  draw them: lay one carriageway, then the other beside it, and join them to the streets with ramps.
+  Start a ramp on a highway for an exit, end it on one for an on-ramp, and press + or − while drawing to
+  take it over or under the other roads. Where a ramp splits from or joins a carriageway, traffic merges
+  on the move instead of stopping at a junction; a level crossing of two highways still takes turns.
+  Neither has frontage, pavements or parking. Upgrade turns a ramp into a one-way highway and back.
 - **More traffic control.** Signals and roundabouts, plus all-way stop signs ($60 a junction) and
   traffic calming ($45/cell) that halves a street's speed and all but ends collisions on it.
 - **Turn a building before you place it.** Right-click, press G, or use the Rotate button in the tool
@@ -53,7 +82,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   takes the camera to what it is about.
 - **Traffic management.** Signals, one-way streets, and roundabouts. Uncontrolled junctions let one car
   through at a time; signals move a whole approach at once; roundabouts never stop. A ring takes its
-  size from the widest road that meets it, from a 1.7-cell lane circle to a 4-cell expressway one.
+  size from the widest road that meets it, from a 1.5-cell lane circle to a 2.6-cell avenue one; an
+  expressway arriving at a roundabout meets an avenue-sized ring rather than a six-lane circle.
 - **Multiple highway entries.** The starting entry is free; Small town unlocks new $3,500 entrances on clear map edges. Each adds a seven-cell avenue. Any entry can serve its connected neighborhoods, and regional drivers choose a reachable entrance.
 - **Traffic from outside arrives by road.** Every entrance carries on sixteen cells past the map edge.
   Regional traffic is created and retired out there and drives in, so cars never appear on the doorstep and
@@ -78,7 +108,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   capture it). Buildings, gardens and the river stop you, but streets, alleys and parks are open.
   Esc or F takes you back up to the map where you left it. People walk the pavements (more as the
   city grows, fewer late at night), and at street level the kerbs fill with benches, bins, hydrants,
-  street trees, bike racks, planters, post boxes, bollards and a shelter at every bus stop. You can
+  street trees, bike racks, planters, post boxes, bollards and a shelter at every bus stop. Cars park
+  along the kerbs of streets and avenues in front of built lots, half up on the pavement so the lanes
+  stay free, and clear of junctions, crossings, roundabouts and bike tracks. You can
   walk up the ramps and over bridges.
 - **Drive around town.** Press M, or the car button, to take a car out on the nearest street. W / S
   drive and brake (and reverse), A D steer, Shift for a burst of speed, Space is the handbrake and V
@@ -143,7 +175,7 @@ The first visit opens a five-step welcome tutorial explaining the goal (6,500 re
 
 - **Farmland** is open from the start: fields, barns, silos and then greenhouses. It meets industrial demand with a few jobs, no pollution and little power, but the fields drink half as much water again.
 - **Leisure & tourism** unlocks at Small town (400 residents): cafés with terraces, boutique hotels and resort towers with a pool. It meets commercial demand and pays more tax the closer it is to parks and the river.
-- **Offices** unlock at Thriving town (900 residents). Purple zoning supplies clean jobs and a separate demand meter. Building upgrades require 25%, then 50%, city education coverage.
+- **Offices** unlock at Thriving town (900 residents) and grow more slowly than other zones: a low block, then a mid-rise, and a tower only once the city is a City (1,800 residents) and the address has a land value of 45. Purple zoning supplies clean jobs and a separate demand meter. Building upgrades require 25%, then 50%, city education coverage.
 - **Buses** unlock at Small town (400 residents). Place stops near homes and jobs. Stops automatically connect to the nearest earlier reachable stop; buses run return trips. Both ends need utilities and a road route in each direction. Walking range is 9 cells, capacity 30 passengers per connection, and congestion reduces throughput.
 - **Passenger rail** unlocks at City (1,800 residents). Stations reserve 3×2 cells and connect automatically with elevated tracks along existing road corridors. Trains avoid road congestion, with an 18-cell walking range and 120-passenger connection capacity.
 - **Regional airports** unlock at Regional capital (3,500 residents). An 8×3 site contains a runway, terminal and control tower. Operating airports replace some incoming road trips within 24 cells with flights, capped at 240 passengers per minute per airport. Flights and trains are animated; passengers are simulated as aggregate trips.
@@ -211,6 +243,7 @@ roads take priority, so curved roads and older saves retain their original geome
 | 1, 2, 3 | Homes, Shops, Industry |
 | B | Bulldoze |
 | P | Pollution view |
+| Ctrl+Z | Undo the last edit |
 | Space | Pause |
 | H | Help |
 
@@ -253,8 +286,8 @@ the workflow in `.github/workflows/deploy.yml`.
 
 ## Not in it
 
-Player terraforming, individual citizens, per-district rules, large-scale disasters, sound, and
-complete mobile controls. Policies apply to the whole city. Hills are scenic; the construction grid remains level.
+Individual citizens (people and trips are counted, not simulated one by one), a map bigger than 80 × 80
+cells, and terraforming of the hills: they stay scenic, and the building grid stays level.
 
 MIT license.
 

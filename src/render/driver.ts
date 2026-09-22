@@ -35,6 +35,11 @@ export class Driver {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly hooks: DriverHooks;
   private readonly look = new THREE.Vector3();
+  /** Joystick input from the touch controls: throttle (-1 brake/reverse .. 1) and steer (-1 right .. 1 left). */
+  analog = { throttle: 0, steer: 0 };
+
+  /** Switch between the chase camera and the driver's seat. */
+  toggleView(): void { this.cockpit = !this.cockpit; }
 
   constructor(camera: THREE.PerspectiveCamera, scene: THREE.Scene, hooks: DriverHooks) {
     this.camera = camera;
@@ -111,8 +116,8 @@ export class Driver {
   update(dt: number): void {
     if (!this.active) return;
     const k = this.keys;
-    const gas = k.has('KeyW') || k.has('ArrowUp'), brake = k.has('KeyS') || k.has('ArrowDown');
-    const steer = (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0) - (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0);
+    const gas = k.has('KeyW') || k.has('ArrowUp') || this.analog.throttle > 0.2, brake = k.has('KeyS') || k.has('ArrowDown') || this.analog.throttle < -0.2;
+    const steer = Math.max(-1, Math.min(1, (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0) - (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) + this.analog.steer));
     const top = k.has('ShiftLeft') || k.has('ShiftRight') ? BOOST : TOP;
     if (gas) this.speed += (this.speed < 0 ? BRAKE : ACCEL) * dt;
     else if (brake) this.speed -= (this.speed > 0 ? BRAKE : ACCEL * 0.7) * dt;

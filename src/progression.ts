@@ -6,6 +6,8 @@ export const MILESTONES = [
   { name: 'City', population: 1800, reward: 9000, unlocks: 'University, police headquarters, city parks and passenger rail' },
   { name: 'Regional capital', population: 3500, reward: 14000, unlocks: 'Regional airport, city hospital and capital grant' },
   { name: 'Metropolis', population: 6500, reward: 22000, unlocks: 'Metropolitan development grant' },
+  { name: 'Megalopolis', population: 10000, reward: 32000, unlocks: 'Megalopolis grant' },
+  { name: 'World city', population: 15000, reward: 45000, unlocks: 'World city status and a final grant' },
 ] as const;
 
 export function levelForPopulation(population: number): number {

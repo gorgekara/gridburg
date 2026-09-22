@@ -4,12 +4,15 @@ import type { ServiceSpec } from './constants';
 export const FUNDING_KEYS = ['power', 'water', 'sewage', 'health', 'education', 'fire', 'safety', 'leisure', 'waste'] as const;
 export type FundingKey = typeof FUNDING_KEYS[number];
 export type Funding = Record<FundingKey, number>;
-export const FUNDING_LABELS: Record<FundingKey, string> = { power: 'Electricity', water: 'Water', sewage: 'Sewage', ...CIVIC_LABELS };
+export const FUNDING_LABELS: Record<FundingKey, string> = { power: 'Electricity', water: 'Water', sewage: 'Sewage', health: 'Healthcare & deathcare', education: CIVIC_LABELS.education, fire: CIVIC_LABELS.fire, safety: 'Public safety & post', leisure: CIVIC_LABELS.leisure, waste: CIVIC_LABELS.waste };
 export const defaultFunding = (): Funding => Object.fromEntries(FUNDING_KEYS.map(k => [k, 100])) as Funding;
 export const validFunding = (v: number): boolean => Number.isInteger(v) && v >= 50 && v <= 150 && v % 10 === 0;
 export function serviceFunding(spec: ServiceSpec, funding: Funding): number {
   if (spec.transport || spec.decoration) return 1;
-  const key = spec.civic ?? (spec.power ? 'power' : spec.water ? 'water' : 'sewage');
+  // Deathcare is paid from the health budget and the post from public safety's; landmarks and flood
+  // barriers from the leisure and sewage lines.
+  const civic = spec.civic === 'deathcare' ? 'health' : spec.civic === 'mail' ? 'safety' : spec.civic;
+  const key: FundingKey = civic ?? (spec.attraction ? 'leisure' : spec.power ? 'power' : spec.water ? 'water' : 'sewage');
   return funding[key] / 100;
 }
 // Overtime has diminishing returns: 150% funding provides about 122% output.

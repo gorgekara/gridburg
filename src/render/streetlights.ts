@@ -1,7 +1,6 @@
 import { roadHeight } from '../roads/structures';
 import * as THREE from 'three';
-import { HALF_WIDTH } from '../roads/network';
-import type { Network } from '../roads/network';
+import { HALF_WIDTH, Network } from '../roads/network';
 
 /** Instanced lamps and soft pools avoid hundreds of real-time point lights. */
 export class StreetlightLayer {
@@ -33,10 +32,14 @@ export class StreetlightLayer {
       let next = 2.5;
       for (let i = 1; i <= seg.n && count < 3000; i++) {
         if (seg.cum[i] < next || seg.cum[i] > seg.cum[seg.n] - 1.5) continue;
-        next = seg.cum[i] + 5;
         const dx = seg.pts[i * 2] - seg.pts[(i - 1) * 2], dz = seg.pts[i * 2 + 1] - seg.pts[(i - 1) * 2 + 1], len = Math.hypot(dx, dz) || 1;
         const offset = HALF_WIDTH[seg.kind] + 0.035;
-        obj.position.set(seg.pts[i * 2] - 40 - dz / len * offset, roadHeight(seg, seg.cum[i]) + 0.65, seg.pts[i * 2 + 1] - 40 + dx / len * offset);
+        const px = seg.pts[i * 2] - dz / len * offset, pz = seg.pts[i * 2 + 1] + dx / len * offset;
+        // Where two roads run close or merge at a shallow angle, this kerb can lie on the other
+        // carriageway: try the next point along instead of planting a pole in the traffic.
+        if (onOtherRoad(net, seg.id, px, pz)) continue;
+        next = seg.cum[i] + 5;
+        obj.position.set(px - 40, roadHeight(seg, seg.cum[i]) + 0.65, pz - 40);
         obj.updateMatrix(); this.poles.setMatrixAt(count, obj.matrix);
         obj.position.y = roadHeight(seg, seg.cum[i]) + 1.3; obj.updateMatrix(); this.bulbs.setMatrixAt(count, obj.matrix);
         obj.position.y = roadHeight(seg, seg.cum[i]) + 0.061; obj.updateMatrix(); this.pools.setMatrixAt(count++, obj.matrix);
@@ -45,4 +48,15 @@ export class StreetlightLayer {
     for (const m of [this.poles, this.bulbs, this.pools]) { m.count = count; m.instanceMatrix.needsUpdate = true; }
   }
   update(night: number): void { this.bulbs.visible = night > 0.05; this.pools.visible = night > 0.05; this.glowMaterial.opacity = night; }
+}
+
+/** Whether a point (map coordinates) is on the asphalt or kerb of any road other than `own`. */
+function onOtherRoad(net: Network, own: number, x: number, z: number): boolean {
+  for (const o of net.segs.values()) {
+    if (o.id === own || o.structure === 2) continue;
+    const reach = HALF_WIDTH[o.kind] + 0.1;
+    if (x < o.minX - reach || x > o.maxX + reach || z < o.minZ - reach || z > o.maxZ + reach) continue;
+    if (Network.nearestOn(o, x, z).dist < reach) return true;
+  }
+  return false;
 }

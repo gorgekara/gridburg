@@ -69,6 +69,16 @@ export class Walker {
   }
 
   private lockedOnce = false;
+  /** Joystick input from the touch controls: forward and sideways, each -1..1. */
+  analog = { forward: 0, strafe: 0 };
+  /** Whether the walker moved this frame, for footsteps. */
+  moving = false;
+
+  /** Turn the head by a drag of so many pixels (touch look). */
+  look(dx: number, dy: number): void {
+    this.yaw -= dx * LOOK * 1.6;
+    this.pitch = Math.max(-1.3, Math.min(1.3, this.pitch - dy * LOOK * 1.6));
+  }
   /** Height of the ground under the walker's feet: 0, or a bridge deck. */
   private feet = 0;
 
@@ -117,9 +127,11 @@ export class Walker {
     if (k.has('KeyS') || k.has('ArrowDown')) forward -= 1;
     if (k.has('KeyD') || k.has('ArrowRight')) strafe += 1;
     if (k.has('KeyA') || k.has('ArrowLeft')) strafe -= 1;
-    if (forward || strafe) {
-      const speed = (k.has('ShiftLeft') || k.has('ShiftRight') ? RUN : WALK) * dt;
-      const len = Math.hypot(forward, strafe);
+    forward += this.analog.forward; strafe += this.analog.strafe;
+    this.moving = Math.hypot(forward, strafe) > 0.05;
+    if (this.moving) {
+      const speed = (k.has('ShiftLeft') || k.has('ShiftRight') || Math.hypot(this.analog.forward, this.analog.strafe) > 0.95 ? RUN : WALK) * dt;
+      const len = Math.max(1, Math.hypot(forward, strafe));
       // Facing -z at yaw 0, with +x to the right.
       const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
       const dx = (fx * forward + -fz * strafe) / len * speed;

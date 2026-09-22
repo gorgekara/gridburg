@@ -24,11 +24,17 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, HALF_WIDTH, isGreen } from '../roads/network';
+import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_MOTORWAY, KIND_RAMP, HALF_WIDTH, isGreen, isMotorway } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
 import type { EditPayload, MainToWorker, Stats, TileReport } from './messages';
+import { T_RECYCLING, T_BUS, T_SUBWAY } from '../constants';
+import { defaultExtras, shapeTerrain, districtHas, DISTRICT_POLICIES, DISTRICT_POLICY_IDS, DISTRICT_COUNT } from '../extras';
+import type { CityExtras } from '../extras';
+import { noiseMap, landValueMap, wellbeingMap, goodsFlow, tourism as tourismFlow, accumulateGarbage, waterDistance, GARBAGE_PICKUP_RADIUS } from './economy';
+import type { GoodsReport, TourismReport } from './economy';
+import { Disasters } from './disasters';
 
 const post = (self as unknown as { postMessage: (m: unknown, t?: Transferable[]) => void }).postMessage.bind(self);
 
@@ -91,6 +97,37 @@ let dirtyShare = 0;
 let resPollution = 0;
 let unservedRes = 0;
 let pendingMoveIns: number[] = [];
+// ---- economy, districts and disasters -----------------------------------------------------------
+let extras: CityExtras = defaultExtras();
+let baseTerrain: Terrain = terrain;
+let riverDistance = waterDistance(terrain.water);
+let landValue: Float32Array = new Float32Array(N_TILES).fill(40);
+let noise: Float32Array = new Float32Array(N_TILES);
+let wellbeing: Float32Array = new Float32Array(N_TILES);
+const garbage = new Float32Array(N_TILES);
+let transitReach: Float32Array = new Float32Array(N_TILES);
+let goods: GoodsReport = goodsFlow(kind, level, 0, { entries: 0, railLines: 0, docks: 0, airports: 0 });
+let visitors: TourismReport = { attraction: 0, access: 0, visitors: 0, income: 0 };
+let districtCost = 0;
+let freightBudget = 0;
+let disasterRate = 1;
+const disasters = new Disasters();
+/** Tax rate in percent for a zoned tile: its zone's rate, less a district tax break. */
+function taxAt(i: number): number {
+  const rate = extras.taxes[zoneBase(kind[i]) - T_RES] ?? 10;
+  const d = extras.district[i];
+  return d && districtHas(extras.districtPolicies[d - 1], 'taxBreak') ? Math.max(0, rate - 4) : rate;
+}
+const districtPolicy = (i: number, id: typeof DISTRICT_POLICY_IDS[number]): boolean => {
+  const d = extras.district[i];
+  return !!d && districtHas(extras.districtPolicies[d - 1], id);
+};
+/** Road component a tile draws its utilities through: power lines and pipes run along the streets. */
+const utilityComponent = (i: number): number => accSeg[i] >= 0 ? component[segA[accSeg[i]]] : -1;
+function setTerrain(): void {
+  terrain = shapeTerrain(baseTerrain, extras.terraform);
+  riverDistance = waterDistance(terrain.water);
+}
 
 // ---- road graph snapshot --------------------------------------------------------------------
 const J_PLAIN = 0, J_YIELD = 1, J_LIGHT = 2, J_RING = 3, J_STOP = 4;
@@ -122,7 +159,7 @@ let roadLength = 0;
 
 // ---- cars ---------------------------------------------------------------------------------------
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
-interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist'; origin: number; tile: number; crash?: number; work: number }
+interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
 interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
@@ -144,7 +181,7 @@ let extRate = 0;
 let resTiles: number[] = [], resW: number[] = [];
 let jobTiles: number[] = [], jobW: number[] = [];
 
-const GAP = [0.42, 0.42, 0.4, 0.46];
+const GAP = [0.42, 0.42, 0.4, 0.46, 0.5, 0.4];
 const STOP_SETBACK = 0.85; // how far before a junction a car holds, for a plain one-tile road
 const RING_PATIENCE = 6; // seconds an entering car gives way before it books its turn on the ring
 const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
@@ -183,7 +220,11 @@ function applyNetwork(p: EditPayload): void {
     nodeEdges.push([]);
     nodeGroups.push(new Map());
     const deg = net.degree(n.id);
-    nodeType.push(n.ring ? J_RING : deg >= 3 ? (n.light ? J_LIGHT : n.stop ? J_STOP : J_YIELD) : J_PLAIN);
+    // Where only highway-class roads meet (a ramp leaving or joining a carriageway) traffic merges and
+    // splits on the move, like a real motorway, instead of taking turns through a junction box.
+    // A four-way meeting of highways is a level crossing, and still takes turns.
+    const interchange = deg === 3 && net.segsAt(n.id).every(q => isMotorway(q.kind));
+    nodeType.push(n.ring ? J_RING : deg >= 3 && !interchange ? (n.light ? J_LIGHT : n.stop ? J_STOP : J_YIELD) : J_PLAIN);
     if (n.entry) entryNodes.push(nodeIds.length - 1);
   }
   // Keep surviving segments at stable indices where possible is not needed: cars are remapped by id below.
@@ -563,6 +604,22 @@ function spawn(dt: number): void {
   }
   spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
   extBudget = Math.min(4, extBudget + extRate * dt);
+  // Freight: trucks carry goods from factories and farms to the shops, and the surplus out of town.
+  freightBudget = Math.min(2, freightBudget + Math.min(0.12, (goods.local + goods.exported) / 60 * 0.006) * dt);
+  if (freightBudget >= 1 && freeList.length > 40) {
+    freightBudget -= 1;
+    const makers = jobTiles.filter(t => zoneBase(kind[t]) === T_IND);
+    const origin = makers[Math.floor(Math.random() * makers.length)];
+    if (origin !== undefined) {
+      if (goods.exported > 0 && entries.length && Math.random() < goods.exported / Math.max(1, goods.local + goods.exported)) externalTrip(origin, false, 3);
+      else {
+        const shops = jobTiles.filter(t => zoneBase(kind[t]) === T_COM);
+        const shop = shops[Math.floor(Math.random() * shops.length)];
+        // Deliveries round town go by van; the long lorries are for the run out of town.
+        if (shop !== undefined) spawnTrip(accSeg[origin], accS[origin], accSeg[shop], accS[shop], 2);
+      }
+    }
+  }
   let n = 0;
   while (spawnBudget >= 1 && n < 4 && resTiles.length && jobTiles.length) {
     spawnBudget -= 1;
@@ -621,6 +678,9 @@ function laneOffset(segIndex: number, seg: RSeg, slot: number): number {
   if (seg.kind === KIND_HIGHWAY) {
     return seg.oneway ? ((slot % 3) - 1) * 0.86 : 0.22 + (slot % 3) * 0.44;
   }
+  // A motorway carriageway has three lanes all one way; a ramp is a single lane down the middle.
+  if (seg.kind === KIND_MOTORWAY) return ((slot % 3) - 1) * 0.44;
+  if (seg.kind === KIND_RAMP) return 0;
   if (seg.kind === KIND_AVENUE) return seg.oneway ? (slot & 1 ? 0.43 : -0.43) : (slot & 1 ? 0.22 : 0.64);
   if (seg.oneway) return seg.kind === KIND_LANE ? 0 : (slot & 1 ? 0.18 : -0.18);
   return seg.kind === KIND_LANE ? 0.1 : 0.18;
@@ -691,6 +751,7 @@ function stepCars(dt: number): void {
           if (c.mission.kind === 'fire') incidents.extinguish(c.mission.tile);
           else if (c.mission.kind === 'heist') incidents.foil(c.mission.tile);
           else if (c.mission.kind === 'patrol') incidents.visit(c.mission.tile);
+          else if (c.mission.kind === 'garbage') collectGarbage(c.mission.tile);
           else if (c.mission.crash !== undefined) incidents.crashes.delete(c.mission.crash);
           freeCar(slot);
         } else { leaderP = c.p; leaderLength = vehicleLength(c.vehicle); }
@@ -874,6 +935,14 @@ function census(): void {
   let dirtyCap = 0;
   const outlets: { flow: number; cap: number; treatment: number }[] = [];
   treatedSewage = 0;
+  // Power and water travel along the roads: each connected road network shares its own plants.
+  const grid = new Map<number, number[]>(); // component -> [capP, capW, capS, needP, needW]
+  const utility = (i: number, slot: number, v: number): void => {
+    const c = utilityComponent(i);
+    let row = grid.get(c);
+    if (!row) grid.set(c, row = [0, 0, 0, 0, 0]);
+    row[slot] += v;
+  };
 
   // Services first: capacity only counts when the building is on the road network and sited correctly.
   for (let i = 0; i < N_TILES; i++) {
@@ -888,10 +957,13 @@ function census(): void {
     if (spec.decoration && !spec.civic) continue;
     const sited = !spec.needsWater || touchesWater(terrain, x, z);
     if (!tileConnected(i) || !sited) { flags[i] = F_NO_ROAD; continue; }
-    capP += spec.power * output;
-    capW += spec.water * output;
-    capS += spec.sewage * output;
-    if (!spec.decoration && (spec.civic || spec.transport || spec.treatment)) { needP += spec.transport === 'air' ? 30 : 3; needW += 2; }
+    capP += spec.power * output; utility(i, 0, spec.power * output);
+    capW += spec.water * output; utility(i, 1, spec.water * output);
+    capS += spec.sewage * output; utility(i, 2, spec.sewage * output);
+    if (!spec.decoration && (spec.civic || spec.transport || spec.treatment)) {
+      const p = spec.transport === 'air' ? 30 : 3;
+      needP += p; needW += 2; utility(i, 3, p); utility(i, 4, 2);
+    }
     if (k === T_PUMP) {
       const f = adjacentFlow(terrain, x, z);
       if (f >= 0 && riverPollution[f] > 0.25) dirtyCap += spec.water * output;
@@ -902,7 +974,7 @@ function census(): void {
     } else if (k === T_DOCKS) {
       // The quay employs people like a workshop, and the boats sell what they catch. Sewage in the
       // river upstream of the dock thins the catch, so an outlet in the wrong place costs money.
-      needP += 4; needW += 2;
+      needP += 4; needW += 2; utility(i, 3, 4); utility(i, 4, 2);
       indJobs += DOCK_JOBS;
       jw += 3; jobTiles.push(i); jobW.push(jw);
       const f = adjacentFlow(terrain, x, z);
@@ -921,8 +993,8 @@ function census(): void {
     const zi = zoneBase(k) - T_RES;
     if (l > 0 && ok) {
       // Farms run little machinery but water their fields.
-      needP += POWER_DEMAND[zi][l] * (k === T_FARM ? 0.4 : 1);
-      needW += WATER_DEMAND[zi][l] * (k === T_FARM ? 1.5 : 1);
+      const p = POWER_DEMAND[zi][l] * (k === T_FARM ? 0.4 : 1), w = WATER_DEMAND[zi][l] * (k === T_FARM ? 1.5 : 1);
+      needP += p; needW += w; utility(i, 3, p); utility(i, 4, w);
     }
     if (k === T_RES) {
       pop += RES_POP[l];
@@ -946,8 +1018,6 @@ function census(): void {
   }
 
   const fP = needP > 0 ? Math.min(1, capP / needP) : 1;
-  const fW = needW > 0 ? Math.min(1, capW / needW) : 1;
-  const fS = needW > 0 ? Math.min(1, capS / needW) : 1;
   power = [Math.round(needP), capP];
   water = [Math.round(needW), capW];
   sewage = [Math.round(needW), capS];
@@ -960,10 +1030,13 @@ function census(): void {
     let f = 0;
     if (!tileConnected(i)) f |= F_NO_ROAD;
     else if (level[i] > 0 && !SERVICES[k]?.decoration) {
+      // Supply is shared within the building's own road network, not across the whole map.
+      const row = grid.get(utilityComponent(i)) ?? [0, 0, 0, 0, 0];
+      const lp = row[3] > 0 ? Math.min(1, row[0] / row[3]) : 1, lw = row[4] > 0 ? Math.min(1, row[1] / row[4]) : 1, ls = row[4] > 0 ? Math.min(1, row[2] / row[4]) : 1;
       const h = tileHash(i);
-      if (h >= fP) f |= F_NO_POWER;
-      if (tileHash(i + 7919) >= fW) f |= F_NO_WATER;
-      if (tileHash(i + 104729) >= fS) f |= F_NO_SEWAGE;
+      if (h >= lp) f |= F_NO_POWER;
+      if (tileHash(i + 7919) >= lw) f |= F_NO_WATER;
+      if (tileHash(i + 104729) >= ls) f |= F_NO_SEWAGE;
     }
     flags[i] = f;
     if (k === T_RES && level[i] > 0) {
@@ -992,15 +1065,20 @@ function census(): void {
   const needs = cityLevel >= 2 ? ['health', 'education', 'fire', 'safety', 'waste'] as const : cityLevel >= 1 ? ['health', 'education'] as const : [];
   const serviceScore = needs.length ? needs.reduce((sum, k) => sum + civic[k], 0) / needs.length : 70;
   const crimePenalty = buildings ? incidents.crime.reduce((sum, v) => sum + v, 0) / buildings * 0.4 : 0;
-  happiness = Math.round(clamp(55 + effects.happiness - crimePenalty + serviceScore * 0.3 + civic.leisure * 0.15 - unservedRes * 25 - dirtyShare * 25 - resPollution * 3 - Math.max(0, tax - 10) * 1.5 - Math.max(0, commuteAvg - 25) * 0.3, 0, 100));
+  happiness = Math.round(clamp(55 + effects.happiness - crimePenalty + serviceScore * 0.3 + civic.leisure * 0.15 - unservedRes * 25 - dirtyShare * 25 - resPollution * 3 - Math.max(0, extras.taxes[0] - 10) * 1.5 - (disasters.active ? 6 : 0) - Math.max(0, commuteAvg - 25) * 0.3, 0, 100));
   const jobs = comJobs + indJobs + officeJobs;
-  const taxPenalty = (tax - 10) / 40;
+  const taxPenalty = (extras.taxes[0] - 10) / 40;
+  const zoneTax = (z: number): number => (extras.taxes[z] - 10) / 40;
+  // Goods: factories and farms supply the shops; a shortfall is imported and a surplus exported.
+  const links = { entries: entryNodes.length, railLines: transit.intercity.length, docks, airports: transit.airports.length };
+  goods = goodsFlow(kind, level, pop, links);
+  visitors = tourismFlow(kind, level, riverDistance, links, happiness, extras);
   const commutePenalty = clamp((commuteAvg - 25) / 50, 0, 1);
   const balance = (jobs - pop) / Math.max(60, pop + jobs);
   demand[0] = clamp((happiness - 65) / 160 + 0.3 + 0.7 * balance - taxPenalty - 0.6 * commutePenalty - 0.4 * unservedRes - 0.5 * dirtyShare - resPollution / 12, -1, 1);
-  demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - taxPenalty, -1, 1);
-  demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - taxPenalty, -1, 1);
-  demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - taxPenalty, -1, 1) : -1;
+  demand[1] = clamp(0.25 + 0.7 * (pop * 0.4 - comJobs) / Math.max(50, pop * 0.4 + comJobs) - zoneTax(1) + Math.min(0.15, visitors.visitors / 4000), -1, 1);
+  demand[2] = clamp(0.25 + 0.7 * (pop * 0.5 - indJobs) / Math.max(50, pop * 0.5 + indJobs) - zoneTax(2) + 0.3 * goods.importShare - 0.4 * goods.unsold, -1, 1);
+  demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - zoneTax(3), -1, 1) : -1;
   const signature = `${serial}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
   if (signature !== transitSignature) {
     const gates = entryNodes.map(n => entrySite(nodeX[n], nodeZ[n]));
@@ -1023,14 +1101,27 @@ function census(): void {
     const k = kind[i];
     let amount = zoneOccupants(k, level[i]) * (k === T_RES ? 0.012 : 0.015);
     // Hotels and restaurants trade on visitors, who come for the parks and the waterfront.
-    if (k === T_LEISURE) amount *= tourismAppeal(i);
+    if (k === T_LEISURE) amount *= tourismAppeal(i) * (districtPolicy(i, 'tourist') ? 1.25 : 1);
+    // Better addresses pay more; shops that have to import their stock pay less.
+    const base = zoneBase(k);
+    if (base !== T_IND) amount *= 0.8 + landValue[i] / 100 * 0.7;
+    if (base === T_COM) amount *= 1 - 0.3 * goods.importShare;
     const operating = (flags[i] & (F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) ? 0.5 : 1;
-    taxIncome += amount * operating * tax / 10 * (1 - incidents.crime[i] / 200) * (incidents.fires.has(i) ? 0 : 1);
+    taxIncome += amount * operating * taxAt(i) / 10 * (1 - incidents.crime[i] / 200) * (incidents.fires.has(i) ? 0 : 1);
+  }
+  // Local policies are billed per building in the district.
+  districtCost = 0;
+  if (extras.districtPolicies.some(m => m)) {
+    const perDistrict = new Array(DISTRICT_COUNT).fill(0);
+    for (let i = 0; i < N_TILES; i++) if (extras.district[i] && isZone(kind[i]) && level[i]) perDistrict[extras.district[i] - 1]++;
+    extras.districtPolicies.forEach((mask, d) => {
+      for (const id of DISTRICT_POLICY_IDS) if (districtHas(mask, id)) districtCost += 0.2 + DISTRICT_POLICIES[id].perBuilding * perDistrict[d];
+    });
   }
   policyCost = policyExpense(policies, pop);
   serviceExpense = upkeep;
   loanExpense = Math.min(LOAN_PAYMENT, debt);
-  netIncome = taxIncome + fishingIncome - roadUpkeep - serviceExpense - policyCost - loanExpense;
+  netIncome = taxIncome + fishingIncome + goods.exportIncome + visitors.income - roadUpkeep - serviceExpense - policyCost - districtCost - loanExpense;
 }
 
 /** How much a leisure business earns over a plain shop: parks and a river view draw the visitors. */
@@ -1062,8 +1153,9 @@ function civicEfficiency(i: number): number {
 function spreadPollution(): void {
   for (let i = 0; i < N_TILES; i++) {
     const k = kind[i];
-    if (k === T_IND) pollution[i] += IND_POLLUTION[level[i]] * effects.industryPollution;
-    else if (isService(k)) pollution[i] += SERVICES[k].pollution;
+    const green = districtPolicy(i, 'green') ? 0.5 : 1;
+    if (k === T_IND) pollution[i] += IND_POLLUTION[level[i]] * effects.industryPollution * green;
+    else if (isService(k)) pollution[i] += SERVICES[k].pollution * green;
   }
   for (let i = 0; i < N_TILES; i++) {
     let sum = 0;
@@ -1111,7 +1203,13 @@ function grow(): void {
       continue;
     }
     // An empty lot the water reaches never builds on: nothing should stand in the river.
-    const d = terrain.shore[i] && l === 0 ? 0 : zoneDemand(k);
+    const base = zoneBase(k);
+    // Local policy shifts how keen builders are: a tax break draws them, quiet and green streets put
+    // shops and factories off.
+    let local = districtPolicy(i, 'taxBreak') ? 0.1 : 0;
+    if (base === T_COM && districtPolicy(i, 'quiet')) local -= 0.25;
+    if (base === T_IND && (districtPolicy(i, 'quiet') || districtPolicy(i, 'green'))) local -= 0.3;
+    const d = terrain.shore[i] && l === 0 ? 0 : zoneDemand(k) + (zoneDemand(k) > -1 ? local : 0);
     const p = pollution[i];
     const isRes = k === T_RES;
     if (l === 0) {
@@ -1132,17 +1230,28 @@ function grow(): void {
       continue;
     }
     const served = (f & (F_NO_ROAD | F_NO_POWER | F_NO_WATER | F_NO_SEWAGE)) === 0;
-    const minAge = l === 1 ? 10 : 22;
-    const rate = l === 1 ? 0.06 : 0.03;
+    // Offices take their time: a low block first, a mid-rise once it has settled, and a tower only in
+    // a proper City on a good address, instead of shooting up the moment they unlock.
+    const office = k === T_OFFICE;
+    const minAge = office ? (l === 1 ? 30 : 75) : l === 1 ? 10 : 22;
+    const rate = (l === 1 ? 0.06 : 0.03) * (office ? 0.5 : 1);
+    const officeTower = !office || l < 2 || (cityLevel >= 4 && landValue[i] >= 45);
     const officeReady = k !== T_OFFICE || civicState.average.education >= (l === 1 ? 25 : 50);
     const civicReady = !isRes || civicShortfalls(i, l + 1, cityLevel, civicState.coverage).length === 0;
-    const canUp = !airportClearance[i] && served && officeReady && civicReady && (l < 2 || cityLevel >= 3) && (!isRes || (p < 3 && l < residentialCap(i)));
-    if (l < 3 && age[i] > minAge && canUp && Math.random() < Math.max(0, d) * rate) {
+    // Towers need an address worth building on, and a high-rise ban stops at mid-rise.
+    const valued = base === T_IND || l < 2 || landValue[i] >= 30;
+    const cap = districtPolicy(i, 'highriseBan') ? 2 : 3;
+    const canUp = !airportClearance[i] && served && officeReady && officeTower && civicReady && valued && l < cap && (l < 2 || cityLevel >= 3) && (!isRes || (p < 3 && l < residentialCap(i)));
+    const appeal = base === T_IND ? 1 : 0.55 + landValue[i] / 90;
+    if (l < 3 && age[i] > minAge && canUp && Math.random() < Math.max(0, d) * rate * appeal) {
       level[i] = l + 1; age[i] = 0;
       if (isRes && pendingMoveIns.length < 40) pendingMoveIns.push(i);
     } else if (d < -0.15 && Math.random() < -d * 0.05) {
       level[i] = l - 1; age[i] = 0;
     } else if (!served && l > 1 && Math.random() < 0.04) {
+      level[i] = l - 1; age[i] = 0;
+    } else if ((garbage[i] > 85 || l > cap) && Math.random() < 0.03) {
+      // Rubbish nobody collects, or a tower in a district that has since banned them, comes down a floor.
       level[i] = l - 1; age[i] = 0;
     } else if (isRes && p > 6 && Math.random() < 0.05) {
       level[i] = l - 1; age[i] = 0;
@@ -1160,6 +1269,12 @@ function grow(): void {
   tick++;
 }
 
+function averageOver(field: Float32Array, include: (i: number) => boolean): number {
+  let sum = 0, n = 0;
+  for (let i = 0; i < N_TILES; i++) if (include(i)) { sum += field[i]; n++; }
+  return n ? sum / n : 0;
+}
+
 function stats(): Stats {
   return {
     incidents: {
@@ -1175,6 +1290,15 @@ function stats(): Stats {
     money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
     demand: [...demand], tick, roadLength: Math.round(roadLength), buildings,
     noPath, gaveUp, power, water, sewage, dirtyWater: dirtyShare > 0.2, resPollution, income: netIncome + fareIncome + tollIncome,
+    taxes: [...extras.taxes] as Stats['taxes'],
+    goods: { produced: Math.round(goods.produced), needed: Math.round(goods.needed), exported: Math.round(goods.exported), imported: Math.round(goods.imported), capacity: Math.round(goods.exportCapacity), income: goods.exportIncome, importShare: goods.importShare },
+    tourism: { visitors: Math.round(visitors.visitors), income: visitors.income, attraction: Math.round(visitors.attraction) },
+    landValue: Math.round(averageOver(landValue, i => isZone(kind[i]) && level[i] > 0)),
+    wellbeing: Math.round(averageOver(wellbeing, i => kind[i] === T_RES && level[i] > 0)),
+    garbage: Math.round(averageOver(garbage, i => isZone(kind[i]) && level[i] > 0)),
+    districtExpense: districtCost,
+    disasters: { floods: disasters.floods, tornadoes: disasters.tornadoes, damaged: disasters.damaged, active: disasters.active?.kind ?? null },
+    garbageTrucks: slots.filter(c => c?.vehicle === 10).length,
   };
 }
 
@@ -1187,13 +1311,45 @@ function postState(): void {
     flags[i] &= ~F_DECLINING;
     if (neglect[i]) flags[i] |= F_DECLINING;
   }
-  post({ type: 'state', incidents: incidents.view(), incidentSave: incidents.snapshot(), neglect: neglect.slice(), level: level.slice(), flags: flags.slice(), pollution: pol, riverPollution: riv, stats: stats() });
+  const byte = (field: ArrayLike<number>, scale = 2.55): Uint8Array => { const out = new Uint8Array(N_TILES); for (let i = 0; i < N_TILES; i++) out[i] = Math.max(0, Math.min(255, field[i] * scale)); return out; };
+  const maps = { land: byte(landValue), noise: byte(noise), wellbeing: byte(wellbeing), garbage: byte(garbage), crime: byte(incidents.crime) };
+  post({ type: 'state', incidents: incidents.view(), incidentSave: incidents.snapshot(), neglect: neglect.slice(), level: level.slice(), flags: flags.slice(), pollution: pol, riverPollution: riv, maps, disaster: disasters.active ? { ...disasters.active, flooded: [...disasters.active.flooded], path: [...disasters.active.path] } : null, stats: stats() });
   postInspection();
 }
 
 /** Dispatch from working stations; cars must reach the destination before helping. */
+function collectGarbage(tile: number): void {
+  const x = tile % GRID, z = Math.floor(tile / GRID), r = GARBAGE_PICKUP_RADIUS;
+  for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+    const nx = x + dx, nz = z + dz;
+    if (nx >= 0 && nz >= 0 && nx < GRID && nz < GRID) garbage[nz * GRID + nx] = 0;
+  }
+}
+/** Recycling centres send trucks round to the fullest bins in their area. */
+function dispatchGarbage(): void {
+  for (let i = 0; i < N_TILES; i++) {
+    if (kind[i] !== T_RECYCLING || flags[i] || !tileConnected(i) || dispatchCooldown.has(i)) continue;
+    if (slots.filter(c => c?.mission?.origin === i).length >= 2) continue;
+    const r2 = SERVICES[T_RECYCLING].radius! ** 2, x = i % GRID, z = Math.floor(i / GRID);
+    let best = -1, worst = 12;
+    for (const t of [...resTiles, ...jobTiles]) {
+      if (garbage[t] <= worst || (t % GRID - x) ** 2 + (Math.floor(t / GRID) - z) ** 2 > r2) continue;
+      if (slots.some(c => c?.mission?.kind === 'garbage' && distance(c.mission.tile, t) <= GARBAGE_PICKUP_RADIUS)) continue;
+      best = t; worst = garbage[t];
+    }
+    if (best >= 0 && spawnTrip(accSeg[i], accS[i], accSeg[best], accS[best], 10, undefined, { kind: 'garbage', origin: i, tile: best, work: 4 })) dispatchCooldown.set(i, 10);
+  }
+}
+
 function stepIncidents(): void {
+  const crimeBefore = extras.districtPolicies.some(m => m) ? Float32Array.from(incidents.crime) : null;
+  dispatchGarbage();
   incidents.step(kind, level, pop, cityLevel, Math.random, { fire: effects.fireRate, crime: effects.crimeRate }, tile => { level[tile] = Math.max(0, level[tile] - 1); age[tile] = 0; });
+  // A district's own neighborhood watch takes 40% off the crime that built up this second.
+  if (crimeBefore) for (let i = 0; i < N_TILES; i++) {
+    const rise = incidents.crime[i] - crimeBefore[i];
+    if (rise > 0 && districtPolicy(i, 'watch')) incidents.crime[i] -= rise * 0.4;
+  }
   for (const [tile, delay] of dispatchCooldown) if (delay <= 1) dispatchCooldown.delete(tile); else dispatchCooldown.set(tile, delay - 1);
   // An occasional two-vehicle collision blocks the occupied lane until police or recovery clear it.
   if (cityLevel >= 2 && activeCars > 12 && incidents.crashes.size < 2 && Math.random() < 0.018) {
@@ -1240,6 +1396,49 @@ function stepIncidents(): void {
   }
 }
 
+// ---- economy, rubbish and disasters -------------------------------------------------------------------
+const ROAD_NOISE = [10, 22, 5, 34, 24, 12];
+const TRANSIT_STOPS = new Set([T_BUS, T_TROLLEY, T_SUBWAY, T_STATION, T_TAXI]);
+function disasterContext() {
+  return {
+    kind, level, water: terrain.water, riverDistance, cityLevel, enabled: extras.disasters, rate: disasterRate, random: Math.random,
+    damage: (tile: number, levels: number) => { level[tile] = Math.max(0, level[tile] - levels); age[tile] = 0; },
+    notice: (message: string) => post({ type: 'notice', message }),
+  };
+}
+/** Once a simulation second: rubbish builds up, and noise, land value and well-being are re-read. */
+function stepEconomy(): void {
+  accumulateGarbage(garbage, kind, level, civicState.coverage.waste);
+  refreshMaps();
+  disasters.step(disasterContext());
+}
+/** Noise, transit reach, land value and well-being from the city as it stands. */
+function refreshMaps(): void {
+  const roadNoise = new Float32Array(N_TILES);
+  segs.forEach((seg, j) => {
+    if (seg.structure === 2) return;
+    const w = ROAD_NOISE[seg.kind] * (0.6 + Math.min(1.5, segCong[j] ?? 0)) * (seg.calm ? 0.6 : 1) * (seg.len / seg.n);
+    for (let k = 0; k <= seg.n; k++) {
+      const x = Math.floor(seg.pts[k * 2]), z = Math.floor(seg.pts[k * 2 + 1]);
+      if (x >= 0 && z >= 0 && x < GRID && z < GRID) roadNoise[z * GRID + x] += w;
+    }
+  });
+  noise = noiseMap({ kind, level, roadNoise, extras });
+  transitReach = new Float32Array(N_TILES);
+  for (let i = 0; i < N_TILES; i++) {
+    if (!TRANSIT_STOPS.has(kind[i]) || flags[i]) continue;
+    const r = SERVICES[kind[i]]?.radius ?? 8, x = i % GRID, z = Math.floor(i / GRID);
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx, nz = z + dz, d = Math.hypot(dx, dz);
+      if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID || d > r) continue;
+      const t = nz * GRID + nx;
+      transitReach[t] = Math.max(transitReach[t], 1 - 0.7 * d / r);
+    }
+  }
+  landValue = landValueMap({ kind, level, water: terrain.water, pollution, noise, crime: incidents.crime, garbage, coverage: civicState.coverage, transit: transitReach, extras }, riverDistance);
+  wellbeing = wellbeingMap(kind, level, landValue, noise, pollution, incidents.crime, garbage, civicState.coverage);
+}
+
 // ---- main loop -----------------------------------------------------------------------------------
 function substep(scale = 1): void {
   const dt = scale / SIM_HZ;
@@ -1250,6 +1449,7 @@ function substep(scale = 1): void {
   if (subCount >= SIM_HZ) {
     subCount -= SIM_HZ;
     stepIncidents();
+    stepEconomy();
     spreadPollution();
     census();
     grow();
@@ -1283,7 +1483,12 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   const m = ev.data;
   switch (m.type) {
     case 'load': {
-      terrain = generateTerrain(m.seed);
+      baseTerrain = generateTerrain(m.seed);
+      extras = m.extras ? { ...m.extras, district: m.extras.district.slice(), terraform: m.extras.terraform.slice() } : defaultExtras(m.tax);
+      terrain = baseTerrain;
+      setTerrain();
+      garbage.fill(0); disasters.reset();
+      disasterRate = m.disasterRate ?? 1;
       riverPollution = new Float32Array(terrain.river.length);
       clearCars();
       segs = [];
@@ -1315,11 +1520,15 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       extBudget = 0;
       applyNetwork(m);
       census();
+      refreshMaps();
+      census();
       postState();
       writeFrame();
       break;
     }
     case 'edit': {
+      if (m.district) extras.district.set(m.district);
+      if (m.terraform && m.terraform.some((v, i) => v !== extras.terraform[i])) { extras.terraform.set(m.terraform); setTerrain(); }
       applyKind(m.kind);
       airportClearance = airportClearanceMask(kind, m.rot);
       applyNetwork(m);
@@ -1337,7 +1546,25 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       break;
     case 'tax':
       tax = clamp(Math.round(m.value), 0, 30);
+      extras.taxes = [tax, tax, tax, tax];
       census(); postState();
+      break;
+    case 'taxes':
+      if (!Array.isArray(m.taxes) || m.taxes.length !== 4) break;
+      extras.taxes = m.taxes.map(t => clamp(Math.round(t), 0, 30)) as CityExtras['taxes'];
+      tax = extras.taxes[0];
+      census(); postState();
+      break;
+    case 'districtPolicy':
+      if (!Number.isInteger(m.district) || m.district < 1 || m.district > DISTRICT_COUNT || !Number.isInteger(m.mask) || m.mask < 0 || m.mask >= 1 << DISTRICT_POLICY_IDS.length) break;
+      extras.districtPolicies[m.district - 1] = m.mask;
+      census(); postState();
+      break;
+    case 'disasters':
+      extras.disasters = !!m.on;
+      if (m.rate !== undefined) disasterRate = m.rate;
+      if (m.trigger && !disasters.active) disasters.start(m.trigger, disasterContext());
+      postState();
       break;
     case 'funding':
       if (!FUNDING_KEYS.includes(m.key) || !validFunding(m.value)) break;
@@ -1370,7 +1597,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       break;
     case 'warm': {
       commuteAvg = 0;
-      for (let n = 0; n < m.ticks; n++) { spreadPollution(); census(); grow(); }
+      for (let n = 0; n < m.ticks; n++) { spreadPollution(); census(); refreshMaps(); grow(); }
       pendingMoveIns = [];
       census();
       postState();
@@ -1396,6 +1623,9 @@ function postInspection(): void {
     if (incidents.fires.has(i)) report.blockers.push(`Building on fire: ${120 - incidents.fires.get(i)!.age}s before damage. Needs a responding fire engine.`);
     if (!spec?.decoration) report.details.push(`Crime pressure: ${Math.round(incidents.crime[i])}% · patrol protection: ${Math.ceil(incidents.patrol[i])}s`);
     report.details.push(`Ground pollution: ${pollution[i].toFixed(1)}`);
+    report.details.push(`Land value: ${Math.round(landValue[i])} · noise ${Math.round(noise[i])} · rubbish ${Math.round(garbage[i])}%`);
+    if (isZone(k)) report.details.push(`Tax rate here: ${taxAt(i)}%`);
+    if (extras.district[i]) report.details.push(`District ${extras.district[i]}`);
   }
   if (isZone(k)) {
     if (airportClearance[i]) report.blockers.push('Airport runway clearance: no new construction or building upgrades');
@@ -1411,8 +1641,12 @@ function postInspection(): void {
       }
     }
     if (k === T_OFFICE && l > 0 && l < 3 && civicState.average.education < (l === 1 ? 25 : 50)) report.blockers.push(`Offices need ${l === 1 ? 25 : 50}% city education coverage to upgrade`);
+    if (k === T_OFFICE && l === 2 && (cityLevel < 4 || landValue[i] < 45)) report.blockers.push('Office towers need a City (1,800 residents) and a land value of 45');
     if (l === 2 && cityLevel < 3) report.blockers.push('High-rises unlock at Thriving town (900 residents)');
-    if (l > 0 && l < 3 && age[i] <= (l === 1 ? 10 : 22)) report.blockers.push(`Maturing: ${(l === 1 ? 11 : 23) - age[i]}s remaining`);
+    if (l === 2 && zoneBase(k) !== T_IND && landValue[i] < 30) report.blockers.push(`Land value ${Math.round(landValue[i])} / 30: parks, transit, a river view and quiet streets raise it`);
+    if (districtPolicy(i, 'highriseBan') && l >= 2) report.blockers.push('This district has a high-rise ban');
+    if (garbage[i] > 60) report.blockers.push('Rubbish is piling up: a recycling centre sends trucks to collect it');
+    { const need = k === T_OFFICE ? (l === 1 ? 30 : 75) : l === 1 ? 10 : 22; if (l > 0 && l < 3 && age[i] <= need) report.blockers.push(`Maturing: ${need + 1 - age[i]}s remaining`); }
     if (l < 3 && report.blockers.length === 0) report.details.push('Eligible for growth; construction occurs gradually.');
     report.details.push(`Zone demand: ${Math.round(zoneDemand(k) * 100)}%`);
     if (k === T_LEISURE && l > 0) report.details.push(`Visitor appeal: ×${tourismAppeal(i).toFixed(2)} (parks and waterfront raise it)`);

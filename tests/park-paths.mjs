@@ -9,6 +9,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 }});
 const { Game } = await import('../src/game.ts');
+const { extrasToJson, defaultExtras } = await import('../src/extras.ts');
 const { Input } = await import('../src/input.ts');
 const { ParkPathLayer } = await import('../src/render/parkPaths.ts');
 const { parkPathTiles, PARK_PATH_HALF } = await import('../src/parkPaths.ts');
@@ -25,9 +26,10 @@ assert.equal(g.parkPaths.length,2);
 for (const p of [line,curve]) for(const i of parkPathTiles(p)) assert.equal(g.kind[i],T_PATH);
 const saved=decode(encode(g.snapshot())); assert.ok(saved); assert.deepEqual(saved.parkPaths,[line,curve]);
 const loaded=fresh(); loaded.load(saved); assert.deepEqual(loaded.parkPaths,[line,curve]);
-// A v11 save ends before the newly appended path block and still loads.
-const empty=encode(fresh().snapshot()); const raw=Buffer.from(empty,'base64url'); raw[0]=11;
-assert.ok(decode(raw.subarray(0,raw.length-2).toString('base64url')));
+// A v11 save ends before the newly appended path block (and the later v13 extras block) and still loads.
+const fresh11=fresh().snapshot(); const empty=encode(fresh11); const raw=Buffer.from(empty,'base64url'); raw[0]=11;
+const extrasBytes=4+new TextEncoder().encode(JSON.stringify(extrasToJson(defaultExtras(fresh11.tax)))).length;
+assert.ok(decode(raw.subarray(0,raw.length-2-extrasBytes).toString('base64url')));
 assert.equal(decode(encode(g.snapshot()).slice(0,-4)),null,'Truncated route block rejected');
 const layer=new ParkPathLayer();layer.rebuild([line]);
 const geometry=layer.group.children[0].geometry;geometry.computeBoundingBox();

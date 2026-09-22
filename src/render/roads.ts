@@ -3,7 +3,7 @@ import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, signalPhase } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, signalPhase } from '../roads/network';
 import type { Pose } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
@@ -259,7 +259,17 @@ export class RoadLayer {
           for (const off of [-hw * 0.55, 0, hw * 0.55]) strip(d, d + 0.25, hw * 0.3, off, WHITE);
         }
       }
-      if (s.oneway) {
+      if (s.kind === KIND_MOTORWAY || s.kind === KIND_RAMP) {
+        // Highway carriageways: solid edge lines, dashed lane lines, and arrows showing the flow.
+        const edge = HALF_WIDTH[s.kind] - 0.06;
+        strip(from, to, 0.02, edge, WHITE);
+        strip(from, to, 0.02, -edge, s.kind === KIND_RAMP ? WHITE : LINE);
+        if (s.kind === KIND_MOTORWAY) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of [-0.22, 0.22]) strip(d, d + 0.5, 0.018, l, WHITE);
+        for (let d = from + 0.5; d < to; d += 2.2) {
+          Network.poseAt(s, d, pose);
+          for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.13, 0.057, WHITE);
+        }
+      } else if (s.oneway) {
         for (let d = from + 0.3; d < to; d += 1.6) {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);

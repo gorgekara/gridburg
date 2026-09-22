@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GRID, N_TILES, T_BUS, tileHash } from '../constants';
-import { HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY } from '../roads/network';
+import { HALF_WIDTH, KIND_AVENUE, isMotorway } from '../roads/network';
 import type { Network } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 import { Builder } from './buildingGeo';
@@ -107,7 +107,7 @@ export class StreetFurnitureLayer {
       this.meshes[type].setMatrixAt(counts[type]++, obj.matrix);
     };
     for (const seg of net.segs.values()) {
-      if (seg.structure || seg.kind === KIND_HIGHWAY) continue;
+      if (seg.structure || isMotorway(seg.kind)) continue;
       const off = HALF_WIDTH[seg.kind] + 0.078;
       const gap = seg.kind === KIND_AVENUE ? 0.55 : 0.8;
       for (const side of [-1, 1]) {
