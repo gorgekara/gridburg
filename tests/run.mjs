@@ -533,7 +533,7 @@ test('metro stations form their own underground lines with metro capacity and ca
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 12)), 0);
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 40)), -1);
 });
-test('a new map has a motorway across it with interchanges, and its entries run out past the edge', () => {
+test('a new map has a motorway across it with trumpet interchanges, and its entries run out past the edge', () => {
   const city = newCity(7), net = Network.fromPlain(city.net), terrain = generateTerrain(7);
   const entries = [...net.nodes.values()].filter(n => n.entry);
   assert.equal(entries.length, 4, 'Both carriageways come in from both ends of the map');
@@ -554,8 +554,8 @@ test('a new map has a motorway across it with interchanges, and its entries run 
     assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
   }
   const kinds = [...net.segs.values()];
-  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 2, 'Each of the two diamond interchanges has one overpass');
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 8, 'and four slip roads at grade');
+  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 2, 'Each of the two trumpet interchanges has one overpass');
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 28, 'two direct slip roads and two six-piece loops each');
   assert.ok(kinds.filter(s => s.kind === N.KIND_RAMP).every(s => !s.structure && s.oneway), 'Slip roads stay on the ground and run one way');
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
@@ -567,8 +567,8 @@ test('a new map has a motorway across it with interchanges, and its entries run 
   for (const seed of [1, 2, 3, 4, 5, 6, 8, 12, 99, 424242]) {
     const other = Network.fromPlain(newCity(seed).net);
     const ramps = [...other.segs.values()].filter(q => q.kind === N.KIND_RAMP);
-    assert.equal(ramps.length, 8, `Seed ${seed}: two interchanges, four slip roads each (got ${ramps.length})`);
-    for (const q of ramps) assert.ok(other.degree(q.a) === 3 && other.degree(q.b) === 3, `Seed ${seed}: a slip road meets nothing but its carriageway and its street`);
+    assert.equal(ramps.length, 28, `Seed ${seed}: two trumpet interchanges (got ${ramps.length} ramp pieces)`);
+    for (const q of ramps) assert.ok(other.degree(q.a) <= 3 && other.degree(q.b) <= 3, `Seed ${seed}: a slip road meets nothing but its carriageway, its road and its own next piece`);
   }
   const before = net.toPlain();
   ensureApproaches(net);
@@ -838,7 +838,7 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   const motorway = [...net.segs.values()].filter(q => q.kind === KIND_MOTORWAY), ramps = [...net.segs.values()].filter(q => q.kind === KIND_RAMP);
   let onRamp = 0, east = 0, west = 0;
   const rampUsers = new Set();
-  let mouthSamples = 0, mouthOuter = 0;
+  const rampUsersById = new Set(), mouthById = new Map();
   for (let f = 0; f < 120 * C.SIM_HZ; f++) {
     simulateFrame();
     const frame = messages.findLast(m => m.type === 'frame');
@@ -848,8 +848,11 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
       if (!frame.cars[n * 4 + 3]) continue;
       const x = frame.cars[n * 4] + 40, z = frame.cars[n * 4 + 1] + 40, a = frame.cars[n * 4 + 2];
       if (ramps.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_RAMP] && Math.abs(z - 40.5) > 1.5)) { onRamp++; rampUsers.add(frame.carIds[n]); }
-      // At the mouth of an exit the car is still in the carriageway's outer lane, easing over onto the ramp.
-      for (const q of ramps) { const h = Network.nearestOn(q, x, z); if (h.s < 0.8 && h.dist < 0.7 && q.a === net.segsAt(q.a).find(o => o.kind === N.KIND_MOTORWAY)?.b) { mouthSamples++; if (h.dist > 0.28) mouthOuter++; } }
+      // At the mouth of an exit a car that goes on to use the ramp is still in the carriageway's outer
+      // lane, easing over; cars merely passing by on the carriageway are told apart afterwards.
+      for (const q of ramps) { const h = Network.nearestOn(q, x, z); const id = frame.carIds[n];
+        if (h.s > 2 && h.s < q.len - 2 && h.dist < 0.3) rampUsersById.add(id);
+        if (h.s < 0.5 && h.dist < 0.7 && q.a === net.segsAt(q.a).find(o => o.kind === N.KIND_MOTORWAY)?.b) (mouthById.get(id) ?? mouthById.set(id, []).get(id)).push(h.dist); }
       if (Math.abs(z - 40.5) < 0.7 && x > 8 && x < 70 && motorway.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_MOTORWAY])) {
         if (Math.sin(a) > 0.9) east++; else if (Math.sin(a) < -0.9) west++;
       }
@@ -860,7 +863,9 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   assert.ok(east > 20, 'Traffic runs along the one-way highway');
   assert.equal(west, 0, 'Nobody drives the wrong way up a one-way highway');
   assert.ok(onRamp > 5, 'Cars use the ramps to get on and off');
-  if (mouthSamples > 5) assert.ok(mouthOuter / mouthSamples > 0.7, `Cars leave from the outer lane, not the centre of the carriageway (${mouthOuter}/${mouthSamples})`);
+  let mouthSamples = 0, mouthOuter = 0;
+  for (const [id, dists] of mouthById) if (rampUsersById.has(id)) for (const d of dists) { mouthSamples++; if (d > 0.2) mouthOuter++; }
+  if (mouthSamples > 5) assert.ok(mouthOuter / mouthSamples > 0.8, `Cars leave from the outer lane, not the centre of the carriageway (${mouthOuter}/${mouthSamples})`);
   assert.ok(latest().stats.gaveUp <= 2 && rampUsers.size > 40, `Merges keep moving: ${rampUsers.size} cars used the ramps, ${latest().stats.gaveUp} gave up`);
 });
 test('through traffic rolls along the motorway even when the city is empty', () => {

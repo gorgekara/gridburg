@@ -21,9 +21,12 @@ export function demoCity(expanded = false): SaveData {
   const terrain = generateTerrain(DEMO_SEED);
   const net = Network.fromPlain(d.net);
   const e = terrain.entry;
+  // The demo was laid out from a highway stub that ended 7.5 cells in; the interchange's street node
+  // is further in now, so the whole plan slides inward with it.
+  const shift = DOOR - 7.5;
   const P = (along: number, side: number): { x: number; z: number } => ({
-    x: e.x + e.dx * (along + 0.5) - e.dz * side,
-    z: e.z + e.dz * (along + 0.5) + e.dx * side,
+    x: e.x + e.dx * (along + 0.5 + shift) - e.dz * side,
+    z: e.z + e.dz * (along + 0.5 + shift) + e.dx * side,
   });
   const clampP = (p: { x: number; z: number }): { x: number; z: number } => ({
     x: Math.max(1.5, Math.min(GRID - 1.5, p.x)), z: Math.max(1.5, Math.min(GRID - 1.5, p.z)),
@@ -31,7 +34,7 @@ export function demoCity(expanded = false): SaveData {
 
   // Streets.
   // The avenue starts at the interchange's street node, at the foot of the overpass.
-  net.insertPath([P(DOOR - 0.5, 0), P(40, 0)], KIND_AVENUE);
+  net.insertPath([P(7, 0), P(40, 0)], KIND_AVENUE);
   for (const side of [-12, -6, 6, 12]) net.insertPath([clampP(P(10, side)), clampP(P(40, side))], KIND_ROAD);
   for (const along of [10, 16, 22, 28, 34, 40]) net.insertPath([clampP(P(along, -12)), clampP(P(along, 12))], KIND_ROAD);
   // Suburbs: a curved crescent beyond the grid, reached by extended side streets.

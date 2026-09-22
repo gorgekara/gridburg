@@ -522,26 +522,42 @@ export function newCity(seed: number): SaveData {
 }
 
 /** Where the two carriageways run, measured in from the map edge. */
-export const OUTER = 4.5;
-export const INNER = 6.5;
+export const OUTER = 7.5;
+export const INNER = 9.5;
 /** How far in from the edge an interchange's street node sits; the city grows from there. */
-export const DOOR = 9.5;
+export const DOOR = 13.5;
+/** Where the overpass comes down on the outside, and the radius of the loop ramps that meet it there. */
+export const OUTSIDE = 4.5;
+export const LOOP = OUTER - OUTSIDE;
 
 /**
- * A diamond interchange, the way real ones are laid out: a street crosses both carriageways on one
- * overpass, and four slip roads leave and join the carriageways at grade, meeting the street at the
- * foot of the bridge on either side. Each slip road peels away along the carriageway before turning.
+ * A trumpet interchange, the layout built where a road ends at a motorway: the road crosses both
+ * carriageways on one overpass, two direct slip roads serve the near carriageway on the city side,
+ * and two loop ramps on the far side turn traffic through 270° to and from the far carriageway.
  */
 function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number, d: number): void {
-  const inside = pos(along, DOOR), outside = pos(along, 0.5);
+  const inside = pos(along, DOOR), outside = pos(along, OUTSIDE);
   const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
   fix(net.insertPath([outside, inside], KIND_ROAD, false, 1));
-  // Slip roads leave each carriageway before the bridge and rejoin after it, in its direction of travel.
-  // Long, gentle slip roads: the diamond is spread out so the ramps read as separate lanes.
+  // Direct slip roads leave the near carriageway before the bridge and rejoin after it.
   fix(net.insertPath([pos(along - 12 * d, INNER), pos(along - 5 * d, INNER + 0.3), inside], KIND_RAMP, true));
   fix(net.insertPath([inside, pos(along + 5 * d, INNER + 0.3), pos(along + 12 * d, INNER)], KIND_RAMP, true));
-  fix(net.insertPath([pos(along + 12 * d, OUTER), pos(along + 5 * d, OUTER - 0.3), outside], KIND_RAMP, true));
-  fix(net.insertPath([outside, pos(along - 5 * d, OUTER - 0.3), pos(along - 12 * d, OUTER)], KIND_RAMP, true));
+  // Loops: a circle tangent to the far carriageway at the top and to the road's end at its side.
+  // Vertices of the polygon circumscribing the circle make the curve pieces run along it.
+  const loop = (side: number): { x: number; z: number }[] => {
+    const ca = along + side * LOOP, ci = OUTSIDE, r = LOOP / Math.cos(Math.PI / 8);
+    const pts: { x: number; z: number }[] = [pos(ca, OUTER)];
+    for (let k = 0; k < 6; k++) {
+      const theta = (Math.PI / 8) * (2 * k + 1);
+      pts.push(pos(ca + side * r * Math.sin(theta), ci + r * Math.cos(theta)));
+    }
+    pts.push(outside);
+    return pts;
+  };
+  // The far carriageway runs against `d`: its traffic leaves after passing under the bridge, on the
+  // -d side, and rejoins on the +d side; both loops meet the road where the overpass comes down.
+  fix(net.insertPath(loop(-d), KIND_RAMP, true));
+  fix(net.insertPath(loop(d).reverse(), KIND_RAMP, true));
 }
 
 export function randomSeed(): number {
