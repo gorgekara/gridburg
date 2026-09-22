@@ -239,16 +239,19 @@ export class RoadLayer {
     this.islands.visible = this.islands.geometry.hasAttribute('position');
 
     // Markings.
+    const trims = rampTrims(net);
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
-      const motorwayKind = isCarriageway(s.kind) || s.kind === KIND_RAMP;
+      const carriageway = isCarriageway(s.kind);
       // Where a slip road splits from or joins a carriageway the two run side by side for a while:
-      // the ramp's own lines stop where it is clear of the highway, and the highway keeps its lines
-      // through the node except the edge line on the ramp's side, which opens up for the mouth.
-      const mouthA = motorwayKind ? rampMouth(net, s, s.a) : null, mouthB = motorwayKind ? rampMouth(net, s, s.b) : null;
-      const trimA = Math.max(mouthA ? (s.kind === KIND_RAMP ? mouthA.length : 0.2) : net.degree(s.a) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[0] ?? 0) + 0.23);
-      const trimB = Math.max(mouthB ? (s.kind === KIND_RAMP ? mouthB.length : 0.2) : net.degree(s.b) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[1] ?? 0) + 0.23);
+      // the ramp's own lines stop where it is clear of the highway and its paved corner, and the
+      // highway keeps its lines through the node except the edge line on the ramp's side, which
+      // opens up for the mouth.
+      const mouthA = carriageway ? rampMouth(net, s, s.a) : null, mouthB = carriageway ? rampMouth(net, s, s.b) : null;
+      const rampTrim = s.kind === KIND_RAMP ? trims.get(s.id) : undefined;
+      const trimA = Math.max(rampTrim?.[0] || (mouthA ? 0.2 : net.degree(s.a) >= 3 ? 1.0 : 0.2), (crossings.get(s.id)?.[0] ?? 0) + 0.23);
+      const trimB = Math.max(rampTrim?.[1] || (mouthB ? 0.2 : net.degree(s.b) >= 3 ? 1.0 : 0.2), (crossings.get(s.id)?.[1] ?? 0) + 0.23);
       const from = trimA;
       const to = s.len - trimB;
       if (to - from < 0.5) continue;
@@ -528,17 +531,57 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
   const otherSeg = other.o;
   const clearance = HALF_WIDTH[seg.kind] + HALF_WIDTH[otherSeg.kind] + 0.06;
   const fromA = seg.a === node;
-  let length = 0.2, side = 1;
-  for (let d = 0.2; d < Math.min(seg.len - 0.2, 12); d += 0.2) {
-    Network.poseAt(seg, fromA ? d : seg.len - d, pose);
+  // A ramp is measured along its whole chain of pieces, since its first piece may end while it is
+  // still alongside the carriageway; a carriageway only along this one piece.
+  const walk = seg.kind === KIND_RAMP;
+  let piece = seg, from = node, offset = 0, length = 0.2, side = 1;
+  for (let d = 0.2; d < 12; d += 0.2) {
+    while (d - offset > piece.len) {
+      const far = piece.a === from ? piece.b : piece.a, next = net.segsAt(far).filter(o => o.id !== piece.id);
+      if (!walk || next.length !== 1 || next[0].kind !== KIND_RAMP) break;
+      offset += piece.len; piece = next[0]; from = far;
+    }
+    const along = d - offset;
+    if (along > piece.len - (walk ? 0 : 0.2)) break;
+    Network.poseAt(piece, piece.a === from ? along : piece.len - along, pose);
     const hit = Network.nearestOn(otherSeg, pose.x, pose.z);
     // Which side the other road's nearest point falls on, relative to this road's direction of travel.
     const cross = (hit.x - pose.x) * pose.tz - (hit.z - pose.z) * pose.tx;
-    side = (cross > 0 ? -1 : 1) * (fromA ? 1 : -1);
+    if (piece === seg) side = (cross > 0 ? -1 : 1) * (fromA ? 1 : -1);
     length = d;
     if (hit.dist > clearance) break;
   }
-  return { length: Math.min(length + 0.3, seg.len * 0.6), side };
+  return { length: walk ? length + 0.3 : Math.min(length + 0.3, seg.len * 0.6), side };
+}
+
+/** How far the paved corner at a ramp's mouth reaches along the ramp past the point where it is clear of the carriageway. */
+const MOUTH_CORNER = 1.2;
+
+/**
+ * Where each ramp piece's own lines start and stop: nothing is drawn while the ramp is still in a
+ * carriageway's mouth or its paved corner, even when that runs on through a joint into the next piece.
+ */
+function rampTrims(net: Network): Map<number, [number, number]> {
+  const trims = new Map<number, [number, number]>();
+  for (const ramp of net.segs.values()) {
+    if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
+    for (const node of [ramp.a, ramp.b]) {
+      const mouth = rampMouth(net, ramp, node);
+      if (!mouth) continue;
+      let reach = mouth.length + MOUTH_CORNER, piece = ramp, from = node;
+      while (reach > 0) {
+        let t = trims.get(piece.id);
+        if (!t) { t = [0, 0]; trims.set(piece.id, t); }
+        const end = piece.a === from ? 0 : 1;
+        t[end] = Math.max(t[end], Math.min(piece.len, reach));
+        reach -= piece.len;
+        const far = piece.a === from ? piece.b : piece.a, next = net.segsAt(far).filter(o => o.id !== piece.id);
+        if (reach <= 0 || next.length !== 1 || next[0].kind !== KIND_RAMP) break;
+        piece = next[0]; from = far;
+      }
+    }
+  }
+  return trims;
 }
 
 /**
@@ -548,10 +591,18 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
 function junctionFillets(net: Network, b: MeshBuilder): void {
   const half = GRID / 2;
   const curve = new Float32Array(11 * 2);
+  const kp = { x: 0, z: 0, tx: 0, tz: 0 };
   for (const n of net.nodes.values()) {
     if (n.ring) continue;
     const arms = net.segsAt(n.id);
     if (arms.length < 2) continue;
+    /** A point on an arm's left (+1) or right (-1) kerb `d` along it from the node, with the kerb's direction away from the node. */
+    const kerbAt = (arm: { s: RSeg; hw: number }, side: number, d: number): { x: number; z: number; tx: number; tz: number } => {
+      const fromA = arm.s.a === n.id, at = Math.max(0, Math.min(arm.s.len, fromA ? d : arm.s.len - d));
+      Network.poseAt(arm.s, at, kp);
+      const tx = fromA ? kp.tx : -kp.tx, tz = fromA ? kp.tz : -kp.tz;
+      return { x: kp.x - tz * arm.hw * side, z: kp.z + tx * arm.hw * side, tx, tz };
+    };
     // Each arm's direction away from the node, from its first polyline piece.
     const dirs = arms.map(s => {
       const fromA = s.a === n.id, k = fromA ? 1 : s.n - 1, e = fromA ? 0 : s.n;
@@ -577,12 +628,22 @@ function junctionFillets(net: Network, b: MeshBuilder): void {
       const dx = facingB.x - facingA.x, dz = facingB.z - facingA.z;
       const t = (dx * -B.uz - dz * -B.ux) / det, u = (A.ux * dz - A.uz * dx) / det;
       if (t < -0.2 || u < -0.2 || t > 4 || u > 4) continue;
-      const cx = facingA.x + A.ux * t, cz = facingA.z + A.uz * t;
+      let cx = facingA.x + A.ux * t, cz = facingA.z + A.uz * t;
       // Round the corner off with a radius that suits the wider road, but never past the arm's far end.
       // Highway corners are swept wide, as they would be for fast traffic.
       const fast = isCarriageway(A.s.kind) || A.s.kind === KIND_RAMP || isCarriageway(B.s.kind) || B.s.kind === KIND_RAMP;
       const r = Math.min(fast ? 1.1 : 0.35 + Math.max(A.hw, B.hw) * 0.45, Math.max(0.15, A.s.len - t - 0.4), Math.max(0.15, B.s.len - u - 0.4));
-      const sx = cx + A.ux * r, sz = cz + A.uz * r, ex = cx + B.ux * r, ez = cz + B.uz * r;
+      // The curve ends on the kerbs as they really run, not on their tangents at the node: a slip
+      // road bending away from a corner used to leave a sliver of pavement pointing along its tangent.
+      const sa = kerbAt(A, facingA === leftA ? 1 : -1, t + r), eb = kerbAt(B, facingB === leftB ? 1 : -1, u + r);
+      const sx = sa.x, sz = sa.z, ex = eb.x, ez = eb.z;
+      // Meet the kerbs tangentially: the control point is where their tangents at the ends cross.
+      const det2 = sa.tx * -eb.tz - sa.tz * -eb.tx;
+      if (Math.abs(det2) > 1e-4) {
+        const ddx = ex - sx, ddz = ez - sz;
+        const back = (ddx * -eb.tz - ddz * -eb.tx) / det2, forth = (sa.tx * ddz - sa.tz * ddx) / det2;
+        if (back < 0 && forth < 0 && back > -3 && forth > -3) { cx = sx + sa.tx * back; cz = sz + sa.tz * back; }
+      }
       const steps = curve.length / 2;
       for (let k = 0; k < steps; k++) {
         const f = k / (steps - 1), g = 1 - f;

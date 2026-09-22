@@ -32,13 +32,15 @@ export function demoCity(expanded = false): SaveData {
     x: Math.max(1.5, Math.min(GRID - 1.5, p.x)), z: Math.max(1.5, Math.min(GRID - 1.5, p.z)),
   });
 
-  // The way in: a street from the end of the crossing highway to the nearest edge of the grid.
+  // The way in: both carriageways of the crossing highway feed a short avenue that leads to the grid.
   const layout = highwayLayout(terrain);
   if (layout.cross !== undefined) {
     const k = e.dx || -e.dz; // `side` runs along the motorway: side = (along - front) / k
     const sideCross = (layout.cross - layout.front) / k;
-    const highwayEnd = P(HIGHWAY_END - 0.5 - shift, sideCross);
-    net.insertPath([highwayEnd, P(16, sideCross > 0 ? 12 : -20)], KIND_AVENUE);
+    const sideEnd = (at: number): number => (at - layout.front) / k;
+    const throat = P(HIGHWAY_END + 6 - shift, sideCross);
+    for (const at of [layout.x1, layout.x2]) net.insertPath([P(HIGHWAY_END - 0.5 - shift, sideEnd(at)), P(HIGHWAY_END + 3 - shift, sideEnd(at)), throat], KIND_ROAD);
+    net.insertPath([throat, P(16, sideCross > 0 ? 12 : -20)], KIND_AVENUE);
   }
 
   // Streets.

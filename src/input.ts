@@ -9,7 +9,7 @@ import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint, roadPoint } from './placement';
 import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from './constants';
-import { terraformAllowed } from './extras';
+import { DISTRICT_COLORS, terraformAllowed } from './extras';
 import type { TerraformAction } from './extras';
 
 const LAND_TOOLS = ['dig', 'fill', 'raise', 'lower'] as const;
@@ -191,11 +191,20 @@ export class Input {
   }
 
   private isRectTool(): boolean {
-    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze', 'district', 'undistrict'].includes(this.tool);
+    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze'].includes(this.tool);
   }
 
   private isLandTool(): boolean {
     return (LAND_TOOLS as readonly string[]).includes(this.tool);
+  }
+
+  private isDistrictTool(): boolean {
+    return this.tool === 'district' || this.tool === 'undistrict';
+  }
+
+  /** Tools that paint with the round brush: shaping the ground and marking out districts. */
+  private isBrushTool(): boolean {
+    return this.isLandTool() || this.isDistrictTool();
   }
 
   /** Tiles under the land brush centred on a tile. */
@@ -208,25 +217,31 @@ export class Input {
     return out;
   }
 
-  /** Shape the ground under the brush, once per tile per stroke. */
-  private paintLand(centre: number): void {
+  /** Shape the ground or mark the district under the brush, once per tile per stroke. */
+  private paintBrush(centre: number): void {
     const tiles = this.brushTiles(centre).filter(t => !this.painted.has(t));
     for (const t of tiles) this.painted.add(t);
     if (!tiles.length) return;
+    if (this.isDistrictTool()) {
+      if (this.game.paintDistrict(tiles, this.tool === 'district' ? this.districtBrush : 0)) this.onDistrict?.();
+      return;
+    }
     const result = this.game.terraform(tiles, this.tool as TerraformAction);
     if (result.broke) this.onToast?.('Not enough money');
   }
 
-  /** Show the brush footprint under the cursor, lit where the ground can be shaped. */
+  /** Show the brush footprint under the cursor: in the district's colour, or lit where the ground can be shaped. */
   private previewBrush(centre: number): void {
     const half = GRID / 2;
     let n = 0;
     q.identity();
+    const district = this.isDistrictTool();
+    const tint = this.tool === 'district' ? DISTRICT_COLORS[this.districtBrush - 1] : 0xffffff;
     for (const t of this.brushTiles(centre)) {
-      const ok = terraformAllowed(this.game.baseTerrain, this.game.extras.terraform, t, this.tool as TerraformAction) && !this.game.raster.cover[t] && this.game.owners[t] < 0;
+      const ok = district || (terraformAllowed(this.game.baseTerrain, this.game.extras.terraform, t, this.tool as TerraformAction) && !this.game.raster.cover[t] && this.game.owners[t] < 0);
       m4.compose(new THREE.Vector3((t % GRID) - half + 0.5, 0, ((t / GRID) | 0) - half + 0.5), q, one);
       this.rect.setMatrixAt(n, m4);
-      this.rect.setColorAt(n, tmpColor.setHex(ok ? 0xffffff : 0x555555));
+      this.rect.setColorAt(n, tmpColor.setHex(ok ? tint : 0x555555));
       n++;
     }
     this.rect.count = n;
@@ -324,11 +339,11 @@ export class Input {
     if (this.isRoadTool()) {
       this.downScreen = { x: e.clientX, y: e.clientY };
       this.downWorld = p;
-    } else if (this.isLandTool()) {
+    } else if (this.isBrushTool()) {
       this.dragging = true;
       this.painted.clear();
       this.curTile = this.tileOf(p);
-      this.paintLand(this.curTile);
+      this.paintBrush(this.curTile);
     } else if (this.isRectTool()) {
       this.dragging = true;
       this.startTile = this.tileOf(p);
@@ -351,14 +366,14 @@ export class Input {
       if (pressing) this.previewRoad([this.snap(this.downWorld!)], null, p, e);
       else if (this.chain.length) this.previewRoad(this.chain, this.tangent, p, e);
       else this.updateHover(p, e);
-    } else if (this.dragging && this.isLandTool()) {
+    } else if (this.dragging && this.isBrushTool()) {
       const t = this.tileOf(p);
-      if (t !== this.curTile) { this.curTile = t; this.paintLand(t); }
+      if (t !== this.curTile) { this.curTile = t; this.paintBrush(t); }
       this.previewBrush(t);
     } else if (this.dragging) {
       const t = this.tileOf(p);
       if (t !== this.curTile) { this.curTile = t; this.updateRect(); }
-    } else if (this.isLandTool()) {
+    } else if (this.isBrushTool()) {
       this.previewBrush(this.tileOf(p));
       this.onCost?.(null, e.clientX, e.clientY, true);
     } else {
@@ -399,7 +414,7 @@ export class Input {
       return;
     }
     if (!this.dragging) return;
-    if (this.isLandTool()) { this.dragging = false; this.painted.clear(); return; }
+    if (this.isBrushTool()) { this.dragging = false; this.painted.clear(); return; }
     this.commitRect();
     this.dragging = false;
     this.rect.count = 0;
@@ -660,7 +675,7 @@ export class Input {
     const half = GRID / 2;
     let n = 0;
     q.identity();
-    const zoning = !['bulldoze', 'district', 'undistrict'].includes(this.tool);
+    const zoning = this.tool !== 'bulldoze';
     for (const t of this.rectTiles()) {
       if (zoning && !this.game.buildable(t)) continue;
       m4.compose(new THREE.Vector3((t % GRID) - half + 0.5, 0, ((t / GRID) | 0) - half + 0.5), q, one);
@@ -680,11 +695,7 @@ export class Input {
     const tiles = this.rectTiles();
     let changed = 0;
     let broke = false;
-    if (this.tool === 'district' || this.tool === 'undistrict') {
-      g.paintDistrict(tiles, this.tool === 'district' ? this.districtBrush : 0);
-      this.onDistrict?.();
-      return;
-    } else if (this.tool === 'bulldoze') {
+    if (this.tool === 'bulldoze') {
       for (const t of tiles) if ((g.kind[t] !== T_EMPTY || g.owners[t] >= 0) && g.setKind(t, T_EMPTY, 0)) changed++;
       const sx = this.startTile % GRID, sz = (this.startTile / GRID) | 0;
       const cx = this.curTile % GRID, cz = (this.curTile / GRID) | 0;

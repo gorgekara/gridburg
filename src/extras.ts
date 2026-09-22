@@ -30,7 +30,7 @@ export const DISTRICT_POLICIES: Record<DistrictPolicyId, DistrictPolicySpec> = {
 
 export const districtHas = (mask: number, id: DistrictPolicyId): boolean => (mask & (1 << DISTRICT_POLICY_IDS.indexOf(id))) !== 0;
 
-/** Ground the player has changed: dug out to water, or filled in to land. */
+/** Ground the player has changed: dug out to water, or filled in to land. Raised ground counts as land wherever it stands. */
 export const DUG = 1;
 export const FILLED = 2;
 /** Raised ground: values HILL_BASE + 1 .. HILL_BASE + HILL_MAX are hills of that height. */
@@ -135,7 +135,7 @@ export function shapeTerrain(base: Terrain, edits: Uint8Array): Terrain {
   const water = base.water.slice(), shore = base.shore.slice(), flow = base.flow.slice();
   for (let i = 0; i < N_TILES; i++) {
     if (edits[i] === DUG) { water[i] = 1; shore[i] = 0; }
-    else if (edits[i] === FILLED) { water[i] = 0; shore[i] = 0; flow[i] = -1; }
+    else if (edits[i] === FILLED || hillLevel(edits[i]) > 0) { water[i] = 0; shore[i] = 0; flow[i] = -1; }
   }
   // A dug pond joins the river's flow where it touches it; otherwise it is still water.
   for (let i = 0; i < N_TILES; i++) {
@@ -149,30 +149,55 @@ export function shapeTerrain(base: Terrain, edits: Uint8Array): Terrain {
   return { ...base, water, shore, flow };
 }
 
-/** Whether this tile may be dug out, filled in, raised or lowered. The river's own channel can be narrowed, never cut. */
+/** Whether a tile is water once the player's edits are applied: dug out, or river that is neither filled nor built up. */
+export const isWet = (base: Terrain, edits: Uint8Array, tile: number): boolean =>
+  edits[tile] === DUG || (!!base.water[tile] && edits[tile] !== FILLED && hillLevel(edits[tile]) === 0);
+
+/**
+ * Whether the river would still run from where it enters the map to where it leaves if `tile` were
+ * made land. The player may narrow the river, and even cut across the old bed once a new channel
+ * has been dug for it, but never dam it.
+ */
+export function riverKeepsFlowing(base: Terrain, edits: Uint8Array, tile: number): boolean {
+  const inside = base.river.filter(p => p.x >= 0 && p.z >= 0 && p.x < GRID && p.z < GRID);
+  if (inside.length < 2) return true;
+  const near = (p: { x: number; z: number; w: number }): number[] => {
+    const out: number[] = [];
+    for (let z = Math.floor(p.z - p.w - 1); z <= Math.ceil(p.z + p.w + 1); z++) for (let x = Math.floor(p.x - p.w - 1); x <= Math.ceil(p.x + p.w + 1); x++) {
+      if (x < 0 || z < 0 || x >= GRID || z >= GRID) continue;
+      const i = z * GRID + x;
+      if (i !== tile && isWet(base, edits, i)) out.push(i);
+    }
+    return out;
+  };
+  const goal = new Set(near(inside[inside.length - 1]));
+  if (!goal.size) return true;
+  const seen = new Uint8Array(N_TILES), queue = near(inside[0]);
+  for (const i of queue) seen[i] = 1;
+  for (let q = 0; q < queue.length; q++) {
+    const i = queue[q];
+    if (goal.has(i)) return true;
+    const x = i % GRID, z = Math.floor(i / GRID);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, nz = z + dz;
+      if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) continue;
+      const n = nz * GRID + nx;
+      if (seen[n] || n === tile || !isWet(base, edits, n)) continue;
+      seen[n] = 1; queue.push(n);
+    }
+  }
+  return false;
+}
+
+/** Whether this tile may be dug out, filled in, raised or lowered. The river can be narrowed or moved, never dammed. */
 export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): boolean {
   const x = tile % GRID, z = Math.floor(tile / GRID);
   if (x < 1 || z < 1 || x >= GRID - 1 || z >= GRID - 1) return false;
-  // Earth piles up on dry, level ground and comes down again a storey at a time.
-  if (action === 'raise') return !base.water[tile] && edits[tile] !== DUG && edits[tile] !== FILLED && hillLevel(edits[tile]) < HILL_MAX;
+  const wet = isWet(base, edits, tile);
+  // Earth piles up a storey at a time, on water too, which turns the river bed into a bank.
+  if (action === 'raise') return hillLevel(edits[tile]) < HILL_MAX && (!wet || riverKeepsFlowing(base, edits, tile));
   if (action === 'lower') return hillLevel(edits[tile]) > 0;
   if (hillLevel(edits[tile]) > 0) return false;
-  if (action === 'dig') return !base.water[tile] && edits[tile] !== DUG;
-  if (edits[tile] === DUG) return true;
-  if (!base.water[tile] || edits[tile] === FILLED) return false;
-  // Filling may eat into the bank, but keep at least two cells of river on either side of it.
-  let wet = 0;
-  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    for (let k = 1; k <= 2; k++) {
-      const nx = x + dx * k, nz = z + dz * k;
-      if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) break;
-      const n = nz * GRID + nx;
-      if (base.water[n] && edits[n] !== FILLED) wet++;
-    }
-  }
-  const bank = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => {
-    const nx = x + dx, nz = z + dz;
-    return nx >= 0 && nz >= 0 && nx < GRID && nz < GRID && (!base.water[nz * GRID + nx] || edits[nz * GRID + nx] === FILLED);
-  });
-  return bank && wet >= 4;
+  if (action === 'dig') return !wet;
+  return wet && riverKeepsFlowing(base, edits, tile);
 }

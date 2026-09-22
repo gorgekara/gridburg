@@ -562,9 +562,13 @@ test('a new map has a motorway, a crossing highway with a cloverleaf, and entrie
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
   assert.ok(!Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'None of it stands in the river');
-  // The crossing highway ends on the city side with its carriageways joined: one node, nothing beyond.
-  const h = highwayLayout(terrain), tip = net.nearestNode(h.pos(h.cross, HIGHWAY_END).x, h.pos(h.cross, HIGHWAY_END).z, 0.3);
-  assert.ok(tip && net.degree(tip.id) === 2 && net.segsAt(tip.id).every(q => q.kind === N.KIND_HIGHWAY2), 'The two-lane highway ends where the city begins');
+  // The crossing highway ends on the city side with its carriageways still apart: two dead ends, nothing beyond.
+  const h = highwayLayout(terrain);
+  for (const at of [h.x1, h.x2]) {
+    const tip = net.nearestNode(h.pos(at, HIGHWAY_END).x, h.pos(at, HIGHWAY_END).z, 0.3);
+    assert.ok(tip && net.degree(tip.id) === 1 && net.segsAt(tip.id)[0].kind === N.KIND_HIGHWAY2 && net.segsAt(tip.id)[0].oneway, 'Each two-lane carriageway ends on its own where the city begins');
+  }
+  assert.equal(net.nearestNode(h.pos(h.cross, HIGHWAY_END).x, h.pos(h.cross, HIGHWAY_END).z, 0.3), null, 'The carriageways do not merge');
   // Nothing of the map's own stands where the city's first streets go.
   const e = terrain.entry;
   assert.equal(net.nearestSeg(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 2), null, 'The ground in from the motorway is clear for the city');
@@ -1479,10 +1483,28 @@ test('districts, per-zone taxes, terraforming and scenarios survive a save', () 
   assert.equal(back.extras.terraform[dry], X.DUG);
   assert.equal(X.shapeTerrain(t, back.extras.terraform).water[dry], 1, 'Dug ground is water');
   assert.deepEqual(back.extras.scenario, { id: 'rustbelt', startTick: 5, done: undefined });
-  // A filled bank becomes land, and the river keeps its channel.
-  const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i]);
-  const allowed = wet.filter(i => X.terraformAllowed(t, new Uint8Array(C.N_TILES), i, 'fill'));
-  assert.ok(allowed.length > 0 && allowed.length < wet.length, 'Only the edges of the river may be filled');
+  // Any one river tile can be filled or built up, but the river can never be dammed: fill a whole
+  // cross-section but one tile and that last tile is refused, until a new channel is dug around it.
+  const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i] && i % C.GRID > 0 && i % C.GRID < C.GRID - 1 && i >= C.GRID && i < C.N_TILES - C.GRID);
+  const none = new Uint8Array(C.N_TILES);
+  assert.ok(wet.every(i => X.terraformAllowed(t, none, i, 'fill') && X.terraformAllowed(t, none, i, 'raise')), 'Any river tile may be filled or raised on its own');
+  const mid = t.river.filter(p => p.x > 10 && p.z > 10 && p.x < C.GRID - 10 && p.z < C.GRID - 10)[5];
+  const across = t.river[0].x === t.river[1].x ? 'x' : 'z';
+  const section = wet.filter(i => (across === 'x' ? Math.floor(i / C.GRID) : i % C.GRID) === Math.floor(across === 'x' ? mid.z : mid.x));
+  assert.ok(section.length >= 2, 'The river is more than one tile wide');
+  const dam = none.slice();
+  for (const i of section.slice(1)) dam[i] = X.FILLED;
+  assert.ok(!X.terraformAllowed(t, dam, section[0], 'fill') && !X.terraformAllowed(t, dam, section[0], 'raise'), 'The last tile across the river cannot be filled');
+  assert.equal(X.shapeTerrain(t, dam).water[section[1]], 0, 'Filled river tiles are land');
+  const bypass = dam.slice();
+  const side = across === 'x' ? Math.max(...section.map(i => i % C.GRID)) + 1 : Math.max(...section.map(i => Math.floor(i / C.GRID))) + 1;
+  for (let k = -3; k <= 3; k++) for (let w = -2; w < 2; w++) {
+    const i = across === 'x' ? (Math.floor(mid.z) + k) * C.GRID + side + w : (side + w) * C.GRID + Math.floor(mid.x) + k;
+    if (!t.water[i]) bypass[i] = X.DUG;
+  }
+  assert.ok(X.terraformAllowed(t, bypass, section[0], 'raise'), 'With a channel dug around it the old bed can be built up');
+  bypass[section[0]] = X.HILL_BASE + 1;
+  assert.equal(X.shapeTerrain(t, bypass).water[section[0]], 0, 'Raised river bed is land');
 });
 test('per-zone taxes, district policies and freight run in the simulation', () => {
   const city = demoCity(true);

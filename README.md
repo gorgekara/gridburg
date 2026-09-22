@@ -25,8 +25,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Rubbish.** Buildings put out rubbish every second. Recycling centres send garbage trucks to the fullest bins nearby; rubbish nobody collects lowers land value, and at its worst knocks buildings down a level.
 - **Deathcare and post.** Cemeteries, crematoria and post offices (Services, from Thriving town). Once the city is a City, new towers need 30% deathcare and post coverage.
 - **Power and water follow the roads.** Each connected road network shares only its own power plants, pumps and outlets, so a neighbourhood cut off from the grid goes dark.
-- **Districts.** Paint up to eight named districts (Districts menu) and give each its own policies: high-rise ban, quiet streets, green district, tourist quarter, tax break or neighbourhood watch. Local policies are billed per building.
-- **Land.** A paintbrush in three sizes (Land menu): dig out ponds and inlets, fill in the river bank to make building land, or raise the ground into hills and ridges a storey at a time (up to four) and lower it again. Forests climb raised ground; nothing can be built or driven on it. The river always keeps a channel at least two cells wide.
+- **Districts.** Paint up to eight named districts (Districts menu) with the same round brush as the land tools, in three sizes, and give each its own policies: high-rise ban, quiet streets, green district, tourist quarter, tax break or neighbourhood watch. Local policies are billed per building.
+- **Land.** A paintbrush in three sizes (Land menu): dig out ponds and inlets, fill in the river bank to make building land, or raise the ground into hills and ridges a storey at a time (up to four) and lower it again. Forests climb raised ground; nothing can be built or driven on it. Earth can be piled into the river too, so digging a new channel and raising the old bed moves the river; it can be narrowed or rerouted but never dammed.
 - **Disasters.** From Small town, the river occasionally floods the low ground beside it and tornadoes cross the valley, knocking buildings down a level or two. Flood barriers on the bank protect everything within seven cells. Switch disasters off in Settings.
 - **Map views.** Land value, well-being, noise, crime, rubbish, districts and flood risk, from the layers button.
 - **Statistics.** Charts of population, treasury, income, happiness, land value, visitors and demand since the city was loaded.
@@ -61,8 +61,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   roomier edge: two one-way carriageways side by side, traffic arriving from both ends. A **two-lane
   highway** comes in from that edge and passes under the motorway at a **full cloverleaf**, laid out
   like the real thing: four loops for the left turns and four wide arcs for the right turns. A little
-  way past the cloverleaf its two carriageways join and the highway ends: the city is built out from
-  that end. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
+  way past the cloverleaf the highway simply stops, each carriageway ending on its own: the city is
+  built out from those two ends, one for traffic arriving and one for traffic leaving. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
   the motorway from one end of the map to the other without ever turning off. The motorway and its interchanges cannot be bulldozed
   and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**

@@ -512,9 +512,10 @@ export function highwayLayout(terrain: Terrain): HighwayLayout {
 
 /**
  * A fresh map: a seeded river, a motorway running right across it just inside the roomier edge (one
- * carriageway each way), and a two-lane highway crossing the whole map, over the river and under the
- * motorway at a cloverleaf. Traffic from outside arrives on both highways from either end. The city
- * grows from whatever streets the player joins to the crossing highway.
+ * carriageway each way), and a two-lane highway coming in from that edge under the motorway at a
+ * cloverleaf, whose carriageways stop a little way past it. Traffic from outside arrives on the
+ * motorway from either end and on the highway. The city grows from the streets the player joins to
+ * the highway's two ends.
  */
 export function newCity(seed: number): SaveData {
   const terrain = generateTerrain(seed);
@@ -550,7 +551,7 @@ export const OUTER = 10.5;
 export const INNER = 12.5;
 /** How far in from the map edge the city's first streets begin, clear of the motorway. */
 export const DOOR = 16.5;
-/** Where the crossing highway's two carriageways come together and end, on the city side: the city starts here. */
+/** Where the crossing highway's two carriageways stop, side by side, on the city side: the city starts here. */
 export const HIGHWAY_END = 25.5;
 
 /**
@@ -582,12 +583,10 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
   // Drive on the right: the carriageway heading into the map sits to the right of the one heading out.
   const s = dot(right(inDir), alongDir) > 0 ? 1 : -1;
   const x1 = along + s, x2 = along - s;
-  // The crossing highway: straight in from the edge, then the two carriageways curve together and end.
-  const end = pos(along, HIGHWAY_END), bend = HIGHWAY_END - 3;
-  fix(net.insertPath([pos(x1, 0.5), pos(x1, bend)], KIND_HIGHWAY2, true));
-  fix(net.insertPath([pos(x1, bend), pos(x1, bend + 1.8), end], KIND_HIGHWAY2, true));
-  fix(net.insertPath([end, pos(x2, bend + 1.8), pos(x2, bend)], KIND_HIGHWAY2, true));
-  fix(net.insertPath([pos(x2, bend), pos(x2, 0.5)], KIND_HIGHWAY2, true));
+  // The crossing highway: straight in from the edge, and each carriageway simply stops on the city
+  // side, side by side, for the player to carry on from.
+  fix(net.insertPath([pos(x1, 0.5), pos(x1, HIGHWAY_END)], KIND_HIGHWAY2, true));
+  fix(net.insertPath([pos(x2, HIGHWAY_END), pos(x2, 0.5)], KIND_HIGHWAY2, true));
   for (const at of [x1, x2]) { const n = net.nearestNode(pos(at, 0.5).x, pos(at, 0.5).z, 0.3); if (n) n.entry = true; }
   // Every carriageway with its direction, and the crossing point with each carriageway of the other road.
   type Way = { at: number; u: { x: number; z: number }; main: boolean };

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GRID, N_TILES } from '../constants';
-import { DUG, FILLED } from '../extras';
+import { DUG, FILLED, hillLevel } from '../extras';
 import { MeshBuilder } from './meshBuilder';
 
 const POND = 0x3f8fa6;
@@ -22,7 +22,8 @@ export class TerraformLayer {
     this.group.add(this.mesh, this.water);
   }
 
-  rebuild(edits: Uint8Array): void {
+  /** `river` is the water as generated: raised ground standing in it needs a bank drawn under the hill. */
+  rebuild(edits: Uint8Array, river?: Uint8Array): void {
     let signature = '';
     for (let i = 0; i < N_TILES; i++) if (edits[i]) signature += `${i}:${edits[i]},`;
     if (signature === this.signature) return;
@@ -41,7 +42,7 @@ export class TerraformLayer {
         const u = edited(x, z - 1, DUG) ? 0.5 : 0.4, d = edited(x, z + 1, DUG) ? 0.5 : 0.4;
         const cx = x - half + 0.5 + (r - l) / 2, cz = z - half + 0.5 + (d - u) / 2;
         water.ribbon([cx, cz - (u + d) / 2, cx, cz + (u + d) / 2], 2, (l + r) / 2, 0.012, POND);
-      } else if (edits[i] === FILLED) {
+      } else if (edits[i] === FILLED || (hillLevel(edits[i]) > 0 && river?.[i])) {
         quad(ground, x, z, 1.04, 0.019, FILL);
       }
     }

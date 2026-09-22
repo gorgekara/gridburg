@@ -118,16 +118,16 @@ const CATEGORIES: Category[] = [
     id: 'land', label: 'Land',
     tools: [
       { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Paint over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
-      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint along the river bank to fill it in as buildable land. The river always keeps a channel at least two cells wide. Filling a dug pond restores the ground' },
-      { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)} / cell`, note: 'Hills and ridges', hint: 'Paint to pile earth up, a storey at a time up to four. Go over the same ground again to build it higher. Nothing can be built or driven on raised ground, but forests climb it' },
+      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint over the river to fill it in as buildable land. The river can be narrowed or, once a new channel is dug for it, moved altogether, but never dammed. Filling a dug pond restores the ground' },
+      { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)} / cell`, note: 'Hills and ridges', hint: 'Paint to pile earth up, a storey at a time up to four, on land or in the river. Go over the same ground again to build it higher. Nothing can be built or driven on raised ground, but forests climb it' },
       { id: 'lower', label: 'Lower ground', price: `${money(COST_LOWER)} / cell`, note: 'Take a hill down', hint: 'Paint over raised ground to take it down a storey at a time' },
     ],
   },
   {
     id: 'districts', label: 'Districts',
     tools: [
-      { id: 'district', label: 'Paint district', price: 'Free', note: 'Local policies', hint: 'Drag to paint cells into the district chosen in the district panel. Each district can have its own policies, such as a high-rise ban or a tax break' },
-      { id: 'undistrict', label: 'Erase district', price: 'Free', note: 'Back to citywide', hint: 'Drag to take cells out of any district' },
+      { id: 'district', label: 'Paint district', price: 'Free', note: 'Local policies', hint: 'Brush cells into the district chosen in the district panel; pick a brush size beside the cards. Each district can have its own policies, such as a high-rise ban or a tax break' },
+      { id: 'undistrict', label: 'Erase district', price: 'Free', note: 'Back to citywide', hint: 'Brush cells out of any district' },
     ],
   },
   {
@@ -227,7 +227,7 @@ export class Hud {
   private catBtns = new Map<string, HTMLButtonElement>();
   private modeBtns = new Map<string, HTMLButtonElement>();
   private heightBtns = new Map<number, HTMLButtonElement>();
-  private brushBtns = new Map<number, HTMLButtonElement>();
+  private brushBtns: [number, HTMLButtonElement][] = [];
   private elevation = 0;
   private panels = new Map<string, HTMLElement>();
   private panel = el('div', 'panel');
@@ -618,7 +618,7 @@ export class Hud {
         }
         side.append(seg);
       }
-      if (c.id === 'land') {
+      if (c.id === 'land' || c.id === 'districts') {
         const brush = el('div', 'modes');
         brush.append(el('span', 'mlabel', 'Brush'));
         for (const [size, label, ic] of [[0, 'Small brush · one cell', 'brush1'], [1, 'Medium brush · about nine cells', 'brush2'], [2, 'Large brush · about twenty-five cells', 'brush3']] as [number, string, string][]) {
@@ -627,11 +627,10 @@ export class Hud {
           b.title = label;
           b.setAttribute('aria-label', label);
           b.addEventListener('click', () => { actions.setBrush(size); this.setBrush(size); });
-          this.brushBtns.set(size, b);
+          this.brushBtns.push([size, b]);
           brush.append(b);
         }
         side.append(brush);
-        this.setBrush(1);
       }
       if (side.childElementCount) body.append(side);
       for (const t of c.tools) {
@@ -649,6 +648,7 @@ export class Hud {
       this.panels.set(c.id, body);
       this.panel.append(body);
     }
+    this.setBrush(1);
     const cats = el('div', 'cats');
     for (const c of CATEGORIES) {
       const b = el('button', `cat ${c.id}`);

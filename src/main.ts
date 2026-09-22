@@ -414,7 +414,7 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform); hills.rebuild(game.extras.terraform); landscape.develop(game.kind, game.raster, game.net); };
+const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform, game.baseTerrain.water); hills.rebuild(game.extras.terraform); landscape.develop(game.kind, game.raster, game.net); };
 game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
 game.onUndo = () => { reshape(); };
 game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
