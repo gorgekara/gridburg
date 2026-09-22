@@ -24,7 +24,7 @@ const extrasLength = (city) => {
   const json = { ...X.extrasToJson(city.extras ?? X.defaultExtras(city.tax)), ...(segHi.length ? { segHi } : {}) };
   return 4 + new TextEncoder().encode(JSON.stringify(json)).length;
 };
-const { newCity, DOOR } = await import('../src/game.ts');
+const { newCity, DOOR, HIGHWAY_END, highwayLayout } = await import('../src/game.ts');
 const N = await import('../src/roads/network.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
@@ -536,7 +536,7 @@ test('metro stations form their own underground lines with metro capacity and ca
 test('a new map has a motorway, a crossing highway with a cloverleaf, and entries past the edge', () => {
   const city = newCity(7), net = Network.fromPlain(city.net), terrain = generateTerrain(7);
   const entries = [...net.nodes.values()].filter(n => n.entry);
-  assert.equal(entries.length, 8, 'Both carriageways of both highways come in from both ends of the map');
+  assert.equal(entries.length, 6, 'The motorway comes in from both ends of the map, the crossing highway from the outside');
   for (const entry of entries) {
     const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
     assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
@@ -555,19 +555,16 @@ test('a new map has a motorway, a crossing highway with a cloverleaf, and entrie
   }
   const kinds = [...net.segs.values()];
   assert.equal(kinds.filter(s => s.kind === N.KIND_MOTORWAY && s.structure === 1).length, 2, 'The motorway bridges the crossing highway at the cloverleaf');
-  assert.equal(kinds.filter(s => s.kind === N.KIND_HIGHWAY2 && s.structure === 1).length, 2, 'and the crossing highway bridges the river');
-  // Cloverleaf: four direct slip roads and four five-piece loops.
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 4 + 4 * 5, 'a cloverleaf');
+  // Cloverleaf: four four-piece arcs and four loops of five or six pieces.
+  const rampPieces = kinds.filter(s => s.kind === N.KIND_RAMP).length;
+  assert.ok(rampPieces >= 36 && rampPieces <= 44, `a cloverleaf (${rampPieces} ramp pieces)`);
   assert.ok(kinds.filter(s => s.kind === N.KIND_RAMP).every(s => !s.structure && s.oneway), 'Slip roads stay on the ground and run one way');
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
-  // Only the crossing highway's bridge is over the river; nothing at ground level is.
-  const surface = new Network(); surface.nextId = net.nextId;
-  for (const n of net.nodes.values()) surface.nodes.set(n.id, { ...n });
-  for (const q of net.segs.values()) if (!q.structure) surface.segs.set(q.id, q);
-  const ground = rasterize(surface);
-  assert.ok(!Array.from(ground.cover).some((v, i) => v && terrain.water[i]), 'Nothing at ground level stands in the river');
-  assert.ok(Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'The crossing highway bridges the river');
+  assert.ok(!Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'None of it stands in the river');
+  // The crossing highway ends on the city side with its carriageways joined: one node, nothing beyond.
+  const h = highwayLayout(terrain), tip = net.nearestNode(h.pos(h.cross, HIGHWAY_END).x, h.pos(h.cross, HIGHWAY_END).z, 0.3);
+  assert.ok(tip && net.degree(tip.id) === 2 && net.segsAt(tip.id).every(q => q.kind === N.KIND_HIGHWAY2), 'The two-lane highway ends where the city begins');
   // Nothing of the map's own stands where the city's first streets go.
   const e = terrain.entry;
   assert.equal(net.nearestSeg(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 2), null, 'The ground in from the motorway is clear for the city');
@@ -575,7 +572,7 @@ test('a new map has a motorway, a crossing highway with a cloverleaf, and entrie
   for (const seed of [1, 2, 3, 4, 5, 6, 8, 12, 99, 424242]) {
     const other = Network.fromPlain(newCity(seed).net);
     const ramps = [...other.segs.values()].filter(q => q.kind === N.KIND_RAMP);
-    assert.equal(ramps.length, 24, `Seed ${seed}: a cloverleaf (got ${ramps.length} ramp pieces)`);
+    assert.ok(ramps.length >= 36 && ramps.length <= 44, `Seed ${seed}: a cloverleaf (got ${ramps.length} ramp pieces)`);
     for (const q of ramps) assert.ok(other.degree(q.a) <= 3 && other.degree(q.b) <= 3, `Seed ${seed}: a slip road meets nothing but its carriageway, its road and its own next piece`);
     // No ramp crosses another: pieces that share no node keep clear of each other.
     for (const a of ramps) for (const b of ramps) {
@@ -588,7 +585,7 @@ test('a new map has a motorway, a crossing highway with a cloverleaf, and entrie
   assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');
   assert.deepEqual(net.toPlain().segs.length, before.segs.length);
   const restored = Network.fromPlain(decode(encode(city)).net);
-  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 8, 'Off-map entries survive a save');
+  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 6, 'Off-map entries survive a save');
   assert.equal([...restored.segs.values()].filter(s => s.kind === N.KIND_MOTORWAY).length, kinds.filter(s => s.kind === N.KIND_MOTORWAY).length, 'So do the carriageways');
 });
 test('external traffic drives in from off the map without stalling the entrance', () => {
@@ -957,7 +954,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   }
   assert.ok(planned);
   const had = [...net.nodes.values()].filter(n => n.entry).length;
-  assert.equal(had, 8, 'Original network is unchanged');
+  assert.equal(had, 6, 'Original network is unchanged');
   assert.equal([...planned.nodes.values()].filter(n => n.entry).length, had + 1);
   assert.equal(typeof entrancePlan(net, terrain, city.kind, 40, 40), 'string');
   // The entrance itself is expressway, which carries no frontage, so a street picks the traffic up.
@@ -975,7 +972,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   const tile = Array.from(r.accSeg).findIndex((id, i) => served.has(id) && !r.cover[i] && !terrain.water[i] && !terrain.shore[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
-  assert.equal(latest().stats.entries, 5, 'Each highway counts as one gate at each end, plus the new entrance');
+  assert.equal(latest().stats.entries, 4, 'The motorway counts one gate at each end, the crossing highway one, plus the new entrance');
   assert.equal(latest().flags[tile] & C.F_NO_ROAD, 0);
 });
 test('offices provide clean jobs, obey unlocks and explain education requirements', () => {

@@ -499,7 +499,8 @@ export function highwayLayout(terrain: Terrain): HighwayLayout {
     ? { x: e.x + e.dx * inward, z: along }
     : { x: along, z: e.z + e.dz * inward };
   const front = e.dx ? e.z : e.x;
-  const cross = [30, 26].flatMap(gap => [front + gap, front - gap]).find(at => at > 13 && at < GRID - 13);
+  // The cloverleaf's arcs reach 13.5 cells each way along the motorway; keep them well inside the map.
+  const cross = [30, 26, 22].flatMap(gap => [front + gap, front - gap]).find(at => at > 15.5 && at < GRID - 15.5);
   // Drive on the right: the inner carriageway runs the way that puts the city on its right-hand side.
   const alongX = e.dx === 0, ax = alongX ? 1 : 0, az = alongX ? 0 : 1;
   const d = (-az * e.dx + ax * e.dz) > 0 ? 1 : -1;
@@ -535,7 +536,7 @@ export function newCity(seed: number): SaveData {
   };
   if (d > 0) { carriageway(0.5, GRID - 0.5, INNER); carriageway(GRID - 0.5, 0.5, OUTER); }
   else { carriageway(GRID - 0.5, 0.5, INNER); carriageway(0.5, GRID - 0.5, OUTER); }
-  if (second !== undefined) cloverleaf(net, pos, second, d, e, terrain);
+  if (second !== undefined) cloverleaf(net, pos, second, d, e);
   for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
   return {
@@ -549,27 +550,30 @@ export const OUTER = 10.5;
 export const INNER = 12.5;
 /** How far in from the map edge the city's first streets begin, clear of the motorway. */
 export const DOOR = 16.5;
+/** Where the crossing highway's two carriageways come together and end, on the city side: the city starts here. */
+export const HIGHWAY_END = 25.5;
 
 /**
  * The cloverleaf's loops: long along the motorway, short across it, because the outside quadrants
  * only reach a few cells to the map edge. The motorway's bridge over the crossing highway spans the
  * loops' attachment points, and the direct slip roads leave and rejoin further out still.
  */
-const CLOVER_ALONG = 4.5;
-const CLOVER_ACROSS = 2.6;
+const CLOVER_ALONG = 4.0;
+const CLOVER_ACROSS = 3.0;
 const CLOVER_SPAN = CLOVER_ALONG - 1; // half the motorway bridge: the loops attach at its ends
-/** How far out the direct slip roads leave and rejoin: past the loop's whole extent along each road. */
-const CLOVER_DIRECT_ALONG = 11;
+/** The direct slip roads are quarter arcs about the crossing, wide enough to clear the loops. */
+const CLOVER_DIRECT_ALONG = 12.5;
 const CLOVER_DIRECT_ACROSS = 8.5;
 
 /**
- * A full cloverleaf where a two-lane highway crosses under the motorway: the crossing highway runs
- * the whole way across the map (over the river on a bridge), and every turn is served by a ramp.
- * Right turns take a direct slip road that leaves before the crossing and sweeps round outside the
- * loop; left turns take a loop that leaves after the crossing and turns through 270° to join the
+ * A full cloverleaf where a two-lane highway crosses under the motorway. The crossing highway comes
+ * in from the map edge, passes the motorway, and ends a little way into the city side with its two
+ * carriageways joined: the city is built out from that end. Every turn is served by a ramp: right
+ * turns take a direct slip road, a wide arc about the crossing that leaves before it and rejoins
+ * after; left turns take a loop that leaves after the crossing and turns through 270° to join the
  * other road before it.
  */
-function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number, d: number, e: Terrain['entry'], terrain: Terrain): void {
+function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number, d: number, e: Terrain['entry']): void {
   const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
   // World directions: +inward, +along, and the right-hand side of each (right of travel is (-tz, tx)).
   const inDir = { x: e.dx, z: e.dz }, alongDir = e.dx ? { x: 0, z: 1 } : { x: 1, z: 0 };
@@ -578,27 +582,13 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
   // Drive on the right: the carriageway heading into the map sits to the right of the one heading out.
   const s = dot(right(inDir), alongDir) > 0 ? 1 : -1;
   const x1 = along + s, x2 = along - s;
-  // The crossing highway: surface all the way, except a bridge over the river.
-  const wet: number[] = [];
-  for (let inward = DOOR; inward < GRID - 0.5; inward += 0.5) for (const off of [-1.2, 0, 1.2]) {
-    const q = pos(along + off, inward), tx = Math.floor(q.x), tz = Math.floor(q.z);
-    if (tx >= 0 && tz >= 0 && tx < GRID && tz < GRID && (terrain.water[tz * GRID + tx] || terrain.shore[tz * GRID + tx])) wet.push(inward);
-  }
-  const river: [number, number] | null = wet.length ? [Math.min(...wet) - 2.5, Math.max(...wet) + 2.5] : null;
-  if (river && river[1] - river[0] < 8) { const mid = (river[0] + river[1]) / 2; river[0] = mid - 4; river[1] = mid + 4; }
-  const carriageway = (at: number, into: boolean): void => {
-    const stops = [0.5, ...(river ? [river[0], river[1]] : []), GRID - 0.5].filter(v => v > 0.4 && v < GRID - 0.4);
-    const pieces: { from: number; to: number; structure: 0 | 1 }[] = [];
-    for (let k = 0; k + 1 < stops.length; k++) pieces.push({ from: stops[k], to: stops[k + 1], structure: river && stops[k] === river[0] ? 1 : 0 });
-    if (!into) pieces.reverse();
-    for (const piece of pieces) {
-      const from = into ? piece.from : piece.to, to = into ? piece.to : piece.from;
-      fix(net.insertPath([pos(at, from), pos(at, to)], KIND_HIGHWAY2, true, piece.structure));
-    }
-    for (const inward of [0.5, GRID - 0.5]) { const n = net.nearestNode(pos(at, inward).x, pos(at, inward).z, 0.3); if (n) n.entry = true; }
-  };
-  carriageway(x1, true);
-  carriageway(x2, false);
+  // The crossing highway: straight in from the edge, then the two carriageways curve together and end.
+  const end = pos(along, HIGHWAY_END), bend = HIGHWAY_END - 3;
+  fix(net.insertPath([pos(x1, 0.5), pos(x1, bend)], KIND_HIGHWAY2, true));
+  fix(net.insertPath([pos(x1, bend), pos(x1, bend + 1.8), end], KIND_HIGHWAY2, true));
+  fix(net.insertPath([end, pos(x2, bend + 1.8), pos(x2, bend)], KIND_HIGHWAY2, true));
+  fix(net.insertPath([pos(x2, bend), pos(x2, 0.5)], KIND_HIGHWAY2, true));
+  for (const at of [x1, x2]) { const n = net.nearestNode(pos(at, 0.5).x, pos(at, 0.5).z, 0.3); if (n) n.entry = true; }
   // Every carriageway with its direction, and the crossing point with each carriageway of the other road.
   type Way = { at: number; u: { x: number; z: number }; main: boolean };
   const mains: Way[] = [{ at: INNER, u: { x: alongDir.x * d, z: alongDir.z * d }, main: true }, { at: OUTER, u: { x: -alongDir.x * d, z: -alongDir.z * d }, main: true }];
@@ -609,11 +599,16 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
     // How far the loop reaches along each road: long along the motorway, short across it.
     const reachA = A.main ? CLOVER_ALONG : CLOVER_ACROSS, reachB = B.main ? CLOVER_ALONG : CLOVER_ACROSS;
     if (dot(B.u, rA) > 0) {
-      // Right turn: a direct slip road from before the crossing to after it, swung out round the loop
-      // that shares its quadrant, so the two never touch.
+      // Right turn: a quarter arc about the crossing from before it on A to after it on B, wide
+      // enough to clear the loop that shares its quadrant.
       const La = A.main ? CLOVER_DIRECT_ALONG : CLOVER_DIRECT_ACROSS, Lb = B.main ? CLOVER_DIRECT_ALONG : CLOVER_DIRECT_ACROSS;
-      const bend = world(world(P, A.u, -La), B.u, Lb);
-      fix(net.insertPath([world(P, A.u, -La), bend, world(P, B.u, Lb)], KIND_RAMP, true));
+      const pts = [world(P, A.u, -La)], k = 1 / Math.cos(Math.PI / 16);
+      for (let n = 0; n < 4; n++) {
+        const theta = (Math.PI / 16) * (2 * n + 1);
+        pts.push(world(world(P, A.u, -La * k * Math.cos(theta)), B.u, Lb * k * Math.sin(theta)));
+      }
+      pts.push(world(P, B.u, Lb));
+      fix(net.insertPath(pts, KIND_RAMP, true));
     } else {
       // Left turn: a loop leaving after the crossing, turning right through 270° to join B before it.
       const start = world(P, A.u, reachA), centre = world(start, rA, reachB), end = world(P, B.u, -reachB);

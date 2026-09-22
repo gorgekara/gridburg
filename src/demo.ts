@@ -1,10 +1,10 @@
 import { T_CEMETERY, T_POST_OFFICE } from './constants';
 import { defaultExtras } from './extras';
-import { DOOR, highwayLayout } from './game';
+import { DOOR, HIGHWAY_END, highwayLayout } from './game';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
 import { footprint, siteOwners } from './sites';
 import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
-import { Network, KIND_AVENUE, KIND_ROAD, KIND_RAMP, ROUNDABOUT_RADIUS } from './roads/network';
+import { Network, KIND_AVENUE, KIND_ROAD, ROUNDABOUT_RADIUS } from './roads/network';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import { newCity } from './game';
@@ -32,22 +32,13 @@ export function demoCity(expanded = false): SaveData {
     x: Math.max(1.5, Math.min(GRID - 1.5, p.x)), z: Math.max(1.5, Math.min(GRID - 1.5, p.z)),
   });
 
-  // The way in: a slip road off the crossing highway and one back onto it, both right-hand turns off
-  // whichever carriageway has the city on its right, meeting a street that runs into the grid.
+  // The way in: a street from the end of the crossing highway to the nearest edge of the grid.
   const layout = highwayLayout(terrain);
   if (layout.cross !== undefined) {
     const k = e.dx || -e.dz; // `side` runs along the motorway: side = (along - front) / k
-    const sideOf = (along: number): number => (along - layout.front) / k;
-    const towards = Math.sign(sideOf(layout.cross)); // which side of the grid the highway crosses
-    // The right-hand side of the inbound carriageway, in world terms, against the way to the grid.
-    const alongDir = e.dx ? { x: 0, z: 1 } : { x: 1, z: 0 }, rightOfIn = { x: -e.dz, z: e.dx };
-    const inboundFacesGrid = (rightOfIn.x * alongDir.x + rightOfIn.z * alongDir.z) * (-towards * k) > 0;
-    const lane = inboundFacesGrid ? layout.x1 : layout.x2;
-    const junction = P(22, sideOf(lane) - towards * 3.5);
-    const [far, near] = inboundFacesGrid ? [30, 14] : [14, 30]; // traffic arrives from `near`, leaves towards `far`
-    net.insertPath([P(near, sideOf(lane)), P(near + (far - near) * 0.35, sideOf(lane) - towards * 0.4), junction], KIND_RAMP, true);
-    net.insertPath([junction, P(far - (far - near) * 0.35, sideOf(lane) - towards * 0.4), P(far, sideOf(lane))], KIND_RAMP, true);
-    net.insertPath([junction, P(22, towards > 0 ? 12 : -20)], KIND_ROAD);
+    const sideCross = (layout.cross - layout.front) / k;
+    const highwayEnd = P(HIGHWAY_END - 0.5 - shift, sideCross);
+    net.insertPath([highwayEnd, P(16, sideCross > 0 ? 12 : -20)], KIND_AVENUE);
   }
 
   // Streets.
@@ -255,12 +246,10 @@ export function demoCity(expanded = false): SaveData {
         kind[i] = k; return;
       }
     };
-    // One station within reach of a motorway gate, so it runs intercity trains, and one downtown.
-    const front = e.dx ? e.z : e.x;
-    const gates = [0.5, GRID - 0.5].map(along => (e.dx ? { x: e.x + e.dx * 4, z: along } : { x: along, z: e.z + e.dz * 4 }));
-    const nearGate = [front - 0.5, 0.5 - front, front - GRID + 0.5, GRID - 0.5 - front]
-      .map(side => clampP(P(11, side + (side > 0 ? -9 : 9))))
-      .find(q => gates.some(gt => Math.hypot(gt.x - q.x, gt.z - q.z) < 22)) ?? P(14, -10);
+    // One station within reach of the crossing highway's gate, so it runs intercity trains, and one downtown.
+    const k = e.dx || -e.dz;
+    const sideCross = layout.cross !== undefined ? (layout.cross - layout.front) / k : -20;
+    const nearGate = clampP(P(11, sideCross + (sideCross > 0 ? -5 : 5)));
     placeLarge(nearGate, T_STATION); placeLarge(P(36, 10), T_STATION);
     place(P(17, 2), T_SUBWAY, any); place(P(29, -2), T_SUBWAY, any); place(P(24, -14), T_SUBWAY, any);
     placeLarge(P(48, 14), T_AIRPORT);

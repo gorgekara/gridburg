@@ -1,5 +1,5 @@
 import { GRID } from '../constants';
-import { Network, KIND_HIGHWAY } from './network';
+import { Network, KIND_HIGHWAY, KIND_RAMP } from './network';
 import type { Terrain } from '../terrain';
 import { rasterize } from './raster';
 import { siteOwners } from '../sites';
@@ -34,7 +34,8 @@ export function ensureApproaches(net: Network): void {
     node.fixed = true;
     // The approach carries on whatever reaches the edge: a two-way expressway, or one carriageway
     // of a motorway running the way its traffic does.
-    const seg = net.segsAt(node.id)[0];
+    // The road that reaches the edge, not a slip road that happens to end at the same node.
+    const arms = net.segsAt(node.id), seg = arms.find(s => s.kind !== KIND_RAMP) ?? arms[0];
     const kind = seg?.kind ?? KIND_HIGHWAY, oneway = !!seg?.oneway;
     const arriving = !!seg && seg.b === node.id;
     if (oneway && arriving) net.addSeg(node.id, outer.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, kind, true, true);

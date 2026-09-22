@@ -1,4 +1,4 @@
-import { Network, HALF_WIDTH, KIND_HIGHWAY } from './network';
+import { Network, HALF_WIDTH, KIND_HIGHWAY, isMotorway } from './network';
 import type { RSeg } from './network';
 import type { Raster } from './raster';
 import { GRID, SERVICES, T_STATION } from '../constants';
@@ -56,7 +56,8 @@ function corridor(net: Network, raster: Raster, a: number, b: number): { pts: Co
     if (node < 0) break;
     done.add(node);
     for (const seg of net.segsAt(node)) {
-      if (seg.structure || seg.id === start.id || seg.id === end.id) continue;
+      // Tracks follow streets and avenues; they never run down the middle of a highway.
+      if (seg.structure || isMotorway(seg.kind) || seg.id === start.id || seg.id === end.id) continue;
       const other = seg.a === node ? seg.b : seg.a, d = best + seg.len;
       if (d < (dist.get(other) ?? Infinity)) { dist.set(other, d); prev.set(other, { node, seg: seg.id }); }
     }
@@ -177,37 +178,62 @@ export function railTrack(net: Network, raster: Raster, a: number, b: number, st
 }
 
 /**
- * The track for a line that leaves town: the corridor from its station to the nearest city entrance,
- * then straight on past the map edge, alongside the highway that arrives there.
+ * The track for a line that leaves town: the corridor from its station to the streets nearest a city
+ * entrance, then straight on past the map edge, alongside the highway that arrives there. An entrance
+ * whose run would cut across an interchange's ramps or another carriageway is passed over for the
+ * next nearest; only when every entrance is like that does the nearest one get the line anyway.
  */
 export function intercityTrack(net: Network, raster: Raster, station: number, step = 0.25): TrackPoint[] {
-  const gates = [...net.nodes.values()].filter(n => n.entry).map(entryGate);
-  if (!gates.length) return [];
   const sx = station % GRID, sz = Math.floor(station / GRID);
-  const gate = gates.reduce((best, g) => Math.hypot(g.x - sx, g.z - sz) < Math.hypot(best.x - sx, best.z - sz) ? g : best);
-  // Aim at the road tile just inside the gate, which the entrance's own avenue always serves.
+  const gates = [...net.nodes.values()].filter(n => n.entry).map(entryGate)
+    .sort((a, b) => Math.hypot(a.x - sx, a.z - sz) - Math.hypot(b.x - sx, b.z - sz));
+  let fallback: TrackPoint[] = [];
+  for (const gate of gates) {
+    const track = trackToGate(net, raster, station, gate, step);
+    if (!track) continue;
+    if (track.clean) return track.points;
+    if (!fallback.length) fallback = track.points;
+  }
+  return fallback;
+}
+
+function trackToGate(net: Network, raster: Raster, station: number, gate: { x: number; z: number; dx: number; dz: number }, step: number): { points: TrackPoint[]; clean: boolean } | null {
+  // Aim at the nearest tile the streets serve: the track can only follow roads that far.
   let target = -1, bestDistance = Infinity;
   for (let i = 0; i < GRID * GRID; i++) {
     if (raster.accSeg[i] < 0) continue;
     const d = Math.hypot(i % GRID + 0.5 - gate.x, Math.floor(i / GRID) + 0.5 - gate.z);
     if (d < bestDistance) { bestDistance = d; target = i; }
   }
-  if (target < 0) return [];
+  if (target < 0) return null;
   const track = railTrack(net, raster, station, target, step);
-  if (track.length < 2) return [];
-  // Carry on off the map, alongside the entrance road rather than over it: the track swings out to
-  // the side of the corridor over the first few cells, then runs straight past the edge.
+  if (track.length < 2) return null;
+  // Carry on off the map beside the entrance road, on the side the streets are: the track swings
+  // over to a line clear of the road's shoulder, then runs straight past the edge.
   const last = track.at(-1)!;
-  const clear = HALF_WIDTH[KIND_HIGHWAY] + 0.9; // outside the expressway's shoulder
-  const side = -gate.dz, sideZ = gate.dx; // left of the direction of travel out of town
-  const run = APPROACH + 6;
+  const nx = -gate.dz, nz = gate.dx;
+  const entrance = net.nearestSeg(gate.x + gate.dx * 0.5, gate.z + gate.dz * 0.5, 2);
+  const shoulder = HALF_WIDTH[entrance?.seg.kind ?? KIND_HIGHWAY] + 1.9;
+  const lateral = (last.x - gate.x) * nx + (last.z - gate.z) * nz;
+  const line = (lateral < 0 ? -1 : 1) * shoulder;
+  const toGate = (last.x - gate.x) * gate.dx + (last.z - gate.z) * gate.dz;
+  const swing = Math.max(3, 1.5 * Math.abs(line - lateral));
+  const run = toGate + APPROACH + 6;
+  const first = track.length;
+  let clean = true;
   for (let d = step; d <= run; d += step) {
-    const out = Math.min(1, d / 3) * clear;
-    track.push({
-      x: last.x - gate.dx * d + side * out,
-      z: last.z - gate.dz * d + sideZ * out,
-      tx: -gate.dx, tz: -gate.dz, hw: last.hw, s: last.s + d,
-    });
+    const u = Math.min(1, d / swing), side = lateral + (line - lateral) * u * u * (3 - 2 * u);
+    const x = gate.x + gate.dx * (toGate - d) + nx * side, z = gate.z + gate.dz * (toGate - d) + nz * side;
+    track.push({ x, z, tx: -gate.dx, tz: -gate.dz, hw: last.hw, s: last.s + d });
+    // Inside the map the run must stay off every highway, ramp and carriageway but the one it follows.
+    if (clean && d <= toGate) for (const seg of net.segs.values()) {
+      if (!isMotorway(seg.kind) || seg.id === entrance?.seg.id) continue;
+      if (Network.nearestOn(seg, x, z).dist < HALF_WIDTH[seg.kind] + 0.6) { clean = false; break; }
+    }
   }
-  return track;
+  for (let i = first; i < track.length; i++) {
+    const p = track[Math.max(0, i - 1)], q = track[Math.min(track.length - 1, i + 1)], l = Math.hypot(q.x - p.x, q.z - p.z) || 1;
+    track[i].tx = (q.x - p.x) / l; track[i].tz = (q.z - p.z) / l;
+  }
+  return { points: track, clean };
 }

@@ -19,7 +19,7 @@ import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
 import './style.css';
-import { Game, newCity, randomSeed, highwayLayout, DOOR } from './game';
+import { Game, newCity, randomSeed, highwayLayout, HIGHWAY_END } from './game';
 import { createScene } from './render/scene';
 import { RoadLayer } from './render/roads';
 import { RiverLayer } from './render/river';
@@ -127,7 +127,7 @@ const hud = new Hud(uiRoot, {
         return null;
       }
       if (id === 'declining') { const t = game.neglect.findIndex(v => v > 0); return t >= 0 ? tileCentre(t) : null; }
-      if (id === 'start') { const h = highwayLayout(game.terrain); return h.pos(h.cross ?? h.front, DOOR + 3); }
+      if (id === 'start') { const h = highwayLayout(game.terrain); return h.pos(h.cross ?? h.front, HIGHWAY_END + 1); }
       if (id === 'pollution') {
         let worst = -1, peak = 0;
         for (let i = 0; i < game.pollution.length; i++) if (game.pollution[i] > peak) { peak = game.pollution[i]; worst = i; }
@@ -148,7 +148,7 @@ const hud = new Hud(uiRoot, {
     game.load(newCity(randomSeed()));
     focusCity(false);
     hud.setTax(10);
-    hud.toast('New map. Draw a street that joins the two-lane highway.');
+    hud.toast('New map. Build out from the end of the two-lane highway.');
   },
   demoCity: () => {
     history.replaceState(null, '', location.pathname);
