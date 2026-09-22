@@ -44,6 +44,7 @@ import { TerraformLayer } from './render/terraform';
 import { HillLayer } from './render/hills';
 import { hillLevel } from './extras';
 import { DisasterLayer } from './render/disasters';
+import { FloodLayer } from './render/flood';
 import { DistrictLabels } from './render/districts';
 import { CyclistLayer } from './render/cyclists';
 import { CityPanels } from './ui/cityPanels';
@@ -89,12 +90,13 @@ const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
 landscape.hillHeight = (x, z) => hills.heightAt(x, z);
 const disasterLayer = new DisasterLayer();
+const flood = new FloodLayer();
 const districtLabels = new DistrictLabels();
 const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.mesh, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -465,6 +467,7 @@ game.onFrame = () => {
   if (showTraffic) roads.tint(game.segOrder, game.segCong);
   roads.updateLights(game.simTime);
 };
+game.onWater = () => { flood.rebuild(game.waterSurface, game.baseTerrain.water); };
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
@@ -617,6 +620,7 @@ renderer.setAnimationLoop((now: number) => {
   pedestrians.update(dt, now / 1000);
   cyclists.update(dt);
   disasterLayer.update(now / 1000);
+  flood.update(now / 1000);
   audio.update({
     traffic: game.stats.cars, height: camera.position.y, night: light.night,
     emergencies: game.stats.incidents.fireEngines + (game.stats.incidents.fires + game.stats.incidents.heists ? game.stats.incidents.patrols : 0),

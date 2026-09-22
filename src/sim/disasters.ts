@@ -1,9 +1,10 @@
 import { GRID, N_TILES, SERVICES, FLOOD_BARRIER_RADIUS, isZone } from '../constants';
 
 /**
- * Natural disasters: the river bursting its banks, and tornadoes crossing the valley. They are rare,
- * start only once the settlement is a small town, can be switched off per city, and do their damage
- * by knocking buildings down a level or two, which the city then rebuilds through normal growth.
+ * Natural disasters: storms upstream that swell the river until it bursts its banks, and tornadoes
+ * crossing the valley. They are rare, start only once the settlement is a small town, and can be
+ * switched off per city. A tornado knocks buildings down a level or two as it passes; a flood sends
+ * a surge down the river, and the water itself does the damage wherever it climbs onto the land.
  */
 
 export type DisasterKind = 'flood' | 'tornado';
@@ -34,9 +35,13 @@ export interface DisasterContext {
   /** Knock a building down by some levels. */
   damage: (tile: number, levels: number) => void;
   notice: (message: string) => void;
+  /** Set how much water is coming down the river, as a multiple of the usual flow. */
+  surge: (factor: number) => void;
 }
 
-const FLOOD_TIME = 40;
+/** How long a flood lasts, and how much extra water comes down the river while it does. */
+export const FLOOD_TIME = 75;
+export const FLOOD_SURGE = 3;
 const TORNADO_TIME = 36;
 const TORNADO_RADIUS = 1.3;
 
@@ -53,7 +58,7 @@ export class Disasters {
     this.active = null; this.cooldown = 240; this.hit.clear();
   }
 
-  /** Cells a flood reaches: low ground within two cells of water, less what a barrier protects. */
+  /** Cells a flood is likely to reach: low ground within two cells of water, less what a barrier protects. The map's flood-risk view. */
   static floodZone(water: Uint8Array, riverDistance: Float32Array, kind: Uint8Array): number[] {
     const barriers: number[] = [];
     for (let i = 0; i < N_TILES; i++) if (SERVICES[kind[i]]?.barrier) barriers.push(i);
@@ -70,10 +75,10 @@ export class Disasters {
   start(kind: DisasterKind, ctx: DisasterContext): void {
     this.hit.clear();
     if (kind === 'flood') {
-      const flooded = Disasters.floodZone(ctx.water, ctx.riverDistance, ctx.kind);
-      this.active = { kind, age: 0, duration: FLOOD_TIME, flooded, x: 0, z: 0, path: [] };
+      this.active = { kind, age: 0, duration: FLOOD_TIME, flooded: [], x: 0, z: 0, path: [] };
       this.floods++;
-      ctx.notice(flooded.length ? 'Flood warning: the river is over its banks. Flood barriers on the bank keep the water out.' : 'The river rose, but the flood barriers held.');
+      ctx.surge(FLOOD_SURGE);
+      ctx.notice('Flood warning: storms upstream are swelling the river. Low ground by the water will go under; flood barriers and raised banks keep it out.');
     } else {
       // Across the valley from one side to the other, wandering a little on the way.
       const side = Math.floor(ctx.random() * 4);
@@ -105,10 +110,8 @@ export class Disasters {
     }
     a.age++;
     if (a.kind === 'flood') {
-      // The water peaks a third of the way in: buildings it reaches may lose a floor.
-      if (a.age === Math.round(a.duration / 3)) {
-        for (const t of a.flooded) if (isZone(ctx.kind[t]) && ctx.level[t] && ctx.random() < 0.3) { ctx.damage(t, 1); this.damaged++; }
-      }
+      // The surge runs for two thirds of the flood, then the river is left to settle.
+      ctx.surge(a.age < a.duration * 2 / 3 ? FLOOD_SURGE : 1);
     } else {
       const t = Math.min(1, a.age / a.duration) * (a.path.length - 1);
       const k = Math.min(a.path.length - 2, Math.floor(t)), u = t - k;
@@ -127,7 +130,8 @@ export class Disasters {
     if (a.age >= a.duration) {
       this.active = null;
       this.cooldown = 600;
-      ctx.notice(a.kind === 'flood' ? 'The floodwater has gone down. Damaged buildings will rebuild as the city grows.' : 'The tornado has passed. Damaged buildings will rebuild as the city grows.');
+      if (a.kind === 'flood') ctx.surge(1);
+      ctx.notice(a.kind === 'flood' ? 'The river is back to its usual flow; the floodwater will drain away. Damaged buildings will rebuild as the city grows.' : 'The tornado has passed. Damaged buildings will rebuild as the city grows.');
     }
   }
 }

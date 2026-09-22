@@ -472,6 +472,7 @@ test('regular clock publishes population matching rendered building levels', () 
 });
 
 const { transitNetwork, transitLineForTrip, intercityStations } = await import('../src/sim/transit.ts');
+const W = await import('../src/sim/water.ts');
 const { footprint, footprintSize, siteOwners } = await import('../src/sites.ts');
 const { entrancePlan, entrySite } = await import('../src/roads/entries.ts');
 const { railPath } = await import('../src/roads/rail.ts');
@@ -1448,11 +1449,14 @@ test('floods spare what a barrier protects, and tornadoes damage what they cross
   const guarded = Disasters.floodZone(water, dist, kind);
   assert.ok(open.length > guarded.length && !guarded.includes(12 * C.GRID + 41), 'A barrier keeps the water out nearby');
   const d = new Disasters();
-  let damaged = 0, notices = 0;
-  const ctx = { kind, level, water, riverDistance: dist, cityLevel: 3, enabled: true, rate: 1, random: C.mulberry32(5), damage: (t, n) => { level[t] = Math.max(0, level[t] - n); damaged++; }, notice: () => notices++ };
+  let damaged = 0, notices = 0, surge = 1;
+  const ctx = { kind, level, water, riverDistance: dist, cityLevel: 3, enabled: true, rate: 1, random: C.mulberry32(5), damage: (t, n) => { level[t] = Math.max(0, level[t] - n); damaged++; }, notice: () => notices++, surge: f => { surge = f; } };
   d.start('flood', ctx);
-  for (let t = 0; t < 45; t++) d.step(ctx);
-  assert.ok(damaged > 0 && d.active === null && notices >= 2, 'A flood damages some buildings and then subsides');
+  assert.equal(surge, 3, 'A flood is a surge down the river');
+  for (let t = 0; t < 30; t++) d.step(ctx);
+  assert.equal(surge, 3, 'which keeps coming');
+  for (let t = 0; t < 50; t++) d.step(ctx);
+  assert.ok(surge === 1 && d.active === null && notices >= 2, 'then the river returns to normal and the flood is over');
   // A tornado straight across the houses along the river.
   for (let z = 0; z < C.GRID; z++) for (const x of [38, 39, 41, 42]) level[z * C.GRID + x] = 2;
   const before = damaged;
@@ -1483,28 +1487,62 @@ test('districts, per-zone taxes, terraforming and scenarios survive a save', () 
   assert.equal(back.extras.terraform[dry], X.DUG);
   assert.equal(X.shapeTerrain(t, back.extras.terraform).water[dry], 1, 'Dug ground is water');
   assert.deepEqual(back.extras.scenario, { id: 'rustbelt', startTick: 5, done: undefined });
-  // Any one river tile can be filled or built up, but the river can never be dammed: fill a whole
-  // cross-section but one tile and that last tile is refused, until a new channel is dug around it.
+  // Any river tile can be filled or built up, dams included: the water then has to deal with it.
   const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i] && i % C.GRID > 0 && i % C.GRID < C.GRID - 1 && i >= C.GRID && i < C.N_TILES - C.GRID);
   const none = new Uint8Array(C.N_TILES);
-  assert.ok(wet.every(i => X.terraformAllowed(t, none, i, 'fill') && X.terraformAllowed(t, none, i, 'raise')), 'Any river tile may be filled or raised on its own');
-  const mid = t.river.filter(p => p.x > 10 && p.z > 10 && p.x < C.GRID - 10 && p.z < C.GRID - 10)[5];
-  const across = t.river[0].x === t.river[1].x ? 'x' : 'z';
-  const section = wet.filter(i => (across === 'x' ? Math.floor(i / C.GRID) : i % C.GRID) === Math.floor(across === 'x' ? mid.z : mid.x));
-  assert.ok(section.length >= 2, 'The river is more than one tile wide');
+  assert.ok(wet.every(i => X.terraformAllowed(t, none, i, 'fill') && X.terraformAllowed(t, none, i, 'raise')), 'Any river tile may be filled or raised');
   const dam = none.slice();
-  for (const i of section.slice(1)) dam[i] = X.FILLED;
-  assert.ok(!X.terraformAllowed(t, dam, section[0], 'fill') && !X.terraformAllowed(t, dam, section[0], 'raise'), 'The last tile across the river cannot be filled');
-  assert.equal(X.shapeTerrain(t, dam).water[section[1]], 0, 'Filled river tiles are land');
-  const bypass = dam.slice();
-  const side = across === 'x' ? Math.max(...section.map(i => i % C.GRID)) + 1 : Math.max(...section.map(i => Math.floor(i / C.GRID))) + 1;
-  for (let k = -3; k <= 3; k++) for (let w = -2; w < 2; w++) {
-    const i = across === 'x' ? (Math.floor(mid.z) + k) * C.GRID + side + w : (side + w) * C.GRID + Math.floor(mid.x) + k;
-    if (!t.water[i]) bypass[i] = X.DUG;
-  }
-  assert.ok(X.terraformAllowed(t, bypass, section[0], 'raise'), 'With a channel dug around it the old bed can be built up');
-  bypass[section[0]] = X.HILL_BASE + 1;
-  assert.equal(X.shapeTerrain(t, bypass).water[section[0]], 0, 'Raised river bed is land');
+  dam[wet[10]] = X.FILLED; dam[wet[11]] = X.HILL_BASE + 1;
+  assert.equal(X.shapeTerrain(t, dam).water[wet[10]], 0, 'Filled river tiles are land');
+  assert.equal(X.shapeTerrain(t, dam).water[wet[11]], 0, 'Raised river bed is land');
+});
+test('water flows down the river, gathers behind a dam until it spills, and drains when the dam goes', () => {
+  const t = generateTerrain(214);
+  const water = new W.WaterSim(t);
+  const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i]);
+  const rise = i => water.surface(i) - water.normal[i];
+  for (let s = 0; s < W.WATER_HZ * 60; s++) water.step();
+  assert.ok(wet.every(i => Math.abs(rise(i)) < 0.15), 'Left alone the river holds its level along its whole length');
+  assert.equal(water.floodedCount, 0, 'and stays inside its banks');
+  // A dam right across the river a third of the way down.
+  const mid = t.river.filter(p => p.x > 10 && p.z > 10 && p.x < C.GRID - 10 && p.z < C.GRID - 10)[Math.floor(t.river.length / 3)];
+  const across = t.river[0].x === t.river[1].x ? 'x' : 'z';
+  const col = Math.floor(across === 'x' ? mid.z : mid.x);
+  const section = wet.filter(i => (across === 'x' ? Math.floor(i / C.GRID) : i % C.GRID) === col);
+  const edits = new Uint8Array(C.N_TILES);
+  for (const i of section) edits[i] = X.HILL_BASE + 2;
+  water.reshape(edits);
+  const up = wet.filter(i => t.flow[i] < t.flow[section[0]] - 4), down = wet.filter(i => t.flow[i] > t.flow[section[0]] + 4);
+  const mean = a => a.reduce((sum, i) => sum + rise(i), 0) / a.length;
+  for (let s = 0; s < W.WATER_HZ * 60; s++) water.step();
+  const after1 = mean(up);
+  assert.ok(after1 > 0.2, `A minute on, the water has gathered behind the dam (rose ${after1.toFixed(2)})`);
+  assert.ok(mean(down) < 0, 'while the river below the dam has dropped');
+  for (let s = 0; s < W.WATER_HZ * 240; s++) water.step();
+  assert.ok(mean(up) > after1, 'and it keeps rising');
+  assert.ok(water.floodedCount > 10, `until it spills over the banks onto the land (${water.floodedCount} cells under water)`);
+  const visible = water.visible();
+  assert.ok(section.every(i => visible[i] !== visible[i]), 'The dam itself is dry');
+  assert.ok(up.some(i => visible[i] > 0), 'The lake shows above the river as drawn');
+  water.reshape(new Uint8Array(C.N_TILES));
+  for (let s = 0; s < W.WATER_HZ * 180; s++) water.step();
+  assert.equal(water.floodedCount, 0, 'With the dam gone the floodwater drains away');
+  assert.ok(Math.abs(mean(up)) < 0.15, 'and the river settles back to its level');
+  // A storm upstream: three times the flow tops the low banks near the inlet, then recedes.
+  water.surge = 3;
+  for (let s = 0; s < W.WATER_HZ * 50; s++) water.step();
+  assert.ok(water.floodedCount > 0, 'A surge floods the low ground');
+  water.surge = 1;
+  for (let s = 0; s < W.WATER_HZ * 120; s++) water.step();
+  assert.equal(water.floodedCount, 0, 'and the flood goes down when it passes');
+  // A flood barrier lifts the ground it guards above the water.
+  const kind = new Uint8Array(C.N_TILES);
+  let guard = wet[Math.floor(wet.length / 2)];
+  while (t.water[guard]) guard++;
+  kind[guard] = C.T_FLOOD_BARRIER;
+  water.reshape(new Uint8Array(C.N_TILES), kind);
+  assert.ok(Math.abs(water.ground[guard + 1] - W.BARRIER_HEIGHT) < 1e-5, 'The bank behind a barrier stands higher');
+  assert.ok(water.ground[guard - 1] < 0, 'but the river beside it keeps its bed');
 });
 test('per-zone taxes, district policies and freight run in the simulation', () => {
   const city = demoCity(true);

@@ -154,50 +154,16 @@ export const isWet = (base: Terrain, edits: Uint8Array, tile: number): boolean =
   edits[tile] === DUG || (!!base.water[tile] && edits[tile] !== FILLED && hillLevel(edits[tile]) === 0);
 
 /**
- * Whether the river would still run from where it enters the map to where it leaves if `tile` were
- * made land. The player may narrow the river, and even cut across the old bed once a new channel
- * has been dug for it, but never dam it.
+ * Whether this tile may be dug out, filled in, raised or lowered. The river can be narrowed, moved or
+ * dammed outright: the water then finds its own way, gathering behind the dam until it spills.
  */
-export function riverKeepsFlowing(base: Terrain, edits: Uint8Array, tile: number): boolean {
-  const inside = base.river.filter(p => p.x >= 0 && p.z >= 0 && p.x < GRID && p.z < GRID);
-  if (inside.length < 2) return true;
-  const near = (p: { x: number; z: number; w: number }): number[] => {
-    const out: number[] = [];
-    for (let z = Math.floor(p.z - p.w - 1); z <= Math.ceil(p.z + p.w + 1); z++) for (let x = Math.floor(p.x - p.w - 1); x <= Math.ceil(p.x + p.w + 1); x++) {
-      if (x < 0 || z < 0 || x >= GRID || z >= GRID) continue;
-      const i = z * GRID + x;
-      if (i !== tile && isWet(base, edits, i)) out.push(i);
-    }
-    return out;
-  };
-  const goal = new Set(near(inside[inside.length - 1]));
-  if (!goal.size) return true;
-  const seen = new Uint8Array(N_TILES), queue = near(inside[0]);
-  for (const i of queue) seen[i] = 1;
-  for (let q = 0; q < queue.length; q++) {
-    const i = queue[q];
-    if (goal.has(i)) return true;
-    const x = i % GRID, z = Math.floor(i / GRID);
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, nz = z + dz;
-      if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) continue;
-      const n = nz * GRID + nx;
-      if (seen[n] || n === tile || !isWet(base, edits, n)) continue;
-      seen[n] = 1; queue.push(n);
-    }
-  }
-  return false;
-}
-
-/** Whether this tile may be dug out, filled in, raised or lowered. The river can be narrowed or moved, never dammed. */
 export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): boolean {
   const x = tile % GRID, z = Math.floor(tile / GRID);
   if (x < 1 || z < 1 || x >= GRID - 1 || z >= GRID - 1) return false;
   const wet = isWet(base, edits, tile);
   // Earth piles up a storey at a time, on water too, which turns the river bed into a bank.
-  if (action === 'raise') return hillLevel(edits[tile]) < HILL_MAX && (!wet || riverKeepsFlowing(base, edits, tile));
+  if (action === 'raise') return hillLevel(edits[tile]) < HILL_MAX;
   if (action === 'lower') return hillLevel(edits[tile]) > 0;
   if (hillLevel(edits[tile]) > 0) return false;
-  if (action === 'dig') return !wet;
-  return wet && riverKeepsFlowing(base, edits, tile);
+  return action === 'dig' ? !wet : wet;
 }

@@ -111,14 +111,14 @@ const CATEGORIES: Category[] = [
       { id: 'treatment', label: 'Sewage treatment', price: svc(T_TREATMENT), note: '2,200 sewage · 95% filtered', hint: 'Build on the river bank. Electricity powers filtration, reducing pollution from treated sewage by 95%' },
       { id: 'docks', label: 'Fishing docks', price: svc(T_DOCKS), note: `${DOCK_JOBS} jobs · boats`, hint: 'Build on the river bank. The docks put fishing boats on the river and sell the catch; sewage upstream thins it, so keep outlets downstream or treated. Unlocks at Small town' },
       { id: 'outlet', label: 'Sewage outlet', price: svc(T_OUTLET), note: `${SERVICES[T_OUTLET].sewage.toLocaleString()} sewage`, hint: 'Must touch the river. Fouls the water downstream of it' },
-      { id: 'barrier', label: 'Flood barrier', price: svc(T_FLOOD_BARRIER), note: `Protects ${FLOOD_BARRIER_RADIUS} cells`, hint: 'Build on the river bank. When the river floods, nothing within seven cells of a barrier is flooded. Unlocks at Small town' },
+      { id: 'barrier', label: 'Flood barrier', price: svc(T_FLOOD_BARRIER), note: `Protects ${FLOOD_BARRIER_RADIUS} cells`, hint: 'Build on the river bank. The ground within seven cells of a barrier stands higher than the water can normally climb, so a swollen river spills elsewhere. Unlocks at Small town' },
     ],
   },
   {
     id: 'land', label: 'Land',
     tools: [
       { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Paint over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
-      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint over the river to fill it in as buildable land. The river can be narrowed or, once a new channel is dug for it, moved altogether, but never dammed. Filling a dug pond restores the ground' },
+      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint over the river to fill it in as buildable land. Narrow it, move it into a channel you dug, or dam it outright: the water gathers behind a dam and spills over the banks when it can rise no further. Filling a dug pond restores the ground' },
       { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)} / cell`, note: 'Hills and ridges', hint: 'Paint to pile earth up, a storey at a time up to four, on land or in the river. Go over the same ground again to build it higher. Nothing can be built or driven on raised ground, but forests climb it' },
       { id: 'lower', label: 'Lower ground', price: `${money(COST_LOWER)} / cell`, note: 'Take a hill down', hint: 'Paint over raised ground to take it down a storey at a time' },
     ],
@@ -975,7 +975,7 @@ export class Hud {
     if (s.incidents.racers) say('racers', `${s.incidents.racers} street racers are out: calmed streets and signals slow them down`);
     if (s.incidents.crashes) say('crashes', `${s.incidents.crashes} traffic collisions: blocked vehicles await police or recovery`);
     if (s.incidents.crime) say('crime', `${s.incidents.crime} crime hotspots: police visits deter crime and restore tax revenue`);
-    if (s.disasters?.active === 'flood') say('disaster', 'Flood! Low ground by the river is under water. Flood barriers on the bank protect the streets behind them');
+    if (s.disasters?.active === 'flood') say('disaster', 'Flood! The river is swollen and climbing its banks. Flood barriers and raised ground keep the water off the streets');
     if (s.disasters?.active === 'tornado') say('disaster', 'Tornado crossing the valley: buildings in its path are being damaged');
     if (s.garbage > 40) say('garbage', 'Rubbish is piling up: build recycling centres so garbage trucks can collect it');
     if (s.goods?.importShare > 0.5 && s.buildings > 20) say('goods', 'Shops are importing most of their stock: zone industry or farmland to supply them');

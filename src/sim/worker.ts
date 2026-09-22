@@ -31,6 +31,7 @@ import type { Terrain } from '../terrain';
 import type { EditPayload, MainToWorker, Stats, TileReport } from './messages';
 import { T_RECYCLING, T_BUS, T_SUBWAY } from '../constants';
 import { defaultExtras, shapeTerrain, districtHas, DISTRICT_POLICIES, DISTRICT_POLICY_IDS, DISTRICT_COUNT } from '../extras';
+import { WaterSim, WATER_HZ } from './water';
 import type { CityExtras } from '../extras';
 import { noiseMap, landValueMap, wellbeingMap, goodsFlow, tourism as tourismFlow, accumulateGarbage, waterDistance, GARBAGE_PICKUP_RADIUS } from './economy';
 import type { GoodsReport, TourismReport } from './economy';
@@ -101,6 +102,10 @@ let pendingMoveIns: number[] = [];
 let extras: CityExtras = defaultExtras();
 let baseTerrain: Terrain = terrain;
 let riverDistance = waterDistance(terrain.water);
+/** The river and whatever it spills, as water on the ground. */
+let river = new WaterSim(terrain);
+/** Seconds before the city is warned about floodwater again. */
+let floodWarning = 0;
 let landValue: Float32Array = new Float32Array(N_TILES).fill(40);
 let noise: Float32Array = new Float32Array(N_TILES);
 let wellbeing: Float32Array = new Float32Array(N_TILES);
@@ -143,6 +148,7 @@ const utilityComponent = (i: number): number => accSeg[i] >= 0 ? component[segA[
 function setTerrain(): void {
   terrain = shapeTerrain(baseTerrain, extras.terraform);
   riverDistance = waterDistance(terrain.water);
+  river.reshape(extras.terraform, kind);
 }
 
 // ---- road graph snapshot --------------------------------------------------------------------
@@ -982,6 +988,7 @@ function stepCars(dt: number): void {
   }
 }
 
+let frames = 0;
 function writeFrame(): void {
   const out = new Float32Array(MAX_CARS * 4);
   const carHeights = new Float32Array(MAX_CARS);
@@ -1005,7 +1012,9 @@ function writeFrame(): void {
   }
   const cong = new Uint8Array(segs.length);
   for (let i = 0; i < segs.length; i++) cong[i] = Math.min(255, (segCong[i] * 255) | 0);
-  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, serial, simTime, cityTime: tick + subCount / SIM_HZ }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer]);
+  // The water surface changes slowly, so it rides along every third frame.
+  const wet = frames++ % 3 === 0 ? river.visible() : undefined, flooded = wet ? river.flooded.slice() : undefined;
+  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
 }
 
 // ---- census, utilities, pollution, growth --------------------------------------------------------
@@ -1498,13 +1507,29 @@ function disasterContext() {
     kind, level, water: terrain.water, riverDistance, cityLevel, enabled: extras.disasters, rate: disasterRate, random: Math.random,
     damage: (tile: number, levels: number) => { level[tile] = Math.max(0, level[tile] - levels); age[tile] = 0; },
     notice: (message: string) => post({ type: 'notice', message }),
+    surge: (factor: number) => { river.surge = factor; },
   };
+}
+/** Once a simulation second: floodwater wears down what it stands on, and the city is warned when it rises. */
+function stepWater(): void {
+  if (river.floodedCount) {
+    for (let i = 0; i < N_TILES; i++) {
+      if (!river.flooded[i] || !isZone(kind[i]) || !level[i] || Math.random() > 0.03) continue;
+      level[i] = Math.max(0, level[i] - 1); age[i] = 0; disasters.damaged++;
+    }
+  }
+  if (floodWarning > 0) floodWarning--;
+  else if (river.floodedCount >= 20 && !disasters.active) {
+    post({ type: 'notice', message: 'The river is over its banks: water is spreading over the land. Lower any dam, or raise the ground, to hold it back.' });
+    floodWarning = 240;
+  }
 }
 /** Once a simulation second: rubbish builds up, and noise, land value and well-being are re-read. */
 function stepEconomy(): void {
   accumulateGarbage(garbage, kind, level, civicState.coverage.waste);
   refreshMaps();
   disasters.step(disasterContext());
+  stepWater();
 }
 /** Noise, transit reach, land value and well-being from the city as it stands. */
 function refreshMaps(): void {
@@ -1539,6 +1564,7 @@ function substep(scale = 1): void {
   simTime += dt;
   stepCars(dt);
   spawn(dt);
+  for (let k = 0; k < WATER_HZ / SIM_HZ; k++) river.step(scale);
   subCount += scale;
   if (subCount >= SIM_HZ) {
     subCount -= SIM_HZ;
@@ -1580,6 +1606,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       extras = m.extras ? { ...m.extras, district: m.extras.district.slice(), terraform: m.extras.terraform.slice() } : defaultExtras(m.tax);
       baseTerrain = generateTerrain(m.seed);
       terrain = baseTerrain;
+      river = new WaterSim(baseTerrain); floodWarning = 0;
       setTerrain();
       garbage.fill(0); disasters.reset();
       disasterRate = m.disasterRate ?? 1;
@@ -1588,6 +1615,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       segs = [];
       segCong = new Float32Array(0);
       kind.set(m.kind);
+      river.reshape(extras.terraform, kind);
       airportClearance = airportClearanceMask(kind, m.rot);
       level.set(m.level);
       age.fill(0);
@@ -1624,6 +1652,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       if (m.district) extras.district.set(m.district);
       if (m.terraform && m.terraform.some((v, i) => v !== extras.terraform[i])) { extras.terraform.set(m.terraform); setTerrain(); }
       applyKind(m.kind);
+      river.reshape(extras.terraform, kind);
       airportClearance = airportClearanceMask(kind, m.rot);
       applyNetwork(m);
       money -= m.spent;

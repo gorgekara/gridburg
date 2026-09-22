@@ -91,6 +91,11 @@ export class Game {
   onEdit: (() => void) | null = null;
   onTerrain: (() => void) | null = null;
   onFrame: (() => void) | null = null;
+  /** A new water surface arrived from the simulation. */
+  onWater: (() => void) | null = null;
+  /** The water surface to draw, NaN where the river as normally drawn already covers it, and which land is flooded. */
+  waterSurface: Float32Array | null = null;
+  flooded: Uint8Array = new Uint8Array(N_TILES);
 
   private worker: Worker;
   private pendingSpent = 0;
@@ -127,6 +132,7 @@ export class Game {
         this.prevCarHeights = this.carHeights; this.carHeights = m.carHeights; this.carPitch = m.carPitch;
         this.simTime = m.simTime;
         this.cityTime = m.cityTime;
+        if (m.water && m.flooded) { this.waterSurface = m.water; this.flooded = m.flooded; this.onWater?.(); }
         if (m.serial === this.serial) this.segCong = m.segCong;
         this.onFrame?.();
       }
@@ -163,7 +169,7 @@ export class Game {
    */
   buildable(i: number, bank = false): boolean {
     if (this.parkPathLotMask[i] || hillLevel(this.extras.terraform[i]) > 0) return false;
-    if (this.airportClearance[i] || this.terrain.water[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
+    if (this.airportClearance[i] || this.terrain.water[i] || this.flooded[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
     return bank || !this.terrain.shore[i];
   }
 
@@ -327,7 +333,7 @@ export class Game {
     this.seed = d.seed;
     this.baseTerrain = generateTerrain(d.seed);
     this.terrain = shapeTerrain(this.baseTerrain, this.extras.terraform);
-    this.maps = null; this.disaster = null;
+    this.maps = null; this.disaster = null; this.waterSurface = null; this.flooded.fill(0);
     this.net = Network.fromPlain(d.net);
     ensureApproaches(this.net); // older cities and shared links stop at the map edge
     this.rasterVersion = -1;
