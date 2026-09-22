@@ -5,7 +5,7 @@ import { HALF_WIDTH, KIND_RAMP, Network } from '../roads/network';
 /** Instanced lamps and soft pools avoid hundreds of real-time point lights. */
 export class StreetlightLayer {
   readonly group = new THREE.Group();
-  private poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.025, 0.035, 1.25, 5), new THREE.MeshStandardMaterial({ color: 0x5d6469 }), 3000);
+  readonly poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.025, 0.035, 1.25, 5), new THREE.MeshStandardMaterial({ color: 0x5d6469 }), 3000);
   private bulbs = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.06, 0.16), new THREE.MeshBasicMaterial({ color: 0xffdb91 }), 3000);
   private glowMaterial: THREE.MeshBasicMaterial;
   private pools: THREE.InstancedMesh;
@@ -38,7 +38,8 @@ export class StreetlightLayer {
         const px = seg.pts[i * 2] - dz / len * offset, pz = seg.pts[i * 2 + 1] + dx / len * offset;
         // Where two roads run close or merge at a shallow angle, this kerb can lie on the other
         // carriageway: try the next point along instead of planting a pole in the traffic.
-        if (onOtherRoad(net, seg.id, px, pz)) continue;
+        // Well clear of any other road, so a lamp never stands in the paved gore beside a slip road.
+        if (net.onRoad(px, pz, seg.id, 0.8)) continue;
         next = seg.cum[i] + 5;
         obj.position.set(px - 40, roadHeight(seg, seg.cum[i]) + 0.65, pz - 40);
         obj.updateMatrix(); this.poles.setMatrixAt(count, obj.matrix);
@@ -49,15 +50,4 @@ export class StreetlightLayer {
     for (const m of [this.poles, this.bulbs, this.pools]) { m.count = count; m.instanceMatrix.needsUpdate = true; }
   }
   update(night: number): void { this.bulbs.visible = night > 0.05; this.pools.visible = night > 0.05; this.glowMaterial.opacity = night; }
-}
-
-/** Whether a point (map coordinates) is on the asphalt or kerb of any road other than `own`. */
-function onOtherRoad(net: Network, own: number, x: number, z: number): boolean {
-  for (const o of net.segs.values()) {
-    if (o.id === own || o.structure === 2) continue;
-    const reach = HALF_WIDTH[o.kind] + 0.1;
-    if (x < o.minX - reach || x > o.maxX + reach || z < o.minZ - reach || z > o.maxZ + reach) continue;
-    if (Network.nearestOn(o, x, z).dist < reach) return true;
-  }
-  return false;
 }

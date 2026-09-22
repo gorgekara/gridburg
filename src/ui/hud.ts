@@ -721,7 +721,7 @@ export class Hud {
           <li><b>Roads</b> — pick Road or Avenue, then <b>click</b> to place points. <b>Straight</b> is two clicks,
           <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
           right-click or <b>Esc</b> stops. Crossings become junctions</li>
-          <li><b>Height</b> — with a road in hand, <b>+</b> raises it to a bridge and <b>−</b> lowers it to a tunnel. Allow 14 cells and clear, dry ends. A road drawn across water becomes a bridge on its own</li>
+          <li><b>Height</b> — with a road in hand, <b>+</b> raises it to a bridge and <b>−</b> lowers it to a tunnel. Allow 8 cells and clear, dry ends. A road drawn across water becomes a bridge on its own</li>
           <li><b>Four road types</b> — Lane, Road, Avenue and Expressway, in rising order of width, speed and price.
           Nothing can be zoned along an expressway, so feed it with ordinary streets. <b>Upgrade (U)</b> widens a road one step</li>
           <li><b>Traffic</b> — cars queue for real. Busy junctions jam; fix them with <b>avenues</b>, <b>signals</b>,
@@ -813,7 +813,7 @@ export class Hud {
     if (!def) { this.hint.textContent = ''; return; }
     if (['lane', 'road', 'avenue', 'highway', 'motorway', 'ramp', 'parkpath'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
-      const height = this.elevation > 0 ? 'Bridge: minimum 14 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 14 cells, clear portals. ' : '';
+      const height = this.elevation > 0 ? 'Bridge: minimum 8 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 8 cells, clear portals. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
     } else {
       this.hint.textContent = def.hint;

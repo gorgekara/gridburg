@@ -281,6 +281,39 @@ export class Network {
     return best;
   }
 
+  /**
+   * Whether (x, z) lies on the paved surface (plus a kerb margin) of any road other than `except`.
+   * Tunnel interiors do not count: the ground above them is open. Used to keep lamps, signs and
+   * everything else on the verge off the carriageway.
+   */
+  onRoad(x: number, z: number, except = -1, margin = 0.1): boolean {
+    for (const o of this.segs.values()) {
+      if (o.id === except || o.structure === 2) continue;
+      const reach = HALF_WIDTH[o.kind] + margin;
+      if (x < o.minX - reach || x > o.maxX + reach || z < o.minZ - reach || z > o.maxZ + reach) continue;
+      if (Network.nearestOn(o, x, z).dist < reach) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A spot on the verge beside `seg`, `offset` out from its centre line on the right of travel
+   * towards `node` (or the left with a negative offset), at least `minAlong` back from the node and
+   * further if that would stand on a crossing road. Null when the arm is too short.
+   */
+  vergeSpot(seg: RSeg, node: number, offset: number, minAlong: number): Pose | null {
+    const atA = seg.a === node;
+    const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
+    for (let d = minAlong; d < seg.len - 0.3; d += 0.25) {
+      Network.poseAt(seg, atA ? d : seg.len - d, pose);
+      // Direction of travel towards the node.
+      const tx = atA ? -pose.tx : pose.tx, tz = atA ? -pose.tz : pose.tz;
+      const x = pose.x - tz * offset, z = pose.z + tx * offset;
+      if (!this.onRoad(x, z, seg.id)) return { x, z, tx, tz };
+    }
+    return null;
+  }
+
   nearestSeg(x: number, z: number, maxDist: number): Hit | null {
     let best: Hit | null = null;
     for (const seg of this.segs.values()) {

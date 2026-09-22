@@ -24,7 +24,7 @@ interface Parked { x: number; z: number; fx: number; fz: number }
  */
 export class ParkedCarLayer {
   readonly group = new THREE.Group();
-  private meshes: THREE.InstancedMesh[];
+  readonly meshes: THREE.InstancedMesh[];
   private signature = '';
   /** Parked cars by tile, for the driving mode to bump into. */
   private byTile = new Map<number, Parked[]>();
@@ -77,7 +77,7 @@ export class ParkedCarLayer {
           const type = h > 0.9 ? 2 : 1, m = type - 1;
           if (counts[m] >= CAP) continue;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;
-          if (onOtherRoad(net, seg.id, x + half, z + half)) continue;
+          if (net.onRoad(x + half, z + half, seg.id, 0.12)) continue;
           // Parked facing the way traffic runs on that side, nose slightly out now and then.
           const fx = at.tx * side, fz = at.tz * side;
           obj.position.set(x, 0, z);
@@ -111,15 +111,4 @@ export class ParkedCarLayer {
     }
     return false;
   }
-}
-
-/** Whether a point sits on the asphalt of any road but `own` (where two streets run close together). */
-function onOtherRoad(net: Network, own: number, x: number, z: number): boolean {
-  for (const o of net.segs.values()) {
-    if (o.id === own || o.structure === 2) continue;
-    const reach = HALF_WIDTH[o.kind] + 0.12;
-    if (x < o.minX - reach || x > o.maxX + reach || z < o.minZ - reach || z > o.maxZ + reach) continue;
-    if (Network.nearestOn(o, x, z).dist < reach) return true;
-  }
-  return false;
 }

@@ -41,6 +41,7 @@ export class TrolleyWireLayer {
           if (!length) continue;
           const rx = -dz / length, rz = dx / length;
           const x = p.x - half + rx * p.poleOffset, z = p.z - half + rz * p.poleOffset;
+          if (net.onRoad(p.x + rx * p.poleOffset, p.z + rz * p.poleOffset)) continue;
           poles.cyl(0.016, 0.86, x, 0, z, 0x727f7c, 6);
           wire.ribbon([x, z, p.x - half - rx * 0.07, p.z - half - rz * 0.07], 2, 0.012, 0.84, 0x727f7c);
         }

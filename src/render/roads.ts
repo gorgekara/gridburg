@@ -35,15 +35,15 @@ export class RoadLayer {
   readonly group = new THREE.Group();
   readonly mesh: THREE.Mesh;
   private islands: THREE.Mesh;
-  private poles: THREE.InstancedMesh;
+  readonly poles: THREE.InstancedMesh;
   private lamps: THREE.InstancedMesh;
-  private stopSigns: THREE.InstancedMesh;
+  readonly stopSigns: THREE.InstancedMesh;
   private lampInfo: { node: number; group: number }[] = [];
   private ranges = new Map<number, [number, number]>();
   private builtNet: Network | null = null;
   private builtVersion = -1;
   private builtTerrain: Terrain | null = null;
-  private signs: THREE.Group[] = [];
+  readonly signs: THREE.Group[] = [];
 
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
@@ -156,9 +156,11 @@ export class RoadLayer {
     }
     b.heightAt = null;
     for (const n of net.nodes.values()) {
-      let hw = 0;
-      for (const s of net.segsAt(n.id)) hw = Math.max(hw, HALF_WIDTH[s.kind]);
-      if (hw > 0) b.disc(n.x - half, n.z - half, hw + 0.09, 0.031, CURB);
+      // The kerb disc only has to close the notch where two arms of a bend meet; a big disc under a
+      // narrow street meeting a wide avenue used to bulge out past the street's own kerbs.
+      let hw = Infinity;
+      for (const s of net.segsAt(n.id)) hw = Math.min(hw, HALF_WIDTH[s.kind]);
+      if (Number.isFinite(hw)) b.disc(n.x - half, n.z - half, hw + 0.09, 0.031, CURB);
     }
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
@@ -191,6 +193,8 @@ export class RoadLayer {
       if (hw > 0) b.disc(n.x - half, n.z - half, hw, 0.046, ASPHALT);
     }
     roundaboutFlares(net, b);
+    junctionFillets(net, b);
+    rampGores(net, b);
 
     // All island details share one geometry and material, independent of roundabout count.
     for (const rb of net.roundabouts()) {
@@ -354,7 +358,7 @@ export class RoadLayer {
       // On the verge to the right of the traffic, unless another carriageway runs there, in which
       // case it stands on the outside of the pair instead of in the median.
       const spot = (side: number): { x: number; z: number } => ({ x: e.x + e.dx * 1.5 - e.dz * off * side, z: e.z + e.dz * 1.5 + e.dx * off * side });
-      const clear = (q: { x: number; z: number }): boolean => ![...net.segs.values()].some(o => o.id !== seg?.id && Network.nearestOn(o, q.x, q.z).dist < HALF_WIDTH[o.kind] + 0.6);
+      const clear = (q: { x: number; z: number }): boolean => !net.onRoad(q.x, q.z, -1, 0.15);
       const at = clear(spot(1)) ? spot(1) : spot(-1);
       sign.visible = true;
       sign.position.set(at.x - half, 0, at.z - half);
@@ -371,13 +375,11 @@ export class RoadLayer {
       if (!node.stop || net.degree(node.id) < 3) continue;
       for (const seg of net.segsAt(node.id)) {
         if (signCount >= MAX_LAMPS) break;
-        const atA = seg.a === node.id;
-        const along = Math.min(1.0, seg.len * 0.4);
-        Network.poseAt(seg, atA ? along : seg.len - along, pose);
-        const dir = atA ? -1 : 1;
-        const tx = pose.tx * dir, tz = pose.tz * dir;
-        const off = HALF_WIDTH[seg.kind] + 0.2;
-        v3.set(pose.x - tz * off - half, 0, pose.z + tx * off - half);
+        // On the verge just back from the crossing road, never on it.
+        const spot = net.vergeSpot(seg, node.id, HALF_WIDTH[seg.kind] + 0.2, Math.min(1.0, seg.len * 0.4));
+        if (!spot) continue;
+        const { tx, tz } = spot;
+        v3.set(spot.x - half, 0, spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-tx, -tz));
         m4.compose(v3, q, one);
         this.stopSigns.setMatrixAt(signCount++, m4);
@@ -395,13 +397,10 @@ export class RoadLayer {
       const groups = net.lightGroups(node.id);
       for (const s of net.segsAt(node.id)) {
         if (n >= MAX_LAMPS) break;
-        const atA = s.a === node.id;
-        const d = Math.min(1.0, s.len * 0.4);
-        Network.poseAt(s, atA ? d : s.len - d, pose);
-        const dir = atA ? -1 : 1; // direction of travel toward the node
-        const tx = pose.tx * dir, tz = pose.tz * dir;
-        const off = HALF_WIDTH[s.kind] + 0.16;
-        v3.set(pose.x - tz * off - half, 0, pose.z + tx * off - half);
+        const spot = net.vergeSpot(s, node.id, HALF_WIDTH[s.kind] + 0.16, Math.min(1.0, s.len * 0.4));
+        if (!spot) continue;
+        const { tx, tz } = spot;
+        v3.set(spot.x - half, 0, spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(tx, tz));
         m4.compose(v3, q, one);
         this.poles.setMatrixAt(n, m4);
@@ -510,13 +509,23 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
   const others = net.segsAt(node).filter(o => o.id !== seg.id && (o.kind === KIND_MOTORWAY || o.kind === KIND_RAMP) && !o.structure);
   if (!others.length || net.degree(node) !== 3) return null;
   if (seg.kind !== KIND_RAMP && !others.some(o => o.kind === KIND_RAMP)) return null;
-  const other = seg.kind === KIND_RAMP ? others.find(o => o.kind !== KIND_RAMP) ?? others[0] : others.find(o => o.kind === KIND_RAMP)!;
-  const clearance = HALF_WIDTH[seg.kind] + HALF_WIDTH[other.kind] + 0.06;
+  // Pair with the road that runs the same way from the node: a ramp with the carriageway it shadows,
+  // a carriageway with the ramp that shadows it, never the arm leading off the other way.
+  const at = net.nodes.get(node)!, pose1 = { x: 0, z: 0, tx: 0, tz: 0 }, pose2 = { x: 0, z: 0, tx: 0, tz: 0 };
+  const away = (s: RSeg, out: Pose): Pose => { Network.poseAt(s, s.a === node ? Math.min(0.4, s.len) : Math.max(0, s.len - 0.4), out); return out; };
+  away(seg, pose1);
+  const ux = pose1.x - at.x, uz = pose1.z - at.z;
+  const candidates = others.filter(o => seg.kind === KIND_RAMP ? o.kind !== KIND_RAMP : o.kind === KIND_RAMP);
+  if (!candidates.length) return null;
+  const other = candidates.map(o => { away(o, pose2); return { o, dot: (pose2.x - at.x) * ux + (pose2.z - at.z) * uz }; }).sort((p, q) => q.dot - p.dot)[0];
+  if (other.dot <= 0) return null;
+  const otherSeg = other.o;
+  const clearance = HALF_WIDTH[seg.kind] + HALF_WIDTH[otherSeg.kind] + 0.06;
   const fromA = seg.a === node;
   let length = 0.2, side = 1;
   for (let d = 0.2; d < Math.min(seg.len - 0.2, 12); d += 0.2) {
     Network.poseAt(seg, fromA ? d : seg.len - d, pose);
-    const hit = Network.nearestOn(other, pose.x, pose.z);
+    const hit = Network.nearestOn(otherSeg, pose.x, pose.z);
     // Which side the other road's nearest point falls on, relative to this road's direction of travel.
     const cross = (hit.x - pose.x) * pose.tz - (hit.z - pose.z) * pose.tx;
     side = (cross > 0 ? -1 : 1) * (fromA ? 1 : -1);
@@ -524,4 +533,104 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
     if (hit.dist > clearance) break;
   }
   return { length: Math.min(length + 0.3, seg.len * 0.6), side };
+}
+
+/**
+ * Curved kerb corners at every junction and bend: where two arms meet at an angle, the wedge between
+ * their kerbs is paved and the corner rounded off, instead of two square road ends poking into a disc.
+ */
+function junctionFillets(net: Network, b: MeshBuilder): void {
+  const half = GRID / 2;
+  const curve = new Float32Array(11 * 2);
+  for (const n of net.nodes.values()) {
+    if (n.ring) continue;
+    const arms = net.segsAt(n.id);
+    if (arms.length < 2) continue;
+    // Each arm's direction away from the node, from its first polyline piece.
+    const dirs = arms.map(s => {
+      const fromA = s.a === n.id, k = fromA ? 1 : s.n - 1, e = fromA ? 0 : s.n;
+      let ux = s.pts[k * 2] - s.pts[e * 2], uz = s.pts[k * 2 + 1] - s.pts[e * 2 + 1];
+      const l = Math.hypot(ux, uz) || 1;
+      return { s, ux: ux / l, uz: uz / l, angle: Math.atan2(uz / l, ux / l), hw: HALF_WIDTH[s.kind] };
+    }).sort((p, q) => p.angle - q.angle);
+    for (let i = 0; i < dirs.length; i++) {
+      const A = dirs[i], B = dirs[(i + 1) % dirs.length];
+      let gap = B.angle - A.angle;
+      if (i === dirs.length - 1) gap += Math.PI * 2;
+      // Only real corners: not the straight-through side of a T, nor a slip road's shallow merge.
+      if (gap < 0.35 || gap > 2.95) continue;
+      // The kerb of A that faces B, and the kerb of B that faces A.
+      const leftA = { x: n.x - A.uz * A.hw, z: n.z + A.ux * A.hw }, rightA = { x: n.x + A.uz * A.hw, z: n.z - A.ux * A.hw };
+      // Which of A's kerbs faces B: the one further along B's direction.
+      const facingA = (leftA.x - n.x) * B.ux + (leftA.z - n.z) * B.uz > (rightA.x - n.x) * B.ux + (rightA.z - n.z) * B.uz ? leftA : rightA;
+      const leftB = { x: n.x - B.uz * B.hw, z: n.z + B.ux * B.hw }, rightB = { x: n.x + B.uz * B.hw, z: n.z - B.ux * B.hw };
+      const facingB = (leftB.x - n.x) * A.ux + (leftB.z - n.z) * A.uz > (rightB.x - n.x) * A.ux + (rightB.z - n.z) * A.uz ? leftB : rightB;
+      // Corner: where the two kerb lines cross.
+      const det = A.ux * -B.uz - A.uz * -B.ux;
+      if (Math.abs(det) < 1e-4) continue;
+      const dx = facingB.x - facingA.x, dz = facingB.z - facingA.z;
+      const t = (dx * -B.uz - dz * -B.ux) / det, u = (A.ux * dz - A.uz * dx) / det;
+      if (t < -0.2 || u < -0.2 || t > 4 || u > 4) continue;
+      const cx = facingA.x + A.ux * t, cz = facingA.z + A.uz * t;
+      // Round the corner off with a radius that suits the wider road, but never past the arm's far end.
+      const r = Math.min(0.35 + Math.max(A.hw, B.hw) * 0.45, Math.max(0.15, A.s.len - t - 0.4), Math.max(0.15, B.s.len - u - 0.4));
+      const sx = cx + A.ux * r, sz = cz + A.uz * r, ex = cx + B.ux * r, ez = cz + B.uz * r;
+      const steps = curve.length / 2;
+      for (let k = 0; k < steps; k++) {
+        const f = k / (steps - 1), g = 1 - f;
+        curve[k * 2] = g * g * sx + 2 * g * f * cx + f * f * ex - half;
+        curve[k * 2 + 1] = g * g * sz + 2 * g * f * cz + f * f * ez - half;
+      }
+      b.ribbon(curve, steps, 0.09, 0.03, CURB);
+      b.fan(n.x - half, n.z - half, curve, steps, 0.045, ASPHALT);
+    }
+  }
+}
+
+/**
+ * Where a slip road splits from or joins a carriageway, pave the sliver between the two so the ramp
+ * reads as a lane added to the highway that then peels away, rather than a separate road grazing it.
+ */
+function rampGores(net: Network, b: MeshBuilder): void {
+  const half = GRID / 2, p = { x: 0, z: 0, tx: 0, tz: 0 };
+  for (const ramp of net.segs.values()) {
+    if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
+    for (const node of [ramp.a, ramp.b]) {
+      const mouth = rampMouth(net, ramp, node);
+      if (!mouth) continue;
+      const fromA = ramp.a === node;
+      // The carriageway that carries on the way the ramp runs.
+      Network.poseAt(ramp, fromA ? 0.3 : ramp.len - 0.3, p);
+      const rx = (p.x - net.nodes.get(node)!.x), rz = (p.z - net.nodes.get(node)!.z), rl = Math.hypot(rx, rz) || 1;
+      let road: RSeg | null = null, best = -1;
+      for (const o of net.segsAt(node)) {
+        if (o.id === ramp.id || o.kind !== KIND_MOTORWAY || o.structure) continue;
+        Network.poseAt(o, o.a === node ? 0.3 : o.len - 0.3, p);
+        const n = net.nodes.get(node)!, dot = ((p.x - n.x) * rx + (p.z - n.z) * rz) / rl / (Math.hypot(p.x - n.x, p.z - n.z) || 1);
+        if (dot > best) { best = dot; road = o; }
+      }
+      if (!road || best < 0.5) continue;
+      const length = Math.min(mouth.length + 0.6, ramp.len - 0.3, road.len - 0.3);
+      const steps = 10, pts: number[] = [];
+      // Out along the carriageway's edge on the ramp's side, then back along the ramp's near edge.
+      const roadFromA = road.a === node, rampSide = mouth.side * (fromA ? 1 : -1);
+      for (let k = 0; k <= steps; k++) {
+        const d = (k / steps) * length;
+        Network.poseAt(road, roadFromA ? d : road.len - d, p);
+        const tx = roadFromA ? p.tx : -p.tx, tz = roadFromA ? p.tz : -p.tz;
+        // The ramp lies to `rampSide` of the carriageway's direction of travel away from the node.
+        const sideSign = ((-tz) * rx + tx * rz) > 0 ? 1 : -1;
+        pts.push(p.x - tz * HALF_WIDTH[KIND_MOTORWAY] * sideSign - half, p.z + tx * HALF_WIDTH[KIND_MOTORWAY] * sideSign - half);
+      }
+      for (let k = steps; k >= 0; k--) {
+        const d = (k / steps) * length;
+        Network.poseAt(ramp, fromA ? d : ramp.len - d, p);
+        const tx = fromA ? p.tx : -p.tx, tz = fromA ? p.tz : -p.tz;
+        // The ramp's edge that faces the carriageway.
+        pts.push(p.x - tz * HALF_WIDTH[KIND_RAMP] * rampSide - half, p.z + tx * HALF_WIDTH[KIND_RAMP] * rampSide - half);
+      }
+      const n = net.nodes.get(node)!;
+      b.fan(n.x - half, n.z - half, pts, pts.length / 2, 0.045, ASPHALT);
+    }
+  }
 }

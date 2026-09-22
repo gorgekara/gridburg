@@ -71,6 +71,10 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   take it over or under the other roads. Where a ramp splits from or joins a carriageway, traffic merges
   on the move instead of stopping at a junction; a level crossing of two highways still takes turns.
   Neither has frontage, pavements or parking. Upgrade turns a ramp into a one-way highway and back.
+  A slip road behaves like an added lane: the gore between it and the carriageway is paved, the
+  carriageway's edge line opens for the mouth, and cars drift into the outer lane before they exit
+  and ease over from it after they join. Every junction has rounded kerb corners, and lamps, signals,
+  stop signs, signs, furniture and parked cars are all kept off the carriageway.
 - **More traffic control.** Signals and roundabouts, plus all-way stop signs ($60 a junction) and
   traffic calming ($45/cell) that halves a street's speed and all but ends collisions on it.
 - **Turn a building before you place it.** Right-click, press G, or use the Rotate button in the tool
@@ -303,7 +307,7 @@ MIT license.
 Bridges and tunnels are not separate tools: pick any road and change its height. **+** raises it to a
 bridge, **−** lowers it to a tunnel, and the Height control in the Roads panel shows where you are.
 Any kind of road can be raised or buried, so an avenue viaduct or an expressway tunnel is a matter of
-drawing it at that height. Allow at least 14 cells and two clear, dry ends for the automatic ramps.
+drawing it at that height. Allow at least 8 cells and two clear, dry ends for the automatic ramps; decks sit low, just clearing the traffic underneath.
 A tunnel shows its portals above ground at each end, and a dark band with pale ticks marks the ground
 over the bore, so the route is legible without opening the underground view.
 A surface road crossing water still becomes a bridge by itself. Spans connect at their ends and pass

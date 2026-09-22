@@ -501,11 +501,16 @@ export function newCity(seed: number): SaveData {
       if (node.x < 1 || node.z < 1 || node.x > GRID - 1 || node.z > GRID - 1) node.entry = true;
     }
   };
-  carriageway(0.5, GRID - 0.5, INNER); // traffic heading up the map on the city side
-  carriageway(GRID - 0.5, 0.5, OUTER); // and back down on the outside
-  interchange(net, pos, front);
+  // Drive on the right: the inner carriageway runs the way that puts the city on its right-hand
+  // side, so every slip road leaves from and joins the outer lane.
+  const alongX = e.dx === 0, ax = alongX ? 1 : 0, az = alongX ? 0 : 1;
+  const rightIsCity = (-az * e.dx + ax * e.dz) > 0;
+  if (rightIsCity) { carriageway(0.5, GRID - 0.5, INNER); carriageway(GRID - 0.5, 0.5, OUTER); }
+  else { carriageway(GRID - 0.5, 0.5, INNER); carriageway(0.5, GRID - 0.5, OUTER); }
+  const d = rightIsCity ? 1 : -1; // which way the inner carriageway runs along the map
+  interchange(net, pos, front, d);
   const second = front + 28 < GRID - 12 ? front + 28 : front - 28;
-  if (second > 12) interchange(net, pos, second);
+  if (second > 12) interchange(net, pos, second, d);
   for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
   return {
@@ -515,8 +520,8 @@ export function newCity(seed: number): SaveData {
 }
 
 /** Where the two carriageways run, measured in from the map edge. */
-export const OUTER = 4.0;
-export const INNER = 6.0;
+export const OUTER = 4.5;
+export const INNER = 6.5;
 /** How far in from the edge an interchange's street node sits; the city grows from there. */
 export const DOOR = 9.5;
 
@@ -525,16 +530,15 @@ export const DOOR = 9.5;
  * overpass, and four slip roads leave and join the carriageways at grade, meeting the street at the
  * foot of the bridge on either side. Each slip road peels away along the carriageway before turning.
  */
-function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number): void {
+function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number, d: number): void {
   const inside = pos(along, DOOR), outside = pos(along, 0.5);
   const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
   fix(net.insertPath([outside, inside], KIND_ROAD, false, 1));
-  // Inner carriageway carries traffic up the map (+along): leave before the bridge, rejoin after it.
-  fix(net.insertPath([pos(along - 11, INNER), pos(along - 4, INNER + 0.3), inside], KIND_RAMP, true));
-  fix(net.insertPath([inside, pos(along + 4, INNER + 0.3), pos(along + 11, INNER)], KIND_RAMP, true));
-  // Outer carriageway runs the other way.
-  fix(net.insertPath([pos(along + 11, OUTER), pos(along + 4, OUTER - 0.3), outside], KIND_RAMP, true));
-  fix(net.insertPath([outside, pos(along - 4, OUTER - 0.3), pos(along - 11, OUTER)], KIND_RAMP, true));
+  // Slip roads leave each carriageway before the bridge and rejoin after it, in its direction of travel.
+  fix(net.insertPath([pos(along - 11 * d, INNER), pos(along - 4 * d, INNER + 0.3), inside], KIND_RAMP, true));
+  fix(net.insertPath([inside, pos(along + 4 * d, INNER + 0.3), pos(along + 11 * d, INNER)], KIND_RAMP, true));
+  fix(net.insertPath([pos(along + 11 * d, OUTER), pos(along + 4 * d, OUTER - 0.3), outside], KIND_RAMP, true));
+  fix(net.insertPath([outside, pos(along - 4 * d, OUTER - 0.3), pos(along - 11 * d, OUTER)], KIND_RAMP, true));
 }
 
 export function randomSeed(): number {

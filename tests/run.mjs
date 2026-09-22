@@ -831,6 +831,7 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   const motorway = [...net.segs.values()].filter(q => q.kind === KIND_MOTORWAY), ramps = [...net.segs.values()].filter(q => q.kind === KIND_RAMP);
   let onRamp = 0, east = 0, west = 0;
   const rampUsers = new Set();
+  let mouthSamples = 0, mouthOuter = 0;
   for (let f = 0; f < 120 * C.SIM_HZ; f++) {
     simulateFrame();
     const frame = messages.findLast(m => m.type === 'frame');
@@ -840,6 +841,8 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
       if (!frame.cars[n * 4 + 3]) continue;
       const x = frame.cars[n * 4] + 40, z = frame.cars[n * 4 + 1] + 40, a = frame.cars[n * 4 + 2];
       if (ramps.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_RAMP] && Math.abs(z - 40.5) > 1.5)) { onRamp++; rampUsers.add(frame.carIds[n]); }
+      // At the mouth of an exit the car is still in the carriageway's outer lane, easing over onto the ramp.
+      for (const q of ramps) { const h = Network.nearestOn(q, x, z); if (h.s < 0.8 && h.dist < 0.7 && q.a === net.segsAt(q.a).find(o => o.kind === N.KIND_MOTORWAY)?.b) { mouthSamples++; if (h.dist > 0.28) mouthOuter++; } }
       if (Math.abs(z - 40.5) < 0.7 && x > 8 && x < 70 && motorway.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[KIND_MOTORWAY])) {
         if (Math.sin(a) > 0.9) east++; else if (Math.sin(a) < -0.9) west++;
       }
@@ -850,6 +853,7 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   assert.ok(east > 20, 'Traffic runs along the one-way highway');
   assert.equal(west, 0, 'Nobody drives the wrong way up a one-way highway');
   assert.ok(onRamp > 5, 'Cars use the ramps to get on and off');
+  if (mouthSamples > 5) assert.ok(mouthOuter / mouthSamples > 0.7, `Cars leave from the outer lane, not the centre of the carriageway (${mouthOuter}/${mouthSamples})`);
   assert.ok(latest().stats.gaveUp <= 2 && rampUsers.size > 40, `Merges keep moving: ${rampUsers.size} cars used the ramps, ${latest().stats.gaveUp} gave up`);
 });
 test('through traffic rolls along the motorway even when the city is empty', () => {
@@ -1485,6 +1489,42 @@ test('per-zone taxes, district policies and freight run in the simulation', () =
   console.log(`  Economy: ${s.goods.produced} goods made, ${s.goods.exported} exported for $${s.goods.income.toFixed(2)}/s, ${s.tourism.visitors} visitors for $${s.tourism.income.toFixed(2)}/s, land value ${s.landValue}, net $${s.income.toFixed(2)}/s`);
 });
 const { StreetlightLayer } = await import('../src/render/streetlights.ts');
+const { StreetFurnitureLayer } = await import('../src/render/streetFurniture.ts');
+test('nothing stands on the carriageway: lamps, signals, stop signs, furniture, parked cars and highway signs keep to the verge', () => {
+  // Every roadside object, on a busy demo city with signals and stops added, and on a fresh map with its motorway.
+  const m = new THREE.Matrix4(), p = new THREE.Vector3();
+  const offenders = [];
+  const check = (what, net, x, z, tolerance = 0) => {
+    for (const seg of net.segs.values()) {
+      if (seg.structure === 2) continue;
+      const d = Network.nearestOn(seg, x + 40, z + 40).dist;
+      if (d < HALF_WIDTH[seg.kind] - tolerance) { offenders.push(`${what} at ${x.toFixed(1)},${z.toFixed(1)} is ${d.toFixed(2)} from a ${ROAD_LABEL[seg.kind]} centre line`); return; }
+    }
+  };
+  const instances = (what, net, mesh, tolerance) => { for (let i = 0; i < mesh.count; i++) { mesh.getMatrixAt(i, m); p.setFromMatrixPosition(m); check(what, net, p.x, p.z, tolerance); } };
+  for (const city of [demoCity(true), newCity(9)]) {
+    const net = Network.fromPlain(city.net); ensureApproaches(net);
+    // Signals and all-way stops at every junction of three or more arms, to place their poles.
+    let k = 0;
+    for (const n of net.nodes.values()) if (net.degree(n.id) >= 3 && !n.ring) { if (k++ % 2) n.light = true; else n.stop = true; }
+    net.version++;
+    const terrain = generateTerrain(city.seed), raster = rasterize(net);
+    const roads = new RoadLayer(); roads.rebuild(net, terrain);
+    instances('signal pole', net, roads.poles);
+    instances('stop sign', net, roads.stopSigns);
+    for (const sign of roads.signs) if (sign.visible) check('highway sign', net, sign.position.x, sign.position.z, -0.6);
+    const lamps = new StreetlightLayer(); lamps.rebuild(net);
+    instances('street lamp', net, lamps.poles);
+    const furniture = new StreetFurnitureLayer(); furniture.rebuild(net, city.kind, raster);
+    for (const mesh of furniture.meshes) instances('street furniture', net, mesh);
+    const level = Uint8Array.from(city.level).map((l, i) => C.isZone(city.kind[i]) ? Math.max(l, 1) : l);
+    const parked = new ParkedCarLayer(); parked.rebuild(net, city.kind, level);
+    // A parked car sits half on the kerb, so its centre is allowed inside the paved width by that much.
+    for (const mesh of parked.meshes) instances('parked car', net, mesh, PARK_INSET + 0.08);
+  }
+  assert.deepEqual(offenders.slice(0, 8), [], `${offenders.length} objects stand on a road`);
+});
+
 test('streetlights never stand on another road where two roads meet at a shallow angle', () => {
   const net = new Network();
   net.insertPath([{ x: 10.5, z: 40.5 }, { x: 60.5, z: 40.5 }], KIND_ROAD);
@@ -1536,7 +1576,7 @@ test('forests clear roads, occupied lots and full service footprints, then resto
   assert.equal(trunks.count, count); assert.deepEqual(trunks.instanceMatrix.array.slice(0, count * 16), before.slice(0, count * 16));
 });
 
-const { structurePlan, roadHeight, BRIDGE_RISE } = await import('../src/roads/structures.ts');
+const { structurePlan, roadHeight, BRIDGE_RISE, TUNNEL_DROP } = await import('../src/roads/structures.ts');
 const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const current = Buffer.from(encode(demoCity()), 'base64url');
@@ -1557,12 +1597,15 @@ test('bridge and tunnel spans cross surface roads without junctions and survive 
   const bridge = [...net.segs.values()].find(s => s.structure === 1);
   assert.throws(() => net.splitSeg(bridge.id, 0.5), /ends/);
   assert.equal(roadHeight(bridge, 0), 0); assert.equal(roadHeight(bridge, bridge.len), 0); assert.equal(roadHeight(bridge, 20), BRIDGE_RISE);
-  assert.equal(roadHeight({ structure: 2, len: 30 }, 15), -2.4);
+  assert.equal(roadHeight({ structure: 2, len: 30 }, 15), -TUNNEL_DROP);
+  // A short span still climbs to full height in the middle, and an eight-cell one is allowed.
+  assert.equal(roadHeight({ structure: 1, len: 8 }, 4), BRIDGE_RISE);
+  assert.ok(structurePlan(new Network(), { ...generateTerrain(1), water: new Uint8Array(C.N_TILES) }, new Uint8Array(C.N_TILES), [{ x: 10, z: 20 }, { x: 18, z: 20 }], 0, 1) instanceof Network, 'An eight-cell bridge is enough');
 });
 test('structure planning rejects short spans, occupied approaches and ramp-level road collisions', () => {
   const net = new Network(), kind = new Uint8Array(C.N_TILES), terrain = generateTerrain(1);
   terrain.water.fill(0);
-  assert.match(structurePlan(net, terrain, kind, [{ x: 10, z: 20 }, { x: 15, z: 20 }], 0, 1), /14/);
+  assert.match(structurePlan(net, terrain, kind, [{ x: 10, z: 20 }, { x: 15, z: 20 }], 0, 1), /8 cells/);
   const points = [{ x: 10, z: 20 }, { x: 50, z: 20 }];
   net.insertPath([{ x: 30, z: 5 }, { x: 30, z: 40 }], 0);
   assert.ok(structurePlan(net, terrain, kind, points, 0, 1) instanceof Network);
@@ -1612,7 +1655,7 @@ test('worker routes traffic across bridges and through tunnels and publishes its
     simulateFrame(); const frame = messages.at(-1);
     if (frame.type === 'frame') for (let n = 0; n < C.MAX_CARS; n++) if (frame.cars[n * 4 + 3]) {
       assert.ok(Number.isFinite(frame.carHeights[n]));
-      bridgeSeen ||= frame.carHeights[n] > BRIDGE_RISE - 0.2; tunnelSeen ||= frame.carHeights[n] < -2;
+      bridgeSeen ||= frame.carHeights[n] > BRIDGE_RISE - 0.2; tunnelSeen ||= frame.carHeights[n] < -1.5;
     }
     if (messages.length > 100) messages.splice(0, messages.length - 20);
   }

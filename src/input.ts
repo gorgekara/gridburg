@@ -524,7 +524,7 @@ export class Input {
             if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && sm.cum[i] > 1.5 && sm.len - sm.cum[i] > 1.5) return 'End the road at the bridge or tunnel entrance to connect it';
             continue;
           }
-          if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.1 * (BRIDGE_RISE / 2.4)) return 'Keep surface roads clear of the approach ramps';
+          if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.4 * (BRIDGE_RISE / 2.4)) return 'Keep surface roads clear of the approach ramps';
         }
       }
     }

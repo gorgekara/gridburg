@@ -7,16 +7,20 @@ import { siteOwners } from '../sites';
 export type Structure = 0 | 1 | 2; // surface, bridge, tunnel
 export const STRUCTURE_COST = [1, 3, 4];
 /** Deck height at the middle of a span: enough to clear traffic underneath without towering over it. */
-export const BRIDGE_RISE = 1.5;
-export const TUNNEL_DROP = 2.4;
+export const BRIDGE_RISE = 1.1;
+export const TUNNEL_DROP = 1.8;
+/** How long the climb onto a bridge is at each end; a short span uses half its length. */
+export const BRIDGE_RAMP = 4;
+/** The shortest bridge or tunnel: room for two approach ramps and a span between them. */
+export const MIN_SPAN = 8;
 /**
  * Where a tunnel's portal stands, measured in from each end. The approach up to it stays at street
  * level, so the road visibly runs into the portal mouth instead of sinking under the grass. The
  * ground is not excavated, so a ramp that started diving at the junction simply vanished.
  */
-export const PORTAL_AT = 2.2;
+export const PORTAL_AT = 1.6;
 /** How long the dip from the portal down to full depth is. */
-const TUNNEL_RAMP = 3.2;
+const TUNNEL_RAMP = 2.4;
 /** Both portals/abutments meet the ground. The central span crosses without a junction. */
 export function roadHeight(seg: Pick<RSeg, 'structure' | 'len'>, distance: number): number {
   if (!seg.structure) return 0;
@@ -25,7 +29,7 @@ export function roadHeight(seg: Pick<RSeg, 'structure' | 'len'>, distance: numbe
     const u = Math.max(0, Math.min(1, inside / TUNNEL_RAMP));
     return -TUNNEL_DROP * u * u * (3 - 2 * u);
   }
-  const ramp = Math.min(6, seg.len / 2);
+  const ramp = Math.min(BRIDGE_RAMP, seg.len / 2);
   const u = Math.max(0, Math.min(1, distance / ramp, (seg.len - distance) / ramp));
   return BRIDGE_RISE * u * u * (3 - 2 * u);
 }
@@ -36,7 +40,7 @@ export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, 
   const pieces = buildPieces(points);
   if (pieces.length !== 1) return 'Build one bridge or tunnel span at a time';
   const sm = sampleCurve(pieces[0]);
-  if (sm.len < 14) return 'Allow at least 14 cells for the two approach ramps';
+  if (sm.len < MIN_SPAN - 0.05) return `Allow at least ${MIN_SPAN} cells for the two approach ramps`;
   for (const p of [points[0], points.at(-1)!]) {
     if (terrain.water[Math.floor(p.z) * GRID + Math.floor(p.x)]) return 'Both ends must meet dry land';
     const hit = net.nearestSeg(p.x, p.z, 0.8);
@@ -58,7 +62,7 @@ export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, 
     if (distance < 1.8 || sm.len - distance < 1.8) continue;
     for (const seg of net.segs.values()) {
       const hit = Network.nearestOn(seg, x, z);
-      if (hit.dist < HALF_WIDTH[seg.kind] + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.1 * CLEAR) return 'The approaches need more clearance from crossing roads';
+      if (hit.dist < HALF_WIDTH[seg.kind] + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'The approaches need more clearance from crossing roads';
     }
   }
   const copy = Network.fromPlain(net.toPlain());

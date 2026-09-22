@@ -163,6 +163,8 @@ let nodeGroups: Map<number, number>[] = []; // seg index -> signal group, for li
 let lockOwner = new Int32Array(0); // per node: the slot holding the junction box, or -1
 let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
+/** Per slip road: which side of the carriageway it leaves from / joins on (±1, 0 for none) and how long the merge runs. */
+let rampStart = new Int8Array(0), rampEnd = new Int8Array(0), rampMouth = new Float32Array(0);
 let ringIn: number[][] = []; // per node: lane keys of the ring arcs that feed it
 let nodeHalf = new Float32Array(0); // half width of the widest road meeting the node
 let reach = new Uint8Array(0);
@@ -174,7 +176,8 @@ let roadUpkeep = 0;
 let roadLength = 0;
 
 // ---- cars ---------------------------------------------------------------------------------------
-interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
+/** A stretch of one segment on a route. On a motorway, which side the slip road ahead or behind is on (±1), if any. */
+interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
 interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean }
 const trafficSpace = new TrafficSpace();
@@ -270,6 +273,33 @@ function applyNetwork(p: EditPayload): void {
   newSegs.forEach((s, i) => {
     if (!s.oneway || nodeType[segA[i]] !== J_RING || nodeType[segB[i]] !== J_RING) return;
     ringArc[i] = 1; ringIn[segB[i]].push(i * 2);
+  });
+  // Slip roads: note which carriageway they leave or join, on which side, and how far they run
+  // alongside it, so cars drift out of the outer lane instead of cutting across from the centre.
+  rampStart = new Int8Array(newSegs.length); rampEnd = new Int8Array(newSegs.length); rampMouth = new Float32Array(newSegs.length);
+  const pose = { x: 0, z: 0, tx: 0, tz: 0 };
+  newSegs.forEach((s, i) => {
+    if (s.kind !== KIND_RAMP) return;
+    for (const end of [0, 1]) {
+      const node = end ? segB[i] : segA[i];
+      const road = newSegs.find((o, j) => j !== i && o.kind === KIND_MOTORWAY && (segA[j] === node || segB[j] === node));
+      if (!road) continue;
+      // Travel direction of the carriageway at the node, and the ramp a little way from it.
+      const j = newSegs.indexOf(road);
+      Network.poseAt(road, segA[j] === node ? 0.3 : road.len - 0.3, pose);
+      const tx = pose.tx, tz = pose.tz;
+      Network.poseAt(s, end ? Math.max(0, s.len - 1.5) : Math.min(s.len, 1.5), pose);
+      const ox = pose.x - nodeX[node], oz = pose.z - nodeZ[node];
+      const side = (-tz * ox + tx * oz) > 0 ? 1 : -1;
+      let mouth = 0.5;
+      for (let d = 0.5; d < Math.min(s.len - 0.5, 9); d += 0.25) {
+        Network.poseAt(s, end ? s.len - d : d, pose);
+        mouth = d;
+        if (Network.nearestOn(road, pose.x, pose.z).dist > HALF_WIDTH[KIND_MOTORWAY] + 0.25) break;
+      }
+      if (end) rampEnd[i] = side; else rampStart[i] = side;
+      rampMouth[i] = Math.max(rampMouth[i], mouth);
+    }
   });
   nodeHalf = new Float32Array(nodeIds.length);
   nodeIds.forEach((id, ni) => {
@@ -504,6 +534,17 @@ const legEndNode = (l: Leg): number => (l.fwd ? segB[l.seg] : segA[l.seg]);
  * Slide each transition along the arc to the point where the arm's own lane reaches it: the merge stays
  * continuous whatever the road width, and on a one-tile road the shift is the old ~0.2 and barely moves.
  */
+/** Note on each motorway leg whether the route turns off onto a slip road next, or just came off one. */
+function markRampLegs(legs: Leg[]): void {
+  for (let i = 0; i < legs.length; i++) {
+    const seg = segs[legs[i].seg];
+    if (seg.kind !== KIND_MOTORWAY) continue;
+    const next = legs[i + 1], prev = legs[i - 1];
+    if (next && segs[next.seg].kind === KIND_RAMP && rampStart[next.seg]) legs[i].toRamp = rampStart[next.seg];
+    if (prev && segs[prev.seg].kind === KIND_RAMP && rampEnd[prev.seg]) legs[i].fromRamp = rampEnd[prev.seg];
+  }
+}
+
 function alignRingLegs(legs: Leg[], slot: number, vehicle: number): void {
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -538,6 +579,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
     legs.push(...back);
   }
   const slot = freeList.at(-1)!;
+  markRampLegs(legs);
   alignRingLegs(legs, slot, vehicle);
   const placement = carPose(legs[0], legs[0].p0, slot, vehicle);
   if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
@@ -691,15 +733,33 @@ function segSpeed(seg: RSeg): number {
   return SPEED[seg.kind] * (seg.calm ? 0.55 : 1);
 }
 
-function laneOffset(segIndex: number, seg: RSeg, slot: number): number {
+function laneOffset(segIndex: number, seg: RSeg, slot: number, leg?: Leg, progress = 0): number {
   if (ringArc[segIndex]) return 0;
+  const OUTER_LANE = 0.44, MERGE = 5;
+  if (seg.kind === KIND_MOTORWAY) {
+    let lane = ((slot % 3) - 1) * OUTER_LANE;
+    if (leg?.toRamp) {
+      // Drift into the outer lane over the last stretch before the exit.
+      const left = Math.max(0, Math.min(MERGE, leg.p1 - progress));
+      lane += (leg.toRamp * OUTER_LANE - lane) * (1 - left / MERGE);
+    } else if (leg?.fromRamp) {
+      // Come in on the outer lane and ease over to the car's own lane.
+      const done = Math.max(0, Math.min(MERGE, progress - leg.p0));
+      lane += (leg.fromRamp * OUTER_LANE - lane) * (1 - done / MERGE);
+    }
+    return lane;
+  }
+  if (seg.kind === KIND_RAMP) {
+    // Leave and rejoin along the outer lane, easing onto the ramp's own centre line.
+    const mouth = rampMouth[segIndex] || 1;
+    if (rampStart[segIndex] && progress < mouth) return rampStart[segIndex] * OUTER_LANE * (1 - progress / mouth);
+    if (rampEnd[segIndex] && seg.len - progress < mouth) return rampEnd[segIndex] * OUTER_LANE * (1 - (seg.len - progress) / mouth);
+    return 0;
+  }
   // Three lanes each way on an expressway, two on an avenue, one on anything narrower.
   if (seg.kind === KIND_HIGHWAY) {
     return seg.oneway ? ((slot % 3) - 1) * 0.86 : 0.22 + (slot % 3) * 0.44;
   }
-  // A motorway carriageway has three lanes all one way; a ramp is a single lane down the middle.
-  if (seg.kind === KIND_MOTORWAY) return ((slot % 3) - 1) * 0.44;
-  if (seg.kind === KIND_RAMP) return 0;
   if (seg.kind === KIND_AVENUE) return seg.oneway ? (slot & 1 ? 0.43 : -0.43) : (slot & 1 ? 0.22 : 0.64);
   if (seg.oneway) return seg.kind === KIND_LANE ? 0 : (slot & 1 ? 0.18 : -0.18);
   return seg.kind === KIND_LANE ? 0.1 : 0.18;
@@ -710,7 +770,7 @@ function carPose(leg: Leg, progress: number, slot: number, type: number): Vehicl
   const p = { x: 0, z: 0, tx: 0, tz: 0 };
   Network.poseAt(seg, leg.fwd ? progress : seg.len - progress, p);
   const dir = leg.fwd ? 1 : -1, tx = p.tx * dir, tz = p.tz * dir;
-  const lane = type === 8 ? trolleyLaneOffset(seg) : laneOffset(leg.seg, seg, slot);
+  const lane = type === 8 ? trolleyLaneOffset(seg) : laneOffset(leg.seg, seg, slot, leg, leg.fwd ? progress : seg.len - progress);
   return { y: roadHeight(seg, leg.fwd ? progress : seg.len - progress), x: p.x - tz * lane, z: p.z + tx * lane, angle: Math.atan2(tx, tz), type };
 }
 

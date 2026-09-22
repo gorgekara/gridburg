@@ -77,7 +77,7 @@ const SHELTER = 8;
  */
 export class StreetFurnitureLayer {
   readonly group = new THREE.Group();
-  private meshes: THREE.InstancedMesh[];
+  readonly meshes: THREE.InstancedMesh[];
   private net: Network | null = null;
   private version = -1;
   private stops = '';
@@ -117,6 +117,7 @@ export class StreetFurnitureLayer {
           if (h < 0.35) continue;
           const at = sample(seg, s);
           const x = at.x - at.tz * off * side - half, z = at.z + at.tx * off * side - half;
+          if (net.onRoad(at.x - at.tz * off * side, at.z + at.tx * off * side, seg.id)) continue;
           // Turn each piece to face the road: its +z towards the centre line.
           const facing = Math.atan2(at.tz * side, -at.tx * side);
           put(MIX[Math.floor(h * 1000) % MIX.length], x, CURB_TOP, z, facing);
