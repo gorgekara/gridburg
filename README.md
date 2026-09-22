@@ -58,13 +58,11 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   charges the difference; keep clicking and it wraps back to a lane. Extra city entrances arrive on
   expressway; the map's own motorway comes with interchanges to build from.
 - **A motorway across the map.** Every new map has a motorway running its full length just inside the
-  roomier edge: two one-way carriageways side by side, traffic arriving from both ends. A **trumpet
-  interchange** is the city's front door, the layout built where a road ends at a motorway: the road
-  crosses both carriageways on one overpass, two direct slip roads serve the near carriageway on the
-  city side, and two loop ramps on the far side turn traffic through 270° to and from the far
-  carriageway. Further along, a **two-lane highway** crosses the whole map, over the river on a bridge
-  and under the motorway at a **full cloverleaf**: four loops for the left turns, four direct slip roads
-  swung out around them for the right turns. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
+  roomier edge: two one-way carriageways side by side, traffic arriving from both ends. A **two-lane
+  highway** crosses the whole map, over the river on a bridge and under the motorway at a **full
+  cloverleaf**: four loops for the left turns, four direct slip roads swung out around them for the
+  right turns. Traffic from outside arrives on both highways. The city grows from whatever streets you
+  join to the crossing highway; the demo does it with a slip road off and one back on. Traffic passing through the region rolls along
   the motorway from one end of the map to the other without ever turning off. The motorway and its interchanges cannot be bulldozed
   and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**

@@ -533,7 +533,7 @@ test('metro stations form their own underground lines with metro capacity and ca
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 12)), 0);
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 40)), -1);
 });
-test('a new map has a motorway with a trumpet, a crossing highway with a cloverleaf, and entries past the edge', () => {
+test('a new map has a motorway, a crossing highway with a cloverleaf, and entries past the edge', () => {
   const city = newCity(7), net = Network.fromPlain(city.net), terrain = generateTerrain(7);
   const entries = [...net.nodes.values()].filter(n => n.entry);
   assert.equal(entries.length, 8, 'Both carriageways of both highways come in from both ends of the map');
@@ -554,11 +554,10 @@ test('a new map has a motorway with a trumpet, a crossing highway with a cloverl
     assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
   }
   const kinds = [...net.segs.values()];
-  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 1, 'The trumpet has one overpass');
   assert.equal(kinds.filter(s => s.kind === N.KIND_MOTORWAY && s.structure === 1).length, 2, 'The motorway bridges the crossing highway at the cloverleaf');
   assert.equal(kinds.filter(s => s.kind === N.KIND_HIGHWAY2 && s.structure === 1).length, 2, 'and the crossing highway bridges the river');
-  // Trumpet: two direct slip roads and two six-piece loops. Cloverleaf: four direct slip roads and four five-piece loops.
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 2 + 2 * 6 + 4 + 4 * 5, 'a trumpet and a cloverleaf');
+  // Cloverleaf: four direct slip roads and four five-piece loops.
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 4 + 4 * 5, 'a cloverleaf');
   assert.ok(kinds.filter(s => s.kind === N.KIND_RAMP).every(s => !s.structure && s.oneway), 'Slip roads stay on the ground and run one way');
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
@@ -569,14 +568,14 @@ test('a new map has a motorway with a trumpet, a crossing highway with a cloverl
   const ground = rasterize(surface);
   assert.ok(!Array.from(ground.cover).some((v, i) => v && terrain.water[i]), 'Nothing at ground level stands in the river');
   assert.ok(Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'The crossing highway bridges the river');
-  // The interchange's street node is where the old highway stub used to end, so the demo still fits.
-  const e = terrain.entry, door = net.nearestNode(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 0.2);
-  assert.ok(door && net.degree(door.id) === 3, 'The overpass and two slip roads meet at the front door');
+  // Nothing of the map's own stands where the city's first streets go.
+  const e = terrain.entry;
+  assert.equal(net.nearestSeg(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 2), null, 'The ground in from the motorway is clear for the city');
   // On every map the two interchanges keep their slip roads apart: eight ramps, each between a carriageway and a street node.
   for (const seed of [1, 2, 3, 4, 5, 6, 8, 12, 99, 424242]) {
     const other = Network.fromPlain(newCity(seed).net);
     const ramps = [...other.segs.values()].filter(q => q.kind === N.KIND_RAMP);
-    assert.equal(ramps.length, 38, `Seed ${seed}: a trumpet and a cloverleaf (got ${ramps.length} ramp pieces)`);
+    assert.equal(ramps.length, 24, `Seed ${seed}: a cloverleaf (got ${ramps.length} ramp pieces)`);
     for (const q of ramps) assert.ok(other.degree(q.a) <= 3 && other.degree(q.b) <= 3, `Seed ${seed}: a slip road meets nothing but its carriageway, its road and its own next piece`);
     // No ramp crosses another: pieces that share no node keep clear of each other.
     for (const a of ramps) for (const b of ramps) {

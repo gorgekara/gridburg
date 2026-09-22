@@ -1,10 +1,10 @@
 import { T_CEMETERY, T_POST_OFFICE } from './constants';
 import { defaultExtras } from './extras';
-import { DOOR } from './game';
+import { DOOR, highwayLayout } from './game';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
 import { footprint, siteOwners } from './sites';
 import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
-import { Network, KIND_AVENUE, KIND_ROAD, ROUNDABOUT_RADIUS } from './roads/network';
+import { Network, KIND_AVENUE, KIND_ROAD, KIND_RAMP, ROUNDABOUT_RADIUS } from './roads/network';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import { newCity } from './game';
@@ -32,8 +32,25 @@ export function demoCity(expanded = false): SaveData {
     x: Math.max(1.5, Math.min(GRID - 1.5, p.x)), z: Math.max(1.5, Math.min(GRID - 1.5, p.z)),
   });
 
+  // The way in: a slip road off the crossing highway and one back onto it, both right-hand turns off
+  // whichever carriageway has the city on its right, meeting a street that runs into the grid.
+  const layout = highwayLayout(terrain);
+  if (layout.cross !== undefined) {
+    const k = e.dx || -e.dz; // `side` runs along the motorway: side = (along - front) / k
+    const sideOf = (along: number): number => (along - layout.front) / k;
+    const towards = Math.sign(sideOf(layout.cross)); // which side of the grid the highway crosses
+    // The right-hand side of the inbound carriageway, in world terms, against the way to the grid.
+    const alongDir = e.dx ? { x: 0, z: 1 } : { x: 1, z: 0 }, rightOfIn = { x: -e.dz, z: e.dx };
+    const inboundFacesGrid = (rightOfIn.x * alongDir.x + rightOfIn.z * alongDir.z) * (-towards * k) > 0;
+    const lane = inboundFacesGrid ? layout.x1 : layout.x2;
+    const junction = P(22, sideOf(lane) - towards * 3.5);
+    const [far, near] = inboundFacesGrid ? [30, 14] : [14, 30]; // traffic arrives from `near`, leaves towards `far`
+    net.insertPath([P(near, sideOf(lane)), P(near + (far - near) * 0.35, sideOf(lane) - towards * 0.4), junction], KIND_RAMP, true);
+    net.insertPath([junction, P(far - (far - near) * 0.35, sideOf(lane) - towards * 0.4), P(far, sideOf(lane))], KIND_RAMP, true);
+    net.insertPath([junction, P(22, towards > 0 ? 12 : -20)], KIND_ROAD);
+  }
+
   // Streets.
-  // The avenue starts at the interchange's street node, at the foot of the overpass.
   net.insertPath([P(7, 0), P(40, 0)], KIND_AVENUE);
   for (const side of [-12, -6, 6, 12]) net.insertPath([clampP(P(10, side)), clampP(P(40, side))], KIND_ROAD);
   for (const along of [10, 16, 22, 28, 34, 40]) net.insertPath([clampP(P(along, -12)), clampP(P(along, 12))], KIND_ROAD);

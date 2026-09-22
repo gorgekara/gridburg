@@ -979,7 +979,7 @@ export class Hud {
     if (s.disasters?.active === 'tornado') say('disaster', 'Tornado crossing the valley: buildings in its path are being damaged');
     if (s.garbage > 40) say('garbage', 'Rubbish is piling up: build recycling centres so garbage trucks can collect it');
     if (s.goods?.importShare > 0.5 && s.buildings > 20) say('goods', 'Shops are importing most of their stock: zone industry or farmland to supply them');
-    if (!s.placeholder && s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the highway interchange, then zone beside it');
+    if (!s.placeholder && s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a street that joins the two-lane highway, then zone beside it');
     if (s.money < 0) say('budget', 'Treasury in debt: open Budget to reduce funding or take a recovery loan. Existing zones can still grow.');
     if (s.declining > 0) say('declining', `${s.declining} homes losing services: inspect the amber markers before they downgrade`);
     if (s.buildings > 0) {

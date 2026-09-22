@@ -13,7 +13,7 @@ import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
 import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
-import { Network, KIND_MOTORWAY, KIND_RAMP, KIND_ROAD, KIND_HIGHWAY2 } from './roads/network';
+import { Network, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2 } from './roads/network';
 import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
 import type { Raster } from './roads/raster';
@@ -478,22 +478,48 @@ export class Game {
   }
 }
 
-/**
- * A fresh map: a seeded river, and a motorway running right across it just inside the roomier edge,
- * one carriageway each way, with a diamond interchange at the city's front door and a second one
- * further along. Traffic from outside arrives on both carriageways from either end of the map.
- */
-export function newCity(seed: number): SaveData {
-  const terrain = generateTerrain(seed);
-  const net = new Network();
+/** Where the map's highways run, all derived from the terrain's entry point. */
+export interface HighwayLayout {
+  /** Map coordinates for a distance along the motorway and a distance in from the edge it hugs. */
+  pos(along: number, inward: number): { x: number; z: number };
+  /** The `along` value of the terrain's entry, where the old highway stub stood. */
+  front: number;
+  /** Where the crossing highway meets the motorway, if the map has room for it. */
+  cross: number | undefined;
+  /** The crossing highway's carriageways: `x1` heads into the map, `x2` back out. */
+  x1: number; x2: number;
+  /** +1 when the motorway's inner carriageway runs towards higher `along`. */
+  d: number;
+}
+
+export function highwayLayout(terrain: Terrain): HighwayLayout {
   const e = terrain.entry;
   // `along` runs the length of the highway, `in` measures inwards from the map edge it hugs.
   const pos = (along: number, inward: number): { x: number; z: number } => e.dx
     ? { x: e.x + e.dx * inward, z: along }
     : { x: along, z: e.z + e.dz * inward };
   const front = e.dx ? e.z : e.x;
-  // Further along, a two-lane highway crosses the whole map under the motorway at a cloverleaf.
-  const second = [30, 26].flatMap(gap => [front + gap, front - gap]).find(at => at > 13 && at < GRID - 13);
+  const cross = [30, 26].flatMap(gap => [front + gap, front - gap]).find(at => at > 13 && at < GRID - 13);
+  // Drive on the right: the inner carriageway runs the way that puts the city on its right-hand side.
+  const alongX = e.dx === 0, ax = alongX ? 1 : 0, az = alongX ? 0 : 1;
+  const d = (-az * e.dx + ax * e.dz) > 0 ? 1 : -1;
+  // And the crossing carriageway heading into the map sits to the right of the one heading out.
+  const inDir = { x: e.dx, z: e.dz }, alongDir = e.dx ? { x: 0, z: 1 } : { x: 1, z: 0 };
+  const s = (-inDir.z * alongDir.x + inDir.x * alongDir.z) > 0 ? 1 : -1;
+  return { pos, front, cross, x1: (cross ?? 0) + s, x2: (cross ?? 0) - s, d };
+}
+
+/**
+ * A fresh map: a seeded river, a motorway running right across it just inside the roomier edge (one
+ * carriageway each way), and a two-lane highway crossing the whole map, over the river and under the
+ * motorway at a cloverleaf. Traffic from outside arrives on both highways from either end. The city
+ * grows from whatever streets the player joins to the crossing highway.
+ */
+export function newCity(seed: number): SaveData {
+  const terrain = generateTerrain(seed);
+  const net = new Network();
+  const e = terrain.entry;
+  const { pos, cross: second, d } = highwayLayout(terrain);
   const carriageway = (from: number, to: number, inward: number): void => {
     // Straight across, except for the bridge that carries it over the crossing highway.
     const stops = second === undefined ? [from, to] : from < to
@@ -507,14 +533,8 @@ export function newCity(seed: number): SaveData {
       if (node.x < 1 || node.z < 1 || node.x > GRID - 1 || node.z > GRID - 1) node.entry = true;
     }
   };
-  // Drive on the right: the inner carriageway runs the way that puts the city on its right-hand
-  // side, so every slip road leaves from and joins the outer lane.
-  const alongX = e.dx === 0, ax = alongX ? 1 : 0, az = alongX ? 0 : 1;
-  const rightIsCity = (-az * e.dx + ax * e.dz) > 0;
-  if (rightIsCity) { carriageway(0.5, GRID - 0.5, INNER); carriageway(GRID - 0.5, 0.5, OUTER); }
+  if (d > 0) { carriageway(0.5, GRID - 0.5, INNER); carriageway(GRID - 0.5, 0.5, OUTER); }
   else { carriageway(GRID - 0.5, 0.5, INNER); carriageway(0.5, GRID - 0.5, OUTER); }
-  const d = rightIsCity ? 1 : -1; // which way the inner carriageway runs along the map
-  interchange(net, pos, front, d);
   if (second !== undefined) cloverleaf(net, pos, second, d, e, terrain);
   for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
@@ -527,41 +547,8 @@ export function newCity(seed: number): SaveData {
 /** Where the two carriageways run, measured in from the map edge. */
 export const OUTER = 10.5;
 export const INNER = 12.5;
-/** How far in from the edge an interchange's street node sits; the city grows from there. */
+/** How far in from the map edge the city's first streets begin, clear of the motorway. */
 export const DOOR = 16.5;
-/** Where the overpass comes down on the outside, and the radius of the loop ramps that meet it there. */
-export const OUTSIDE = 7.5;
-export const LOOP = OUTER - OUTSIDE;
-
-/**
- * A trumpet interchange, the layout built where a road ends at a motorway: the road crosses both
- * carriageways on one overpass, two direct slip roads serve the near carriageway on the city side,
- * and two loop ramps on the far side turn traffic through 270° to and from the far carriageway.
- */
-function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number, d: number): void {
-  const inside = pos(along, DOOR), outside = pos(along, OUTSIDE);
-  const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
-  fix(net.insertPath([outside, inside], KIND_ROAD, false, 1));
-  // Direct slip roads leave the near carriageway before the bridge and rejoin after it.
-  fix(net.insertPath([pos(along - 12 * d, INNER), pos(along - 5 * d, INNER + 0.3), inside], KIND_RAMP, true));
-  fix(net.insertPath([inside, pos(along + 5 * d, INNER + 0.3), pos(along + 12 * d, INNER)], KIND_RAMP, true));
-  // Loops: a circle tangent to the far carriageway at the top and to the road's end at its side.
-  // Vertices of the polygon circumscribing the circle make the curve pieces run along it.
-  const loop = (side: number): { x: number; z: number }[] => {
-    const ca = along + side * LOOP, ci = OUTSIDE, r = LOOP / Math.cos(Math.PI / 8);
-    const pts: { x: number; z: number }[] = [pos(ca, OUTER)];
-    for (let k = 0; k < 6; k++) {
-      const theta = (Math.PI / 8) * (2 * k + 1);
-      pts.push(pos(ca + side * r * Math.sin(theta), ci + r * Math.cos(theta)));
-    }
-    pts.push(outside);
-    return pts;
-  };
-  // The far carriageway runs against `d`: its traffic leaves after passing under the bridge, on the
-  // -d side, and rejoins on the +d side; both loops meet the road where the overpass comes down.
-  fix(net.insertPath(loop(-d), KIND_RAMP, true));
-  fix(net.insertPath(loop(d).reverse(), KIND_RAMP, true));
-}
 
 /**
  * The cloverleaf's loops: long along the motorway, short across it, because the outside quadrants
