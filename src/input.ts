@@ -10,6 +10,11 @@ import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UN
 import { gridPoint, roadPoint } from './placement';
 import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from './constants';
 import { terraformAllowed } from './extras';
+import type { TerraformAction } from './extras';
+
+const LAND_TOOLS = ['dig', 'fill', 'raise', 'lower'] as const;
+/** Brush radii in cells for the three sizes of the land brush. */
+export const BRUSH_RADIUS = [0.5, 1.6, 2.8];
 import * as THREE from 'three';
 import {
   T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
@@ -32,7 +37,7 @@ export type Tool =
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
   | 'cemetery' | 'crematorium' | 'postoffice' | 'barrier' | 'landmark'
-  | 'district' | 'undistrict' | 'dig' | 'fill'
+  | 'district' | 'undistrict' | 'dig' | 'fill' | 'raise' | 'lower'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
 export type RoadMode = 'straight' | 'curve' | 'smooth';
@@ -46,7 +51,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a,
-  district: 0xffffff, undistrict: 0xe04b3a, dig: 0x4f9fcf, fill: 0xa98a5a,
+  district: 0xffffff, undistrict: 0xe04b3a, dig: 0x4f9fcf, fill: 0xa98a5a, raise: 0x9c9a62, lower: 0x7a6a50,
   bulldoze: 0xe04b3a,
 };
 export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS, cemetery: T_CEMETERY, crematorium: T_CREMATORIUM, postoffice: T_POST_OFFICE, barrier: T_FLOOD_BARRIER, landmark: T_LANDMARK };
@@ -83,6 +88,9 @@ export class Input {
   /** Which district the district brush paints (1..8). */
   districtBrush = 1;
   onDistrict: (() => void) | null = null;
+  /** Land brush size: 0 small, 1 medium, 2 large. */
+  brushSize = 1;
+  private painted = new Set<number>();
   /** Live label next to the cursor; null hides it. */
   onCost: ((text: string | null, x: number, y: number, ok: boolean) => void) | null = null;
 
@@ -183,7 +191,47 @@ export class Input {
   }
 
   private isRectTool(): boolean {
-    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze', 'district', 'undistrict', 'dig', 'fill'].includes(this.tool);
+    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze', 'district', 'undistrict'].includes(this.tool);
+  }
+
+  private isLandTool(): boolean {
+    return (LAND_TOOLS as readonly string[]).includes(this.tool);
+  }
+
+  /** Tiles under the land brush centred on a tile. */
+  private brushTiles(centre: number): number[] {
+    const r = BRUSH_RADIUS[this.brushSize], cx = centre % GRID, cz = Math.floor(centre / GRID), out: number[] = [];
+    for (let z = Math.ceil(cz - r); z <= Math.floor(cz + r); z++) for (let x = Math.ceil(cx - r); x <= Math.floor(cx + r); x++) {
+      if (x < 0 || z < 0 || x >= GRID || z >= GRID || Math.hypot(x - cx, z - cz) > r) continue;
+      out.push(z * GRID + x);
+    }
+    return out;
+  }
+
+  /** Shape the ground under the brush, once per tile per stroke. */
+  private paintLand(centre: number): void {
+    const tiles = this.brushTiles(centre).filter(t => !this.painted.has(t));
+    for (const t of tiles) this.painted.add(t);
+    if (!tiles.length) return;
+    const result = this.game.terraform(tiles, this.tool as TerraformAction);
+    if (result.broke) this.onToast?.('Not enough money');
+  }
+
+  /** Show the brush footprint under the cursor, lit where the ground can be shaped. */
+  private previewBrush(centre: number): void {
+    const half = GRID / 2;
+    let n = 0;
+    q.identity();
+    for (const t of this.brushTiles(centre)) {
+      const ok = terraformAllowed(this.game.baseTerrain, this.game.extras.terraform, t, this.tool as TerraformAction) && !this.game.raster.cover[t] && this.game.owners[t] < 0;
+      m4.compose(new THREE.Vector3((t % GRID) - half + 0.5, 0, ((t / GRID) | 0) - half + 0.5), q, one);
+      this.rect.setMatrixAt(n, m4);
+      this.rect.setColorAt(n, tmpColor.setHex(ok ? 0xffffff : 0x555555));
+      n++;
+    }
+    this.rect.count = n;
+    this.rect.instanceMatrix.needsUpdate = true;
+    if (this.rect.instanceColor) this.rect.instanceColor.needsUpdate = true;
   }
 
   private onKey = (e: KeyboardEvent): void => {
@@ -276,6 +324,11 @@ export class Input {
     if (this.isRoadTool()) {
       this.downScreen = { x: e.clientX, y: e.clientY };
       this.downWorld = p;
+    } else if (this.isLandTool()) {
+      this.dragging = true;
+      this.painted.clear();
+      this.curTile = this.tileOf(p);
+      this.paintLand(this.curTile);
     } else if (this.isRectTool()) {
       this.dragging = true;
       this.startTile = this.tileOf(p);
@@ -298,9 +351,16 @@ export class Input {
       if (pressing) this.previewRoad([this.snap(this.downWorld!)], null, p, e);
       else if (this.chain.length) this.previewRoad(this.chain, this.tangent, p, e);
       else this.updateHover(p, e);
+    } else if (this.dragging && this.isLandTool()) {
+      const t = this.tileOf(p);
+      if (t !== this.curTile) { this.curTile = t; this.paintLand(t); }
+      this.previewBrush(t);
     } else if (this.dragging) {
       const t = this.tileOf(p);
       if (t !== this.curTile) { this.curTile = t; this.updateRect(); }
+    } else if (this.isLandTool()) {
+      this.previewBrush(this.tileOf(p));
+      this.onCost?.(null, e.clientX, e.clientY, true);
     } else {
       this.updateHover(p, e);
     }
@@ -339,6 +399,7 @@ export class Input {
       return;
     }
     if (!this.dragging) return;
+    if (this.isLandTool()) { this.dragging = false; this.painted.clear(); return; }
     this.commitRect();
     this.dragging = false;
     this.rect.count = 0;
@@ -447,6 +508,7 @@ export class Input {
 
   private roadProblem(path: P[]): string | null {
     if (this.tool === 'parkpath') return this.game.parkPathProblem(buildPieces(path));
+    if (measurePath(path, this.game.hillMask).wet > 0) return 'Roads cannot climb raised ground: lower it first';
     const structure = this.roadStructure(path);
     if (structure) {
       const plan = structurePlan(this.game.net, this.game.terrain, this.game.kind, path, this.drawKind(), structure);
@@ -598,11 +660,9 @@ export class Input {
     const half = GRID / 2;
     let n = 0;
     q.identity();
-    const zoning = !['bulldoze', 'district', 'undistrict', 'dig', 'fill'].includes(this.tool);
-    const shaping = this.tool === 'dig' || this.tool === 'fill';
+    const zoning = !['bulldoze', 'district', 'undistrict'].includes(this.tool);
     for (const t of this.rectTiles()) {
       if (zoning && !this.game.buildable(t)) continue;
-      if (shaping && !terraformAllowed(this.game.baseTerrain, this.game.extras.terraform, t, this.tool as 'dig' | 'fill')) continue;
       m4.compose(new THREE.Vector3((t % GRID) - half + 0.5, 0, ((t / GRID) | 0) - half + 0.5), q, one);
       this.rect.setMatrixAt(n, m4);
       // Tiles too far from any road are shown gray: they can be zoned but nothing will grow there yet.
@@ -623,11 +683,6 @@ export class Input {
     if (this.tool === 'district' || this.tool === 'undistrict') {
       g.paintDistrict(tiles, this.tool === 'district' ? this.districtBrush : 0);
       this.onDistrict?.();
-      return;
-    } else if (this.tool === 'dig' || this.tool === 'fill') {
-      const result = g.terraform(tiles, this.tool);
-      if (result.broke) this.onToast?.('Not enough money');
-      else if (!result.changed) this.onToast?.(this.tool === 'dig' ? 'Dig on open ground, clear of roads and buildings' : 'Fill in along the bank; the river keeps a channel at least two cells wide');
       return;
     } else if (this.tool === 'bulldoze') {
       for (const t of tiles) if ((g.kind[t] !== T_EMPTY || g.owners[t] >= 0) && g.setKind(t, T_EMPTY, 0)) changed++;

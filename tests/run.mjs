@@ -21,16 +21,16 @@ const X = await import('../src/extras.ts');
 /** Bytes the v13 extras block takes for a city, mirroring what encode() writes (including motorway kind bits). */
 const extrasLength = (city) => {
   const segHi = city.net.segs.flatMap((seg, k) => (seg[5] & 256 ? [k] : []));
-  const json = { ...X.extrasToJson(city.extras ?? { ...X.defaultExtras(city.tax), river: 0 }), ...(segHi.length ? { segHi } : {}) };
+  const json = { ...X.extrasToJson(city.extras ?? X.defaultExtras(city.tax)), ...(segHi.length ? { segHi } : {}) };
   return 4 + new TextEncoder().encode(JSON.stringify(json)).length;
 };
-const { newCity } = await import('../src/game.ts');
+const { newCity, DOOR } = await import('../src/game.ts');
 const N = await import('../src/roads/network.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
-const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater, RIVER_VERSION: C_RIVER } = await import('../src/terrain.ts');
+const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater } = await import('../src/terrain.ts');
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
 const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
@@ -285,27 +285,9 @@ test('river valleys never move: the same maps every seed has always made', () =>
   const golden = '69b03eec a72d6265 69020fd6 bb0fdf3a 623474d1 2041838b b6f8bdee 506f4201 17e74ff3 52defdfe 51f43905 6547e6b3 841a48e0 f20a9953 af8ce1da f8f1ec87 85d4d797 7aa0bc57 c7dfaf0c 2d5956db aacd8a34 d8e45250 90bb1bc6 16506900 e3c5ff2b bd562806 7b44873a 414bdc04 7126d800 291d5de7';
   const digests = [];
   for (let seed = 1; seed <= 30; seed++) {
-    digests.push(terrainDigest(generateTerrain(seed, 0)));
+    digests.push(terrainDigest(generateTerrain(seed)));
   }
   assert.equal(digests.join(' '), golden, 'River valley maps must stay byte for byte what they were');
-  // Cities saved before rivers meandered carry no river version and get the old valley back.
-  const old = demoCity(); delete old.extras;
-  assert.equal(decode(encode(old)).extras.river, 0);
-  assert.equal(decode(encode(demoCity())).extras.river, C_RIVER, 'New cities record the generator that shaped them');
-  // The new generator keeps turning: the channel never runs straight for long.
-  const wiggle = (t) => {
-    let total = 0;
-    for (let i = 2; i < t.river.length; i++) {
-      const a = t.river[i - 2], b = t.river[i - 1], c = t.river[i];
-      const d = Math.atan2(c.z - b.z, c.x - b.x) - Math.atan2(b.z - a.z, b.x - a.x);
-      total += Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
-    }
-    return total;
-  };
-  for (const seed of [1, 2, 3, 4, 5]) {
-    const oldRiver = generateTerrain(seed, 0), newRiver = generateTerrain(seed);
-    assert.ok(wiggle(newRiver) > wiggle(oldRiver) * 1.5, `Seed ${seed} bends more than it used to`);
-  }
 });
 const THREE = await import('three');
 test('building picking follows tile instances after rebuilding in a new location', () => {
@@ -572,14 +554,15 @@ test('a new map has a motorway across it with interchanges, and its entries run 
     assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
   }
   const kinds = [...net.segs.values()];
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP && s.structure === 1).length, 4, 'Two interchanges each fly two ramps over the inner carriageway');
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP && !s.structure).length, 4, 'and run two slip roads to the inner one');
+  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 2, 'Each of the two diamond interchanges has one overpass');
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 8, 'and four slip roads at grade');
+  assert.ok(kinds.filter(s => s.kind === N.KIND_RAMP).every(s => !s.structure && s.oneway), 'Slip roads stay on the ground and run one way');
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
   assert.ok(!Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'None of it stands in the river');
   // The interchange's street node is where the old highway stub used to end, so the demo still fits.
-  const e = terrain.entry, door = net.nearestNode(e.x + e.dx * 7.5, e.z + e.dz * 7.5, 0.2);
-  assert.ok(door && net.degree(door.id) === 4, 'Four ramps meet at the front door');
+  const e = terrain.entry, door = net.nearestNode(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 0.2);
+  assert.ok(door && net.degree(door.id) === 3, 'The overpass and two slip roads meet at the front door');
   const before = net.toPlain();
   ensureApproaches(net);
   assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');
@@ -869,6 +852,28 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   assert.ok(onRamp > 5, 'Cars use the ramps to get on and off');
   assert.ok(latest().stats.gaveUp <= 2 && rampUsers.size > 40, `Merges keep moving: ${rampUsers.size} cars used the ramps, ${latest().stats.gaveUp} gave up`);
 });
+test('through traffic rolls along the motorway even when the city is empty', () => {
+  const city = newCity(11); city.cityLevel = 0;
+  load(city); send({ type: 'speed', value: 1 });
+  let onMotorway = 0, elsewhere = 0;
+  const net = Network.fromPlain(city.net), lanes = [...net.segs.values()].filter(q => q.kind === N.KIND_MOTORWAY);
+  for (let f = 0; f < 40 * C.SIM_HZ; f++) {
+    simulateFrame();
+    const frame = messages.findLast(m => m.type === 'frame'); messages.length = 0;
+    if (!frame || f % 10) continue;
+    for (let n = 0; n < C.MAX_CARS; n++) {
+      if (!frame.cars[n * 4 + 3]) continue;
+      const x = frame.cars[n * 4] + 40, z = frame.cars[n * 4 + 1] + 40;
+      if (lanes.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[N.KIND_MOTORWAY] + 0.05)) onMotorway++; else elsewhere++;
+    }
+  }
+  send({ type: 'speed', value: 0 });
+  const stats = latest().stats;
+  assert.ok(onMotorway > 30, `Cars pass through on the motorway (${onMotorway} samples)`);
+  assert.equal(elsewhere, 0, 'None of them leaves the motorway for an empty city');
+  assert.equal(stats.commute, 0, 'Passing traffic never counts as a commute');
+  console.log(`  Through traffic: ${onMotorway} samples on the motorway, ${stats.gaveUp} gave up`);
+});
 test('policies cost money, change the simulation and survive a save', () => {
   assert.equal(policyExpense(noPolicies(), 5000), 0);
   const recycling = { ...noPolicies(), recycling: true };
@@ -1045,6 +1050,40 @@ test('transport stops operating after utilities fail or a station is removed', (
 });
 const { Input } = await import('../src/input.ts');
 const { Game } = await import('../src/game.ts');
+const hillsModule = await import('../src/render/hills.ts');
+test('raised ground: hills pile up a storey at a time, block building and roads, and save', () => {
+  // A Game without a worker: the test only shapes the ground and reads it back.
+  const savedWorker = globalThis.Worker; globalThis.Worker = class { postMessage() {} };
+  const g = new Game(); globalThis.Worker = savedWorker;
+  g.load(newCity(5));
+  const t = g.terrain;
+  const free = [...Array(C.N_TILES).keys()].filter(i => { const x = i % C.GRID, z = Math.floor(i / C.GRID); return x > 20 && z > 20 && x < 60 && z < 60 && !t.water[i] && !t.shore[i] && !g.raster.cover[i] && g.owners[i] < 0; });
+  const patch = free.slice(0, 9);
+  const money = g.stats.money;
+  assert.equal(g.terraform(patch, 'raise').changed, 9);
+  assert.equal(g.terraform(patch, 'raise').changed, 9, 'Painting again builds it higher');
+  assert.ok(patch.every(i => X.hillLevel(g.extras.terraform[i]) === 2));
+  for (let k = 0; k < 5; k++) g.terraform(patch, 'raise');
+  assert.ok(patch.every(i => X.hillLevel(g.extras.terraform[i]) === X.HILL_MAX), 'Hills top out');
+  assert.ok(patch.every(i => !g.buildable(i)), 'Nothing builds on raised ground');
+  assert.ok(g.hillMask[patch[0]] === 1 && g.hillMask[free[20]] === 0);
+  assert.ok(!X.terraformAllowed(t, g.extras.terraform, patch[0], 'dig'), 'A hill has to come down before it can be dug');
+  const back = decode(encode(g.snapshot()));
+  assert.equal(X.hillLevel(back.extras.terraform[patch[0]]), X.HILL_MAX, 'Hills survive a save');
+  assert.equal(g.terraform(patch, 'lower').changed, 9);
+  assert.equal(X.hillLevel(g.extras.terraform[patch[0]]), X.HILL_MAX - 1);
+  for (let k = 0; k < 5; k++) g.terraform(patch, 'lower');
+  assert.ok(patch.every(i => g.extras.terraform[i] === 0 && g.buildable(i)), 'Lowered all the way, the ground is level and buildable again');
+  assert.ok(g.stats.money < money, 'Moving earth costs money');
+  const { HillLayer } = hillsModule;
+  const layer = new HillLayer();
+  g.terraform(patch, 'raise'); g.terraform(patch, 'raise');
+  layer.rebuild(g.extras.terraform);
+  const cx = patch[4] % C.GRID + 0.5 - 40, cz = Math.floor(patch[4] / C.GRID) + 0.5 - 40;
+  assert.ok(layer.heightAt(cx, cz) > 0.5, `The mound rises over the raised cells (${layer.heightAt(cx, cz).toFixed(2)})`);
+  assert.equal(layer.heightAt(cx + 12, cz + 12), 0, 'and is flat away from them');
+});
+
 test('transport placement enforces unlocks and clearing a site removes its whole reservation', () => {
   const input = Object.create(Input.prototype);
   input.game = { stats: { cityLevel: 0 } };
@@ -1273,7 +1312,8 @@ test('dense traffic never overlaps vehicle bodies and produces recoverable colli
       const space = new TrafficSpace();
       for (let i = 0; i < C.MAX_CARS; i++) {
         const o = i * 4, type = frame.cars[o + 3]; if (!type) continue;
-        const p = { x: frame.cars[o], z: frame.cars[o + 1], angle: frame.cars[o + 2], type };
+        // Heights matter: a car on the interchange overpass sits above the carriageway, not in it.
+        const p = { x: frame.cars[o], z: frame.cars[o + 1], angle: frame.cars[o + 2], type, y: frame.carHeights[i] };
         // Float32 frames lose a few ulps; test actual bodies rather than the safety buffer.
         for (const other of space.poses.values()) if (Math.abs(p.x - other.x) < 1 && Math.abs(p.z - other.z) < 1) assert.equal(vehiclesOverlap(p, other, 0), false, 'Vehicle bodies intersect');
         space.set(i, p);
@@ -1283,7 +1323,7 @@ test('dense traffic never overlaps vehicle bodies and produces recoverable colli
       const poses = [];
       for (let i = 0; i < C.MAX_CARS; i++) {
         const o = i * 4, type = frame.cars[o + 3]; if (!type) continue;
-        const p = { x: frame.cars[o], z: frame.cars[o + 1], angle: frame.cars[o + 2], type };
+        const p = { x: frame.cars[o], z: frame.cars[o + 1], angle: frame.cars[o + 2], type, y: frame.carHeights[i] };
         if (previousFrame.carIds[i] === frame.carIds[i] && previousFrame.cars[o + 3] === type && Math.abs(previousFrame.cars[o] - p.x) + Math.abs(previousFrame.cars[o + 1] - p.z) < 1.5) {
           p.x = previousFrame.cars[o] + (p.x - previousFrame.cars[o]) * alpha;
           p.z = previousFrame.cars[o + 1] + (p.z - previousFrame.cars[o + 1]) * alpha;

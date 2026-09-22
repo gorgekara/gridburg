@@ -26,7 +26,7 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Deathcare and post.** Cemeteries, crematoria and post offices (Services, from Thriving town). Once the city is a City, new towers need 30% deathcare and post coverage.
 - **Power and water follow the roads.** Each connected road network shares only its own power plants, pumps and outlets, so a neighbourhood cut off from the grid goes dark.
 - **Districts.** Paint up to eight named districts (Districts menu) and give each its own policies: high-rise ban, quiet streets, green district, tourist quarter, tax break or neighbourhood watch. Local policies are billed per building.
-- **Land.** Dig out ponds and inlets, or fill in the river bank to make building land (Land menu). The river always keeps a channel at least two cells wide.
+- **Land.** A paintbrush in three sizes (Land menu): dig out ponds and inlets, fill in the river bank to make building land, or raise the ground into hills and ridges a storey at a time (up to four) and lower it again. Forests climb raised ground; nothing can be built or driven on it. The river always keeps a channel at least two cells wide.
 - **Disasters.** From Small town, the river occasionally floods the low ground beside it and tornadoes cross the valley, knocking buildings down a level or two. Flood barriers on the bank protect everything within seven cells. Switch disasters off in Settings.
 - **Map views.** Land value, well-being, noise, crime, rubbish, districts and flood risk, from the layers button.
 - **Statistics.** Charts of population, treasury, income, happiness, land value, visitors and demand since the city was loaded.
@@ -59,8 +59,10 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   expressway; the map's own motorway comes with interchanges to build from.
 - **A motorway across the map.** Every new map has a motorway running its full length just inside the
   roomier edge: two one-way carriageways side by side, traffic arriving from both ends. Two diamond
-  interchanges come with it — slip roads to the inner carriageway and flyover ramps to the outer one,
-  meeting at a street node the city grows from. The motorway and its interchanges cannot be bulldozed
+  interchanges come with it, laid out like real ones: a street crosses both carriageways on one
+  overpass, and four slip roads peel off at grade to meet it at the foot of the bridge on either side.
+  The city grows from the street node on the inside. Traffic passing through the region rolls along
+  the motorway from one end of the map to the other without ever turning off. The motorway and its interchanges cannot be bulldozed
   and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**
   ($240/cell, three lanes) and a **highway ramp** ($110/cell, one lane). Both run in the direction you
@@ -131,9 +133,7 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   need all three to grow past small. Outlets foul the river downstream, so pumps belong upstream.
 - **Pollution.** Industry and coal pollute the ground around them. It spreads, drives residents away, and
   spoils water towers. Press P to see it.
-- **A different river every map**, generated from a seed that is stored in the save. Rivers bend on
-  every scale, so the channel never runs straight for long; cities saved before this keep the valley
-  they were built in.
+- **A different river every map**, generated from a seed that is stored in the save.
 
 ## City progression and neighborhood services
 

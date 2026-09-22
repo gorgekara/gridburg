@@ -1,5 +1,5 @@
 import { T_TROLLEY, T_TAXI, T_FLOOD_BARRIER, T_LANDMARK, FLOOD_BARRIER_RADIUS } from '../constants';
-import { COST_DIG, COST_FILL, TAX_LABELS } from '../extras';
+import { COST_DIG, COST_FILL, COST_RAISE, COST_LOWER, TAX_LABELS } from '../extras';
 import type { Taxes } from '../extras';
 import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, LEISURE_UNLOCK } from '../constants';
 import { FUNDING_KEYS, FUNDING_LABELS, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT } from '../management';
@@ -33,6 +33,7 @@ export interface HudActions {
   toggleWalk(): void;
   toggleDrive(): void;
   setElevation(level: number): void;
+  setBrush(size: number): void;
   /** Move the camera to whatever a message is about; false when there is nothing to show. */
   focusOn(id: string): boolean;
   closeInspection(): void;
@@ -115,8 +116,10 @@ const CATEGORIES: Category[] = [
   {
     id: 'land', label: 'Land',
     tools: [
-      { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Drag over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
-      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Drag along the river bank to fill it in as buildable land. The river always keeps a channel at least two cells wide. Filling a dug pond restores the ground' },
+      { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Paint over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
+      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint along the river bank to fill it in as buildable land. The river always keeps a channel at least two cells wide. Filling a dug pond restores the ground' },
+      { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)} / cell`, note: 'Hills and ridges', hint: 'Paint to pile earth up, a storey at a time up to four. Go over the same ground again to build it higher. Nothing can be built or driven on raised ground, but forests climb it' },
+      { id: 'lower', label: 'Lower ground', price: `${money(COST_LOWER)} / cell`, note: 'Take a hill down', hint: 'Paint over raised ground to take it down a storey at a time' },
     ],
   },
   {
@@ -223,6 +226,7 @@ export class Hud {
   private catBtns = new Map<string, HTMLButtonElement>();
   private modeBtns = new Map<string, HTMLButtonElement>();
   private heightBtns = new Map<number, HTMLButtonElement>();
+  private brushBtns = new Map<number, HTMLButtonElement>();
   private elevation = 0;
   private panels = new Map<string, HTMLElement>();
   private panel = el('div', 'panel');
@@ -265,6 +269,10 @@ export class Hud {
     this.elevation = level;
     for (const [value, button] of this.heightBtns) button.classList.toggle('active', value === level);
     this.setTool(this.tool);
+  }
+
+  setBrush(size: number): void {
+    for (const [value, button] of this.brushBtns) button.classList.toggle('active', value === size);
   }
 
   /** Which way the building in hand is facing, and whether that control applies at all. */
@@ -608,6 +616,21 @@ export class Hud {
           seg.append(b);
         }
         side.append(seg);
+      }
+      if (c.id === 'land') {
+        const brush = el('div', 'modes');
+        brush.append(el('span', 'mlabel', 'Brush'));
+        for (const [size, label, ic] of [[0, 'Small brush · one cell', 'brush1'], [1, 'Medium brush · about nine cells', 'brush2'], [2, 'Large brush · about twenty-five cells', 'brush3']] as [number, string, string][]) {
+          const b = el('button', 'mode');
+          b.append(icon(ic, 20));
+          b.title = label;
+          b.setAttribute('aria-label', label);
+          b.addEventListener('click', () => { actions.setBrush(size); this.setBrush(size); });
+          this.brushBtns.set(size, b);
+          brush.append(b);
+        }
+        side.append(brush);
+        this.setBrush(1);
       }
       if (side.childElementCount) body.append(side);
       for (const t of c.tools) {

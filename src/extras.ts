@@ -1,6 +1,5 @@
 import { GRID, N_TILES } from './constants';
 import type { Terrain } from './terrain';
-import { RIVER_VERSION } from './terrain';
 
 /**
  * City settings that arrived after the fixed save header: tax per zone, districts and their local
@@ -34,8 +33,18 @@ export const districtHas = (mask: number, id: DistrictPolicyId): boolean => (mas
 /** Ground the player has changed: dug out to water, or filled in to land. */
 export const DUG = 1;
 export const FILLED = 2;
+/** Raised ground: values HILL_BASE + 1 .. HILL_BASE + HILL_MAX are hills of that height. */
+export const HILL_BASE = 2;
+export const HILL_MAX = 4;
 export const COST_DIG = 120;
 export const COST_FILL = 260;
+export const COST_RAISE = 70;
+export const COST_LOWER = 35;
+export type TerraformAction = 'dig' | 'fill' | 'raise' | 'lower';
+/** How many storeys of earth stand on a tile, 0 on level ground. */
+export const hillLevel = (v: number): number => Math.max(0, v - HILL_BASE);
+/** Height in world units of a hill of that level, before smoothing. */
+export const HILL_STEP = 0.9;
 
 export interface ScenarioState { id: string; startTick: number; done?: 'won' | 'lost' }
 
@@ -48,21 +57,19 @@ export interface CityExtras {
   terraform: Uint8Array;
   scenario?: ScenarioState;
   disasters: boolean;
-  /** Which river generator shaped the map: absent in old cities, which keep their original valley. */
-  river: number;
 }
 
 export function defaultExtras(tax = 10): CityExtras {
   return {
     taxes: [tax, tax, tax, tax], district: new Uint8Array(N_TILES), districtNames: [...DEFAULT_DISTRICT_NAMES],
-    districtPolicies: new Array(DISTRICT_COUNT).fill(0), terraform: new Uint8Array(N_TILES), disasters: true, river: RIVER_VERSION,
+    districtPolicies: new Array(DISTRICT_COUNT).fill(0), terraform: new Uint8Array(N_TILES), disasters: true,
   };
 }
 
 export function cloneExtras(e: CityExtras): CityExtras {
   return {
     taxes: [...e.taxes] as Taxes, district: e.district.slice(), districtNames: [...e.districtNames],
-    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), scenario: e.scenario ? { ...e.scenario } : undefined, disasters: e.disasters, river: e.river,
+    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), scenario: e.scenario ? { ...e.scenario } : undefined, disasters: e.disasters,
   };
 }
 
@@ -94,7 +101,7 @@ function unrle(pairs: unknown, max: number): Uint8Array | null {
 export function extrasToJson(e: CityExtras): unknown {
   return {
     taxes: e.taxes, district: rle(e.district), names: e.districtNames, policies: e.districtPolicies,
-    terraform: rle(e.terraform), scenario: e.scenario, disasters: e.disasters, river: e.river,
+    terraform: rle(e.terraform), scenario: e.scenario, disasters: e.disasters,
   };
 }
 
@@ -105,7 +112,7 @@ export function extrasFromJson(data: unknown, tax: number): CityExtras | null {
   const taxes = d.taxes;
   if (!Array.isArray(taxes) || taxes.length !== 4 || !taxes.every(t => Number.isInteger(t) && t >= 0 && t <= 30)) return null;
   e.taxes = taxes as Taxes;
-  const district = unrle(d.district, DISTRICT_COUNT), terraform = unrle(d.terraform, FILLED);
+  const district = unrle(d.district, DISTRICT_COUNT), terraform = unrle(d.terraform, HILL_BASE + HILL_MAX);
   if (!district || !terraform) return null;
   e.district = district; e.terraform = terraform;
   if (!Array.isArray(d.names) || d.names.length !== DISTRICT_COUNT || !d.names.every(n => typeof n === 'string' && n.length <= 32)) return null;
@@ -116,8 +123,6 @@ export function extrasFromJson(data: unknown, tax: number): CityExtras | null {
   if (s !== undefined && (typeof s !== 'object' || typeof s.id !== 'string' || !Number.isInteger(s.startTick))) return null;
   e.scenario = s ? { id: s.id, startTick: s.startTick, done: s.done === 'won' || s.done === 'lost' ? s.done : undefined } : undefined;
   e.disasters = d.disasters !== false;
-  // A v13 city saved before rivers meandered has no river field: it keeps the valley it was built in.
-  e.river = Number.isInteger(d.river) ? d.river as number : 0;
   return e;
 }
 
@@ -144,10 +149,14 @@ export function shapeTerrain(base: Terrain, edits: Uint8Array): Terrain {
   return { ...base, water, shore, flow };
 }
 
-/** Whether this tile may be dug out or filled in. The river's own channel can be narrowed, never cut. */
-export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: 'dig' | 'fill'): boolean {
+/** Whether this tile may be dug out, filled in, raised or lowered. The river's own channel can be narrowed, never cut. */
+export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): boolean {
   const x = tile % GRID, z = Math.floor(tile / GRID);
   if (x < 1 || z < 1 || x >= GRID - 1 || z >= GRID - 1) return false;
+  // Earth piles up on dry, level ground and comes down again a storey at a time.
+  if (action === 'raise') return !base.water[tile] && edits[tile] !== DUG && edits[tile] !== FILLED && hillLevel(edits[tile]) < HILL_MAX;
+  if (action === 'lower') return hillLevel(edits[tile]) > 0;
+  if (hillLevel(edits[tile]) > 0) return false;
   if (action === 'dig') return !base.water[tile] && edits[tile] !== DUG;
   if (edits[tile] === DUG) return true;
   if (!base.water[tile] || edits[tile] === FILLED) return false;

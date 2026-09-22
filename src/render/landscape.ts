@@ -17,14 +17,23 @@ export function riverSamples(t: Terrain): RiverSample[] {
   const r = t.river, a = r[0], b = r[1], c = r[r.length - 1], d = r[r.length - 2];
   const al = Math.hypot(a.x - b.x, a.z - b.z), cl = Math.hypot(c.x - d.x, c.z - d.z);
   const points: RiverSample[] = [];
+  // Beyond the map the channel keeps wandering the way it does inside it, rather than running
+  // dead straight to the horizon. The wander starts at zero so it joins the real river seamlessly.
+  const phase = (t.seed % 1000) / 53;
+  const wander = (n: number, ph: number): number => Math.sin(n / 26 + ph) * 4.5 * Math.min(1, n / 20) + Math.sin(n / 9.5 + ph * 2) * 1.6 * Math.min(1, n / 8);
   // The stream climbs into the hills as a chute rather than a step: the ground mesh is coarse,
   // and anything steeper than this leaves the water standing on a shelf of its own.
+  const ux = (a.x - b.x) / al, uz = (a.z - b.z) / al;
   for (let n = 110; n >= 1; n--) {
-    const u = Math.max(0, Math.min(1, (n - 7) / 26));
-    points.push({ x: a.x + (a.x - b.x) / al * n - 40, z: a.z + (a.z - b.z) / al * n - 40, w: a.w, y: 4 * u * u * (3 - 2 * u) });
+    const u = Math.max(0, Math.min(1, (n - 7) / 26)), w = wander(n, phase);
+    points.push({ x: a.x + ux * n - uz * w - 40, z: a.z + uz * n + ux * w - 40, w: a.w, y: 4 * u * u * (3 - 2 * u) });
   }
   for (const p of r) points.push({ ...p, x: p.x - 40, z: p.z - 40, y: 0 });
-  for (let n = 1; n <= 110; n++) points.push({ x: c.x + (c.x - d.x) / cl * n - 40, z: c.z + (c.z - d.z) / cl * n - 40, w: c.w, y: 0 });
+  const vx = (c.x - d.x) / cl, vz = (c.z - d.z) / cl;
+  for (let n = 1; n <= 110; n++) {
+    const w = wander(n, phase + 2.1);
+    points.push({ x: c.x + vx * n - vz * w - 40, z: c.z + vz * n + vx * w - 40, w: c.w, y: 0 });
+  }
   return points;
 }
 
@@ -111,6 +120,8 @@ export class LandscapeLayer {
   private entrySignature = "";
   private baseHeights = new Float32Array();
   private natureSites = new Map<number, { bank: number; h: number }>();
+  /** Height of player-raised ground, so forests climb the hills instead of vanishing inside them. */
+  hillHeight: (x: number, z: number) => number = () => 0;
   private ground = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
   private trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.8, 5, 1, true), new THREE.MeshStandardMaterial({ color: 0x69523a }), 15000);
   private crowns = new THREE.InstancedMesh(canopyGeometry(false), new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1 }), 15000);
@@ -226,7 +237,8 @@ export class LandscapeLayer {
       this.entrySignature = signature;
       const p = this.ground.geometry.getAttribute('position');
       for (let i = 0; i < p.count; i++) {
-        const x = p.getX(i), z = p.getZ(i), cut = Math.max(0, Math.min(1, (roadDistance(x, z) - 2.5) / 5));
+        // A broad, gently shouldered cutting, so the road does not look as if it dives into a hillside.
+        const x = p.getX(i), z = p.getZ(i), cut = Math.max(0, Math.min(1, (roadDistance(x, z) - 5) / 9));
         p.setY(i, this.baseHeights[i] * cut - 0.025);
       }
       p.needsUpdate = true; this.ground.geometry.computeVertexNormals(); this.ground.geometry.computeBoundingSphere();
@@ -258,7 +270,8 @@ export class LandscapeLayer {
         site = { bank, h: landscapeHeight(x, z, t.seed, this.samples) };
         this.natureSites.set(n, site);
       }
-      const { bank, h } = site;
+      const { bank } = site;
+      const h = site.h + (inside ? this.hillHeight(x, z) : 0);
       if (bank < 1.1) continue;
       if (bank < 2.4 && rocks < 1200) {
         obj.position.set(x, h + 0.08, z); obj.scale.set(s * 0.27, s * 0.17, s * 0.21); obj.rotation.set(0.2, n, 0.3); obj.updateMatrix(); this.rocks.setMatrixAt(rocks++, obj.matrix);

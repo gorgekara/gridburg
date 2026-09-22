@@ -350,9 +350,14 @@ export class RoadLayer {
       const inbound = !seg?.oneway || seg.a === entry.id;
       if (!inbound || signs >= this.signs.length) continue;
       const sign = this.signs[signs++];
-      const gx = e.x - half, gz = e.z - half, off = hw + 0.95;
+      const off = hw + 0.95;
+      // On the verge to the right of the traffic, unless another carriageway runs there, in which
+      // case it stands on the outside of the pair instead of in the median.
+      const spot = (side: number): { x: number; z: number } => ({ x: e.x + e.dx * 1.5 - e.dz * off * side, z: e.z + e.dz * 1.5 + e.dx * off * side });
+      const clear = (q: { x: number; z: number }): boolean => ![...net.segs.values()].some(o => o.id !== seg?.id && Network.nearestOn(o, q.x, q.z).dist < HALF_WIDTH[o.kind] + 0.6);
+      const at = clear(spot(1)) ? spot(1) : spot(-1);
       sign.visible = true;
-      sign.position.set(gx + e.dx * 1.5 - e.dz * off, 0, gz + e.dz * 1.5 + e.dx * off);
+      sign.position.set(at.x - half, 0, at.z - half);
       sign.rotation.y = Math.atan2(e.dx, e.dz);
     }
 
@@ -518,5 +523,5 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
     length = d;
     if (hit.dist > clearance) break;
   }
-  return { length: Math.min(length + 0.2, seg.len * 0.45), side };
+  return { length: Math.min(length + 0.3, seg.len * 0.6), side };
 }

@@ -41,6 +41,8 @@ import { entryGate } from './roads/entries';
 import { footprintSize } from './sites';
 import { SERVICE_TOOL } from './input';
 import { TerraformLayer } from './render/terraform';
+import { HillLayer } from './render/hills';
+import { hillLevel } from './extras';
 import { DisasterLayer } from './render/disasters';
 import { DistrictLabels } from './render/districts';
 import { CyclistLayer } from './render/cyclists';
@@ -84,13 +86,15 @@ const pedestrians = new PedestrianLayer();
 const furniture = new StreetFurnitureLayer();
 const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
+const hills = new HillLayer();
+landscape.hillHeight = (x, z) => hills.heightAt(x, z);
 const disasterLayer = new DisasterLayer();
 const districtLabels = new DistrictLabels();
 const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(terraformLayer.group, disasterLayer.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -110,6 +114,7 @@ const hud = new Hud(uiRoot, {
   toggleWalk: () => { if (walker.active) walker.exit(); else startWalking(); },
   toggleDrive: () => { if (driver.active) driver.exit(); else startDriving(); },
   setElevation: (level) => input.setElevation(level),
+  setBrush: (size) => { input.brushSize = size; },
   focusOn: (id) => {
     // Take the camera to whatever the message is about.
     const tileAt = (): { x: number; z: number } | null => {
@@ -290,6 +295,7 @@ function blockedAt(x: number, z: number, y = 0): boolean {
   const tx = x + GRID / 2, tz = z + GRID / 2;
   if (tx < 0.2 || tz < 0.2 || tx > GRID - 0.2 || tz > GRID - 0.2) return true;
   const cx = Math.floor(tx), cz = Math.floor(tz);
+  if (hillLevel(game.extras.terraform[cz * GRID + cx])) return true;
   // Up on a bridge nothing below is in the way; over the river only a deck will carry you.
   const deck = y > 0.12 || game.terrain.water[cz * GRID + cx] ? deckAt(x, z, y) : null;
   if (deck !== null && deck > 0.12) return false;
@@ -408,9 +414,10 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-game.onTerraform = () => { terraformLayer.rebuild(game.extras.terraform); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
-game.onUndo = () => { terraformLayer.rebuild(game.extras.terraform); };
-game.onTerrain = () => { terraformLayer.rebuild(game.extras.terraform); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform); hills.rebuild(game.extras.terraform); landscape.develop(game.kind, game.raster, game.net); };
+game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
+game.onUndo = () => { reshape(); };
+game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   parkPaths.rebuild(game.parkPaths);
   showCoverage();

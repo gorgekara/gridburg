@@ -13,7 +13,7 @@ import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
 import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
-import { Network, KIND_MOTORWAY, KIND_RAMP } from './roads/network';
+import { Network, KIND_MOTORWAY, KIND_RAMP, KIND_ROAD } from './roads/network';
 import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
 import type { Raster } from './roads/raster';
@@ -23,7 +23,8 @@ import { emptyStats } from './sim/messages';
 import type { EditPayload, MainToWorker, Stats, WorkerToMain, TileReport } from './sim/messages';
 
 import type { SaveData } from './save';
-import { cloneExtras, defaultExtras, shapeTerrain, terraformAllowed, DUG, FILLED, COST_DIG, COST_FILL } from './extras';
+import { cloneExtras, defaultExtras, shapeTerrain, terraformAllowed, hillLevel, DUG, FILLED, HILL_BASE, COST_DIG, COST_FILL, COST_RAISE, COST_LOWER } from './extras';
+import type { TerraformAction } from './extras';
 import type { CityExtras, Taxes } from './extras';
 import type { CityMaps } from './sim/messages';
 import type { DisasterKind, DisasterView } from './sim/disasters';
@@ -161,7 +162,7 @@ export class Game {
    * a pump or an outlet belongs on the bank.
    */
   buildable(i: number, bank = false): boolean {
-    if (this.parkPathLotMask[i]) return false;
+    if (this.parkPathLotMask[i] || hillLevel(this.extras.terraform[i]) > 0) return false;
     if (this.airportClearance[i] || this.terrain.water[i] || this.raster.cover[i] || this.owners[i] >= 0) return false;
     return bank || !this.terrain.shore[i];
   }
@@ -324,7 +325,7 @@ export class Game {
     this.incidentSave = d.incidents;
     this.incidents = { fires: d.incidents?.fires ?? [], heists: [], crashes: [], crime: [], patrol: [] };
     this.seed = d.seed;
-    this.baseTerrain = generateTerrain(d.seed, this.extras.river);
+    this.baseTerrain = generateTerrain(d.seed);
     this.terrain = shapeTerrain(this.baseTerrain, this.extras.terraform);
     this.maps = null; this.disaster = null;
     this.net = Network.fromPlain(d.net);
@@ -408,17 +409,25 @@ export class Game {
     this.extras.districtNames[district - 1] = name.slice(0, 32) || `District ${district}`;
   }
 
-  /** Dig tiles out to water or fill them in to land. Returns how many changed; stops when money runs out. */
-  terraform(tiles: number[], action: 'dig' | 'fill'): { changed: number; broke: boolean } {
+  /**
+   * Dig tiles out to water, fill them in to land, or pile earth up and take it down again. Returns
+   * how many changed; stops when money runs out. Nothing under a road or a building can be shaped.
+   */
+  terraform(tiles: number[], action: TerraformAction): { changed: number; broke: boolean } {
     let changed = 0, broke = false;
     for (const t of tiles) {
       if (!terraformAllowed(this.baseTerrain, this.extras.terraform, t, action)) continue;
-      if (this.raster.cover[t] || this.owners[t] >= 0 || (this.kind[t] && action === 'dig')) continue;
-      const cost = action === 'dig' ? COST_DIG : COST_FILL;
+      if (this.raster.cover[t] || this.owners[t] >= 0 || (this.kind[t] && action !== 'fill')) continue;
+      const cost = action === 'dig' ? COST_DIG : action === 'fill' ? COST_FILL : action === 'raise' ? COST_RAISE : COST_LOWER;
       if (!this.canAfford(cost)) { broke = true; break; }
-      // Filling a dug pond, or digging out old fill, just puts the ground back as it was.
-      const undoes = (action === 'fill' && this.extras.terraform[t] === DUG) || (action === 'dig' && this.extras.terraform[t] === FILLED);
-      this.extras.terraform[t] = undoes ? 0 : action === 'dig' ? DUG : FILLED;
+      const v = this.extras.terraform[t];
+      if (action === 'raise') this.extras.terraform[t] = HILL_BASE + hillLevel(v) + 1;
+      else if (action === 'lower') this.extras.terraform[t] = hillLevel(v) > 1 ? v - 1 : 0;
+      else {
+        // Filling a dug pond, or digging out old fill, just puts the ground back as it was.
+        const undoes = (action === 'fill' && v === DUG) || (action === 'dig' && v === FILLED);
+        this.extras.terraform[t] = undoes ? 0 : action === 'dig' ? DUG : FILLED;
+      }
       this.pendingSpent += cost;
       changed++;
     }
@@ -429,6 +438,13 @@ export class Game {
       this.onTerraform?.();
     }
     return { changed, broke };
+  }
+
+  /** 1 where earth has been piled up: nothing can be zoned, built or driven there. */
+  get hillMask(): Uint8Array {
+    const out = new Uint8Array(N_TILES);
+    for (let i = 0; i < N_TILES; i++) if (hillLevel(this.extras.terraform[i])) out[i] = 1;
+    return out;
   }
 
   setDisasters(on: boolean, trigger?: DisasterKind): void {
@@ -477,14 +493,20 @@ export function newCity(seed: number): SaveData {
     : { x: along, z: e.z + e.dz * inward };
   const front = e.dx ? e.z : e.x;
   const carriageway = (from: number, to: number, inward: number): void => {
-    for (const id of net.insertPath([pos(from, inward), pos(to, inward)], KIND_MOTORWAY, true)) net.segs.get(id)!.fixed = true;
+    const ids = net.insertPath([pos(from, inward), pos(to, inward)], KIND_MOTORWAY, true);
+    for (const id of ids) net.segs.get(id)!.fixed = true;
+    // Only the carriageway ends are entrances; nothing else this close to the edge is.
+    for (const id of [ids[0], ids[ids.length - 1]]) for (const n of [net.segs.get(id)!.a, net.segs.get(id)!.b]) {
+      const node = net.nodes.get(n)!;
+      if (node.x < 1 || node.z < 1 || node.x > GRID - 1 || node.z > GRID - 1) node.entry = true;
+    }
   };
   carriageway(0.5, GRID - 0.5, INNER); // traffic heading up the map on the city side
   carriageway(GRID - 0.5, 0.5, OUTER); // and back down on the outside
-  for (const n of net.nodes.values()) if (n.x < 1 || n.z < 1 || n.x > GRID - 1 || n.z > GRID - 1) n.entry = true;
   interchange(net, pos, front);
-  const second = front + 26 < GRID - 12 ? front + 26 : front - 26;
+  const second = front + 28 < GRID - 12 ? front + 28 : front - 28;
   if (second > 12) interchange(net, pos, second);
+  for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
   return {
     seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
@@ -493,25 +515,26 @@ export function newCity(seed: number): SaveData {
 }
 
 /** Where the two carriageways run, measured in from the map edge. */
-export const OUTER = 2.5;
-export const INNER = 4.5;
-/** How far in from the edge an interchange's street node sits: the old highway stub ended here too. */
-export const DOOR = 7.5;
+export const OUTER = 4.0;
+export const INNER = 6.0;
+/** How far in from the edge an interchange's street node sits; the city grows from there. */
+export const DOOR = 9.5;
 
 /**
- * A diamond interchange: slip roads off and on to the inner carriageway, and flyover ramps across it
- * to the outer one, all meeting at a street node the city grows from.
+ * A diamond interchange, the way real ones are laid out: a street crosses both carriageways on one
+ * overpass, and four slip roads leave and join the carriageways at grade, meeting the street at the
+ * foot of the bridge on either side. Each slip road peels away along the carriageway before turning.
  */
 function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number): void {
-  const door = pos(along, DOOR);
-  const ramps = [
-    ...net.insertPath([pos(along - 6, INNER), door], KIND_RAMP, true),
-    ...net.insertPath([door, pos(along + 6, INNER)], KIND_RAMP, true),
-    ...net.insertPath([pos(along + 8, OUTER), door], KIND_RAMP, true, 1),
-    ...net.insertPath([door, pos(along - 8, OUTER)], KIND_RAMP, true, 1),
-  ];
-  for (const id of ramps) net.segs.get(id)!.fixed = true;
-  for (const n of net.nodes.values()) n.fixed = true;
+  const inside = pos(along, DOOR), outside = pos(along, 0.5);
+  const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
+  fix(net.insertPath([outside, inside], KIND_ROAD, false, 1));
+  // Inner carriageway carries traffic up the map (+along): leave before the bridge, rejoin after it.
+  fix(net.insertPath([pos(along - 11, INNER), pos(along - 4, INNER + 0.3), inside], KIND_RAMP, true));
+  fix(net.insertPath([inside, pos(along + 4, INNER + 0.3), pos(along + 11, INNER)], KIND_RAMP, true));
+  // Outer carriageway runs the other way.
+  fix(net.insertPath([pos(along + 11, OUTER), pos(along + 4, OUTER - 0.3), outside], KIND_RAMP, true));
+  fix(net.insertPath([outside, pos(along - 4, OUTER - 0.3), pos(along - 11, OUTER)], KIND_RAMP, true));
 }
 
 export function randomSeed(): number {

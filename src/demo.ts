@@ -1,5 +1,6 @@
 import { T_CEMETERY, T_POST_OFFICE } from './constants';
 import { defaultExtras } from './extras';
+import { DOOR } from './game';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, SERVICES } from './constants';
 import { footprint, siteOwners } from './sites';
 import { T_PARK, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, idx, inBounds } from './constants';
@@ -29,7 +30,8 @@ export function demoCity(expanded = false): SaveData {
   });
 
   // Streets.
-  net.insertPath([P(7, 0), P(40, 0)], KIND_AVENUE);
+  // The avenue starts at the interchange's street node, at the foot of the overpass.
+  net.insertPath([P(DOOR - 0.5, 0), P(40, 0)], KIND_AVENUE);
   for (const side of [-12, -6, 6, 12]) net.insertPath([clampP(P(10, side)), clampP(P(40, side))], KIND_ROAD);
   for (const along of [10, 16, 22, 28, 34, 40]) net.insertPath([clampP(P(along, -12)), clampP(P(along, 12))], KIND_ROAD);
   // Suburbs: a curved crescent beyond the grid, reached by extended side streets.
@@ -233,7 +235,13 @@ export function demoCity(expanded = false): SaveData {
         kind[i] = k; return;
       }
     };
-    placeLarge(P(14, -10), T_STATION); placeLarge(P(36, 10), T_STATION);
+    // One station within reach of a motorway gate, so it runs intercity trains, and one downtown.
+    const front = e.dx ? e.z : e.x;
+    const gates = [0.5, GRID - 0.5].map(along => (e.dx ? { x: e.x + e.dx * 4, z: along } : { x: along, z: e.z + e.dz * 4 }));
+    const nearGate = [front - 0.5, 0.5 - front, front - GRID + 0.5, GRID - 0.5 - front]
+      .map(side => clampP(P(11, side + (side > 0 ? -9 : 9))))
+      .find(q => gates.some(gt => Math.hypot(gt.x - q.x, gt.z - q.z) < 22)) ?? P(14, -10);
+    placeLarge(nearGate, T_STATION); placeLarge(P(36, 10), T_STATION);
     place(P(17, 2), T_SUBWAY, any); place(P(29, -2), T_SUBWAY, any); place(P(24, -14), T_SUBWAY, any);
     placeLarge(P(48, 14), T_AIRPORT);
     // Deathcare and a post office, which towers need once the city is a City.

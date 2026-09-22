@@ -110,6 +110,22 @@ let goods: GoodsReport = goodsFlow(kind, level, 0, { entries: 0, railLines: 0, d
 let visitors: TourismReport = { attraction: 0, access: 0, visitors: 0, income: 0 };
 let districtCost = 0;
 let freightBudget = 0;
+let throughBudget = 0;
+/** Cars a second passing along the highway from one gate to another without stopping in town. */
+const THROUGH_RATE = 0.35;
+/** Traffic just passing through: in at one gate, out at another, never leaving the highway. */
+function throughTrip(): void {
+  // A one-way approach only carries traffic one way: in at its start, out at its end.
+  const ins = entries.filter(e => !segs[e.seg].oneway || e.s === 0), outs = entries.filter(e => !segs[e.seg].oneway || e.s > 0);
+  if (!ins.length || !outs.length) return;
+  const from = ins[Math.floor(Math.random() * ins.length)];
+  const exits = outs.filter(e => e.seg !== from.seg && Math.hypot(segs[e.seg].pts[0] - segs[from.seg].pts[0], segs[e.seg].pts[1] - segs[from.seg].pts[1]) > 20);
+  const to = exits[Math.floor(Math.random() * exits.length)];
+  if (!to) return;
+  const vehicle = Math.random() < 0.2 ? 3 : Math.random() < 0.3 ? 2 : 1;
+  const slotBefore = freeList.at(-1);
+  if (spawnTrip(from.seg, from.s, to.seg, to.s, vehicle) && slotBefore !== undefined && slots[slotBefore]) slots[slotBefore]!.through = true;
+}
 let disasterRate = 1;
 const disasters = new Disasters();
 /** Tax rate in percent for a zoned tile: its zone's rate, less a district tax break. */
@@ -160,7 +176,7 @@ let roadLength = 0;
 // ---- cars ---------------------------------------------------------------------------------------
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
-interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean }
+interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
 let carSequence = 0;
@@ -604,6 +620,9 @@ function spawn(dt: number): void {
   }
   spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
   extBudget = Math.min(4, extBudget + extRate * dt);
+  // Through traffic keeps rolling whatever the city does; it never counts towards commutes.
+  throughBudget = Math.min(2, throughBudget + THROUGH_RATE * dt);
+  if (throughBudget >= 1 && freeList.length > 60) { throughBudget -= 1; throughTrip(); }
   // Freight: trucks carry goods from factories and farms to the shops, and the surplus out of town.
   freightBudget = Math.min(2, freightBudget + Math.min(0.12, (goods.local + goods.exported) / 60 * 0.006) * dt);
   if (freightBudget >= 1 && freeList.length > 40) {
@@ -861,7 +880,8 @@ function stepCars(dt: number): void {
           if (c.mission) { c.working = true; c.mission.work = c.mission.kind === 'fire' ? 8 : 4; }
           else {
             if (c.taxiStop !== undefined) { taxiWindow++; money += 0.16 * effects.fare; }
-            commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03; freeCar(slot); leaderP = Infinity; }
+            if (!c.through) commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
+            freeCar(slot); leaderP = Infinity; }
         }
       } else if (c.p >= legEnd - 1e-4) {
         // Carry the unused travel into the next link. Polyline links meet with a small kink, so the exact
@@ -1494,9 +1514,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   switch (m.type) {
     case 'load': {
       extras = m.extras ? { ...m.extras, district: m.extras.district.slice(), terraform: m.extras.terraform.slice() } : defaultExtras(m.tax);
-      // Old cities carry no extras and keep the valley they were built in.
-      if (!m.extras) extras.river = 0;
-      baseTerrain = generateTerrain(m.seed, extras.river);
+      baseTerrain = generateTerrain(m.seed);
       terrain = baseTerrain;
       setTerrain();
       garbage.fill(0); disasters.reset();
