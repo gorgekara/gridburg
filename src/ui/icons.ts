@@ -20,6 +20,7 @@ const I: Record<string, string> = {
   mute: '<path d="M4 9v6h4l5 4V5L8 9zM17 9l5 6M22 9l-5 6"/>',
   flag: '<path d="M5 21V4M5 4h12l-2 4 2 4H5"/>',
   storm: '<path d="M5 14a5 5 0 1 1 9-5 4 4 0 1 1 3 7H6M12 16l-2 5M16 16l-2 5"/>',
+  highway2: '<path d="M5 22 9 2M19 22 15 2M12 4v3M12 10v3M12 16v3"/>',
   motorway: '<path d="M4 22 9 2M20 22 15 2M12 4v3M12 10v3M12 16v3M17 8l-2-3-2 3"/>',
   ramp: '<path d="M5 22V2M19 22c0-7-5-9-10-11M12 7l-3 4 4 1"/>',
   raise: '<path d="M3 20h18M5 20l5-9 3 5 2-3 4 7"/><path d="M13 6l2-3 2 3"/>',

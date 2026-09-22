@@ -533,17 +533,17 @@ test('metro stations form their own underground lines with metro capacity and ca
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 12)), 0);
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 40)), -1);
 });
-test('a new map has a motorway across it with trumpet interchanges, and its entries run out past the edge', () => {
+test('a new map has a motorway with a trumpet, a crossing highway with a cloverleaf, and entries past the edge', () => {
   const city = newCity(7), net = Network.fromPlain(city.net), terrain = generateTerrain(7);
   const entries = [...net.nodes.values()].filter(n => n.entry);
-  assert.equal(entries.length, 4, 'Both carriageways come in from both ends of the map');
+  assert.equal(entries.length, 8, 'Both carriageways of both highways come in from both ends of the map');
   for (const entry of entries) {
     const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
     assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
     const approach = net.segsAt(entry.id);
     assert.equal(approach.length, 1);
     assert.ok(Math.abs(approach[0].len - APPROACH) < 0.01, `Approach length ${approach[0].len}`);
-    assert.ok(approach[0].oneway && approach[0].kind === N.KIND_MOTORWAY, 'The approach is one carriageway of the motorway');
+    assert.ok(approach[0].oneway && N.isCarriageway(approach[0].kind), 'The approach is one carriageway of a highway');
     const gateId = approach[0].a === entry.id ? approach[0].b : approach[0].a;
     const gate = net.nodes.get(gateId);
     assert.ok(net.segsAt(gateId).length === 2, 'The gate joins the approach to the carriageway');
@@ -554,12 +554,21 @@ test('a new map has a motorway across it with trumpet interchanges, and its entr
     assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
   }
   const kinds = [...net.segs.values()];
-  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 2, 'Each of the two trumpet interchanges has one overpass');
-  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 28, 'two direct slip roads and two six-piece loops each');
+  assert.equal(kinds.filter(s => s.kind === KIND_ROAD && s.structure === 1).length, 1, 'The trumpet has one overpass');
+  assert.equal(kinds.filter(s => s.kind === N.KIND_MOTORWAY && s.structure === 1).length, 2, 'The motorway bridges the crossing highway at the cloverleaf');
+  assert.equal(kinds.filter(s => s.kind === N.KIND_HIGHWAY2 && s.structure === 1).length, 2, 'and the crossing highway bridges the river');
+  // Trumpet: two direct slip roads and two six-piece loops. Cloverleaf: four direct slip roads and four five-piece loops.
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP).length, 2 + 2 * 6 + 4 + 4 * 5, 'a trumpet and a cloverleaf');
   assert.ok(kinds.filter(s => s.kind === N.KIND_RAMP).every(s => !s.structure && s.oneway), 'Slip roads stay on the ground and run one way');
   assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
   const r = rasterize(net);
-  assert.ok(!Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'None of it stands in the river');
+  // Only the crossing highway's bridge is over the river; nothing at ground level is.
+  const surface = new Network(); surface.nextId = net.nextId;
+  for (const n of net.nodes.values()) surface.nodes.set(n.id, { ...n });
+  for (const q of net.segs.values()) if (!q.structure) surface.segs.set(q.id, q);
+  const ground = rasterize(surface);
+  assert.ok(!Array.from(ground.cover).some((v, i) => v && terrain.water[i]), 'Nothing at ground level stands in the river');
+  assert.ok(Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'The crossing highway bridges the river');
   // The interchange's street node is where the old highway stub used to end, so the demo still fits.
   const e = terrain.entry, door = net.nearestNode(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 0.2);
   assert.ok(door && net.degree(door.id) === 3, 'The overpass and two slip roads meet at the front door');
@@ -567,15 +576,20 @@ test('a new map has a motorway across it with trumpet interchanges, and its entr
   for (const seed of [1, 2, 3, 4, 5, 6, 8, 12, 99, 424242]) {
     const other = Network.fromPlain(newCity(seed).net);
     const ramps = [...other.segs.values()].filter(q => q.kind === N.KIND_RAMP);
-    assert.equal(ramps.length, 28, `Seed ${seed}: two trumpet interchanges (got ${ramps.length} ramp pieces)`);
+    assert.equal(ramps.length, 38, `Seed ${seed}: a trumpet and a cloverleaf (got ${ramps.length} ramp pieces)`);
     for (const q of ramps) assert.ok(other.degree(q.a) <= 3 && other.degree(q.b) <= 3, `Seed ${seed}: a slip road meets nothing but its carriageway, its road and its own next piece`);
+    // No ramp crosses another: pieces that share no node keep clear of each other.
+    for (const a of ramps) for (const b of ramps) {
+      if (a.id >= b.id || [a.a, a.b].some(n => n === b.a || n === b.b)) continue;
+      for (let k = 0; k <= a.n; k++) assert.ok(Network.nearestOn(b, a.pts[k * 2], a.pts[k * 2 + 1]).dist > 0.9, `Seed ${seed}: two slip roads run into each other`);
+    }
   }
   const before = net.toPlain();
   ensureApproaches(net);
   assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');
   assert.deepEqual(net.toPlain().segs.length, before.segs.length);
   const restored = Network.fromPlain(decode(encode(city)).net);
-  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 4, 'Off-map entries survive a save');
+  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 8, 'Off-map entries survive a save');
   assert.equal([...restored.segs.values()].filter(s => s.kind === N.KIND_MOTORWAY).length, kinds.filter(s => s.kind === N.KIND_MOTORWAY).length, 'So do the carriageways');
 });
 test('external traffic drives in from off the map without stalling the entrance', () => {
@@ -808,7 +822,9 @@ test('one-way highways and ramps: drawn direction, no frontage, saves, and traff
   const { KIND_MOTORWAY, KIND_RAMP, isOneWayKind } = N;
   assert.ok(isOneWayKind(KIND_MOTORWAY) && isOneWayKind(KIND_RAMP) && !isOneWayKind(KIND_HIGHWAY));
   assert.ok(HALF_WIDTH[KIND_RAMP] < HALF_WIDTH[KIND_MOTORWAY] && HALF_WIDTH[KIND_MOTORWAY] < HALF_WIDTH[KIND_HIGHWAY]);
-  assert.equal(nextRoadKind(KIND_RAMP), KIND_MOTORWAY);
+  assert.equal(nextRoadKind(KIND_RAMP), N.KIND_HIGHWAY2, 'A ramp widens to the two-lane highway');
+  assert.equal(nextRoadKind(N.KIND_HIGHWAY2), KIND_MOTORWAY, 'and that to the motorway');
+  assert.ok(HALF_WIDTH[N.KIND_HIGHWAY2] > HALF_WIDTH[KIND_RAMP] && HALF_WIDTH[N.KIND_HIGHWAY2] < HALF_WIDTH[KIND_MOTORWAY] && N.isOneWayKind(N.KIND_HIGHWAY2));
   const net = new Network();
   // A motorway carriageway running east from the map edge, an exit and an on-ramp.
   net.insertPath([{ x: 2.5, z: 40.5 }, { x: 74.5, z: 40.5 }], KIND_MOTORWAY, true);
@@ -872,7 +888,8 @@ test('through traffic rolls along the motorway even when the city is empty', () 
   const city = newCity(11); city.cityLevel = 0;
   load(city); send({ type: 'speed', value: 1 });
   let onMotorway = 0, elsewhere = 0;
-  const net = Network.fromPlain(city.net), lanes = [...net.segs.values()].filter(q => q.kind === N.KIND_MOTORWAY);
+  const net = Network.fromPlain(city.net), lanes = [...net.segs.values()].filter(q => N.isMotorway(q.kind));
+  const streets = [...net.segs.values()].filter(q => !N.isMotorway(q.kind));
   for (let f = 0; f < 40 * C.SIM_HZ; f++) {
     simulateFrame();
     const frame = messages.findLast(m => m.type === 'frame'); messages.length = 0;
@@ -880,13 +897,14 @@ test('through traffic rolls along the motorway even when the city is empty', () 
     for (let n = 0; n < C.MAX_CARS; n++) {
       if (!frame.cars[n * 4 + 3]) continue;
       const x = frame.cars[n * 4] + 40, z = frame.cars[n * 4 + 1] + 40;
-      if (lanes.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[N.KIND_MOTORWAY] + 0.05)) onMotorway++; else elsewhere++;
+      if (streets.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[q.kind] + 0.05)) elsewhere++;
+      else if (lanes.some(q => Network.nearestOn(q, x, z).dist < HALF_WIDTH[q.kind] + 0.05)) onMotorway++;
     }
   }
   send({ type: 'speed', value: 0 });
   const stats = latest().stats;
-  assert.ok(onMotorway > 30, `Cars pass through on the motorway (${onMotorway} samples)`);
-  assert.equal(elsewhere, 0, 'None of them leaves the motorway for an empty city');
+  assert.ok(onMotorway > 30, `Cars pass through on the highways (${onMotorway} samples)`);
+  assert.equal(elsewhere, 0, 'None of them turns off onto a street of an empty city');
   assert.equal(stats.commute, 0, 'Passing traffic never counts as a commute');
   console.log(`  Through traffic: ${onMotorway} samples on the motorway, ${stats.gaveUp} gave up`);
 });
@@ -940,7 +958,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   }
   assert.ok(planned);
   const had = [...net.nodes.values()].filter(n => n.entry).length;
-  assert.equal(had, 4, 'Original network is unchanged');
+  assert.equal(had, 8, 'Original network is unchanged');
   assert.equal([...planned.nodes.values()].filter(n => n.entry).length, had + 1);
   assert.equal(typeof entrancePlan(net, terrain, city.kind, 40, 40), 'string');
   // The entrance itself is expressway, which carries no frontage, so a street picks the traffic up.
@@ -958,7 +976,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   const tile = Array.from(r.accSeg).findIndex((id, i) => served.has(id) && !r.cover[i] && !terrain.water[i] && !terrain.shore[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
-  assert.equal(latest().stats.entries, 3, 'The motorway counts as one gate at each end, plus the new entrance');
+  assert.equal(latest().stats.entries, 5, 'Each highway counts as one gate at each end, plus the new entrance');
   assert.equal(latest().flags[tile] & C.F_NO_ROAD, 0);
 });
 test('offices provide clean jobs, obey unlocks and explain education requirements', () => {

@@ -3,7 +3,7 @@ import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, signalPhase } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2, isCarriageway, signalPhase } from '../roads/network';
 import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
@@ -242,7 +242,7 @@ export class RoadLayer {
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
-      const motorwayKind = s.kind === KIND_MOTORWAY || s.kind === KIND_RAMP;
+      const motorwayKind = isCarriageway(s.kind) || s.kind === KIND_RAMP;
       // Where a slip road splits from or joins a carriageway the two run side by side for a while:
       // the ramp's own lines stop where it is clear of the highway, and the highway keeps its lines
       // through the node except the edge line on the ramp's side, which opens up for the mouth.
@@ -274,7 +274,7 @@ export class RoadLayer {
           for (const off of [-hw * 0.55, 0, hw * 0.55]) strip(d, d + 0.25, hw * 0.3, off, WHITE);
         }
       }
-      if (s.kind === KIND_MOTORWAY || s.kind === KIND_RAMP) {
+      if (isCarriageway(s.kind) || s.kind === KIND_RAMP) {
         // Highway carriageways: solid edge lines, dashed lane lines, and arrows showing the flow.
         const edge = HALF_WIDTH[s.kind] - 0.06;
         // Each edge line stops short of a ramp mouth on its own side.
@@ -284,11 +284,12 @@ export class RoadLayer {
           const f = Math.max(from, openA), t = Math.min(to, s.len - openB);
           if (t - f > 0.3) strip(f, t, 0.02, side * edge, side > 0 || s.kind === KIND_RAMP ? WHITE : LINE);
         }
-        if (s.kind === KIND_MOTORWAY) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of [-0.22, 0.22]) strip(d, d + 0.5, 0.018, l, WHITE);
+        const laneLines = s.kind === KIND_MOTORWAY ? [-0.22, 0.22] : s.kind === KIND_HIGHWAY2 ? [0] : [];
+        for (let d = from; d + 0.5 < to; d += 1.1) for (const l of laneLines) strip(d, d + 0.5, 0.018, l, WHITE);
         // A sparse set of arrows is enough to show the flow; a carpet of them just looks busy.
-        for (let d = from + 1.2; d < to - 0.4; d += s.kind === KIND_MOTORWAY ? 7 : 4.5) {
+        for (let d = from + 1.2; d < to - 0.4; d += isCarriageway(s.kind) ? 7 : 4.5) {
           Network.poseAt(s, d, pose);
-          for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.12, 0.057, WHITE);
+          for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : s.kind === KIND_HIGHWAY2 ? [-0.25, 0.25] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.12, 0.057, WHITE);
         }
       } else if (s.oneway) {
         for (let d = from + 0.3; d < to; d += 1.6) {
@@ -349,7 +350,7 @@ export class RoadLayer {
       const hw = HALF_WIDTH[kind];
       b.ribbon(far, 2, hw + 0.09, 0.03, CURB);
       b.ribbon(far, 2, hw, 0.045, ASPHALT);
-      if (kind === KIND_MOTORWAY) { b.ribbon(far, 2, 0.02, 0.056, WHITE, hw - 0.06); b.ribbon(far, 2, 0.02, 0.056, WHITE, -(hw - 0.06)); }
+      if (isCarriageway(kind)) { b.ribbon(far, 2, 0.02, 0.056, WHITE, hw - 0.06); b.ribbon(far, 2, 0.02, 0.056, WHITE, -(hw - 0.06)); }
       else { b.ribbon(far, 2, 0.02, 0.056, LINE, -0.045); b.ribbon(far, 2, 0.02, 0.056, LINE, 0.045); }
       // A sign greets traffic coming in: beside the road on the verge, never on the carriageway.
       const inbound = !seg?.oneway || seg.a === entry.id;
@@ -358,9 +359,13 @@ export class RoadLayer {
       const off = hw + 0.95;
       // On the verge to the right of the traffic, unless another carriageway runs there, in which
       // case it stands on the outside of the pair instead of in the median.
-      const spot = (side: number): { x: number; z: number } => ({ x: e.x + e.dx * 1.5 - e.dz * off * side, z: e.z + e.dz * 1.5 + e.dx * off * side });
+      const spot = (side: number, back: number): { x: number; z: number } => ({ x: e.x + e.dx * back - e.dz * off * side, z: e.z + e.dz * back + e.dx * off * side });
       const clear = (q: { x: number; z: number }): boolean => !net.onRoad(q.x, q.z, -1, 0.15);
-      const at = clear(spot(1)) ? spot(1) : spot(-1);
+      // Try the right verge, then the left, a little further in each time, and give up rather than
+      // plant the sign in a slip road.
+      let at: { x: number; z: number } | null = null;
+      for (let back = 1.5; back <= 6 && !at; back += 1.5) for (const side of [1, -1]) if (!at && clear(spot(side, back))) at = spot(side, back);
+      if (!at) { signs--; continue; }
       sign.visible = true;
       sign.position.set(at.x - half, 0, at.z - half);
       sign.rotation.y = Math.atan2(e.dx, e.dz);
@@ -507,7 +512,7 @@ function roundaboutFlares(net: Network, b: MeshBuilder): void {
  * side of `seg` (+1 right of a → b, -1 left) the other road lies. Null when no ramp meets there.
  */
 function rampMouth(net: Network, seg: RSeg, node: number): { length: number; side: number } | null {
-  const others = net.segsAt(node).filter(o => o.id !== seg.id && (o.kind === KIND_MOTORWAY || o.kind === KIND_RAMP) && !o.structure);
+  const others = net.segsAt(node).filter(o => o.id !== seg.id && (isCarriageway(o.kind) || o.kind === KIND_RAMP) && !o.structure);
   if (!others.length || net.degree(node) !== 3) return null;
   if (seg.kind !== KIND_RAMP && !others.some(o => o.kind === KIND_RAMP)) return null;
   // Pair with the road that runs the same way from the node: a ramp with the carriageway it shadows,
@@ -575,7 +580,7 @@ function junctionFillets(net: Network, b: MeshBuilder): void {
       const cx = facingA.x + A.ux * t, cz = facingA.z + A.uz * t;
       // Round the corner off with a radius that suits the wider road, but never past the arm's far end.
       // Highway corners are swept wide, as they would be for fast traffic.
-      const fast = A.s.kind === KIND_MOTORWAY || A.s.kind === KIND_RAMP || B.s.kind === KIND_MOTORWAY || B.s.kind === KIND_RAMP;
+      const fast = isCarriageway(A.s.kind) || A.s.kind === KIND_RAMP || isCarriageway(B.s.kind) || B.s.kind === KIND_RAMP;
       const r = Math.min(fast ? 1.1 : 0.35 + Math.max(A.hw, B.hw) * 0.45, Math.max(0.15, A.s.len - t - 0.4), Math.max(0.15, B.s.len - u - 0.4));
       const sx = cx + A.ux * r, sz = cz + A.uz * r, ex = cx + B.ux * r, ez = cz + B.uz * r;
       const steps = curve.length / 2;
@@ -608,7 +613,7 @@ function rampGores(net: Network, b: MeshBuilder): void {
       const rx = (p.x - net.nodes.get(node)!.x), rz = (p.z - net.nodes.get(node)!.z), rl = Math.hypot(rx, rz) || 1;
       let road: RSeg | null = null, best = -1;
       for (const o of net.segsAt(node)) {
-        if (o.id === ramp.id || o.kind !== KIND_MOTORWAY || o.structure) continue;
+        if (o.id === ramp.id || !isCarriageway(o.kind) || o.structure) continue;
         Network.poseAt(o, o.a === node ? 0.3 : o.len - 0.3, p);
         const n = net.nodes.get(node)!, dot = ((p.x - n.x) * rx + (p.z - n.z) * rz) / rl / (Math.hypot(p.x - n.x, p.z - n.z) || 1);
         if (dot > best) { best = dot; road = o; }
@@ -624,7 +629,7 @@ function rampGores(net: Network, b: MeshBuilder): void {
         const tx = roadFromA ? p.tx : -p.tx, tz = roadFromA ? p.tz : -p.tz;
         // The ramp lies to `rampSide` of the carriageway's direction of travel away from the node.
         const sideSign = ((-tz) * rx + tx * rz) > 0 ? 1 : -1;
-        pts.push(p.x - tz * HALF_WIDTH[KIND_MOTORWAY] * sideSign - half, p.z + tx * HALF_WIDTH[KIND_MOTORWAY] * sideSign - half);
+        pts.push(p.x - tz * HALF_WIDTH[road.kind] * sideSign - half, p.z + tx * HALF_WIDTH[road.kind] * sideSign - half);
       }
       for (let k = steps; k >= 0; k--) {
         const d = (k / steps) * length;

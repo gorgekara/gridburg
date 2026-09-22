@@ -10,7 +10,7 @@ import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import { newCity } from './game';
 import type { SaveData } from './save';
 
-const DEMO_SEED = 3;
+const DEMO_SEED = 214;
 
 /**
  * A prebuilt town laid out relative to the highway entry, so it works on any seed:
@@ -41,11 +41,11 @@ export function demoCity(expanded = false): SaveData {
   net.insertPath([P(10, -12), P(12, -17), P(18, -21), P(26, -21), P(32, -17), P(34, -12)].map(clampP), KIND_ROAD);
   for (const along of [16, 22, 28]) net.insertPath([clampP(P(along, -12)), clampP(P(along, -20))], KIND_ROAD);
   // A curved ring road around the far end.
-  net.insertPath([P(40, 12), P(46, 9), P(49, 0), P(46, -9), P(40, -12)].map(clampP), KIND_ROAD);
+  net.insertPath([P(40, 12), P(44, 9), P(46, 0), P(44, -9), P(40, -12)].map(clampP), KIND_ROAD);
 
   // Riverside drive, joined to the end of the avenue.
   let best = -1, bd = 1e9;
-  const anchor = P(45, 0);
+  const anchor = P(43, 0);
   terrain.river.forEach((r, j) => {
     if (r.x < 4 || r.z < 4 || r.x > GRID - 4 || r.z > GRID - 4) return;
     const dd = Math.hypot(r.x - anchor.x, r.z - anchor.z);
@@ -95,7 +95,7 @@ export function demoCity(expanded = false): SaveData {
     const drive = runs.sort((a, b) => b.length - a.length)[0];
     if (drive) {
       const mid = drive[Math.floor(drive.length / 2)];
-      const from = clampP(P(49, 0));
+      const from = clampP(P(46, 0));
       const link = dryRuns([from, mid]);
       if (link.length === 1 && link[0].length === 2) net.insertPath(link[0], KIND_ROAD);
     }

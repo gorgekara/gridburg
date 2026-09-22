@@ -85,11 +85,12 @@ export const COST_LANE = 14;
 export const COST_HIGHWAY = 430;
 export const COST_MOTORWAY = 240;
 export const COST_RAMP = 110;
+export const COST_HIGHWAY2 = 170;
 export const ROAD_UPKEEP = 0.015; // per unit length per second, scaled per kind for the tiles it takes
 /** Build cost per unit length, indexed by road kind. */
-export const ROAD_COST = [COST_ROAD, COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_MOTORWAY, COST_RAMP];
+export const ROAD_COST = [COST_ROAD, COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_MOTORWAY, COST_RAMP, COST_HIGHWAY2];
 /** Upkeep multiplier per road kind: wider roads cost more to keep. */
-export const ROAD_UPKEEP_FACTOR = [1, 3, 0.6, 4.5, 2.4, 1];
+export const ROAD_UPKEEP_FACTOR = [1, 3, 0.6, 4.5, 2.4, 1, 1.7];
 
 export interface ServiceSpec {
   name: string;

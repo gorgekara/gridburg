@@ -8,32 +8,36 @@ export const KIND_HIGHWAY = 3;
 export const KIND_MOTORWAY = 4;
 /** A single-lane, one-way slip road on and off the highways. */
 export const KIND_RAMP = 5;
+/** A smaller one-way highway: two lanes one way. */
+export const KIND_HIGHWAY2 = 6;
+/** A one-way highway carriageway of either size. */
+export const isCarriageway = (kind: number): boolean => kind === KIND_MOTORWAY || kind === KIND_HIGHWAY2;
 /** Kinds that are always one way, in the direction they were drawn. */
-export const isOneWayKind = (kind: number): boolean => kind === KIND_MOTORWAY || kind === KIND_RAMP;
+export const isOneWayKind = (kind: number): boolean => kind === KIND_MOTORWAY || kind === KIND_RAMP || kind === KIND_HIGHWAY2;
 /** Expressway-class roads: fast, no frontage, no pedestrians, no parking, no crossings. */
-export const isMotorway = (kind: number): boolean => kind === KIND_HIGHWAY || kind === KIND_MOTORWAY || kind === KIND_RAMP;
+export const isMotorway = (kind: number): boolean => kind === KIND_HIGHWAY || kind === KIND_MOTORWAY || kind === KIND_RAMP || kind === KIND_HIGHWAY2;
 /**
  * Four kinds of road, in the order the upgrade tool walks them. A lane is a single shared track, a
  * street carries two lanes, an avenue four and an expressway six; each sits inside its corridor with
  * a verge either side rather than paving it kerb to kerb. An expressway carries traffic fast but has
  * no frontage: nothing can be zoned or built off it, so cities need ordinary streets behind it.
  */
-export const HALF_WIDTH = [0.36, 0.86, 0.24, 1.32, 0.72, 0.3];
-export const SPEED = [3, 4.5, 2.4, 6.8, 6.8, 4.6]; // units per second
-export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway', 'One-way highway', 'Highway ramp'];
+export const HALF_WIDTH = [0.36, 0.86, 0.24, 1.32, 0.72, 0.3, 0.52];
+export const SPEED = [3, 4.5, 2.4, 6.8, 6.8, 4.6, 6.2]; // units per second
+export const ROAD_LABEL = ['Street', 'Avenue', 'Lane', 'Expressway', 'One-way highway', 'Highway ramp', 'Two-lane highway'];
 /** Whether buildings may use this kind of road as their access. */
-export const ROAD_FRONTAGE = [true, true, true, false, false, false];
+export const ROAD_FRONTAGE = [true, true, true, false, false, false, false];
 /** Upgrade order: lane, street, avenue, expressway, and back to a lane. */
 export const UPGRADE_ORDER = [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY];
 /**
  * How wide a roundabout has to be for each kind of road: the circle needs room for the arms to meet it
  * at a sane angle, and a wider carriageway needs a wider circle before its lanes stop fighting.
  */
-export const ROUNDABOUT_RADIUS = [1.9, 2.6, 1.5, 4.0, 2.6, 1.9];
+export const ROUNDABOUT_RADIUS = [1.9, 2.6, 1.5, 4.0, 2.6, 1.9, 2.6];
 /** The widest carriageway a roundabout circulates on: an expressway arm still meets an avenue-sized ring. */
 export const RING_KIND_LIMIT = 1; // KIND_AVENUE
 // A ramp widens into a one-way highway and back; the rest walk the ordinary order.
-export const nextRoadKind = (kind: number): number => kind === KIND_RAMP ? KIND_MOTORWAY : kind === KIND_MOTORWAY ? KIND_RAMP : UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
+export const nextRoadKind = (kind: number): number => kind === KIND_RAMP ? KIND_HIGHWAY2 : kind === KIND_HIGHWAY2 ? KIND_MOTORWAY : kind === KIND_MOTORWAY ? KIND_RAMP : UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
 export const LIGHT_CYCLE = 18;
 
 export interface RNode {

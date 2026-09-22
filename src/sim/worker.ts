@@ -24,7 +24,7 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_MOTORWAY, KIND_RAMP, HALF_WIDTH, isGreen, isMotorway } from '../roads/network';
+import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_MOTORWAY, KIND_RAMP, HALF_WIDTH, isGreen, isMotorway, isCarriageway } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
@@ -164,7 +164,7 @@ let lockOwner = new Int32Array(0); // per node: the slot holding the junction bo
 let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
 /** Per slip road: which side of the carriageway it leaves from / joins on (±1, 0 for none) and how long the merge runs. */
-let rampStart = new Int8Array(0), rampEnd = new Int8Array(0), rampMouth = new Float32Array(0);
+let rampStart = new Int8Array(0), rampEnd = new Int8Array(0), rampMouth = new Float32Array(0), rampLane = new Float32Array(0);
 let ringIn: number[][] = []; // per node: lane keys of the ring arcs that feed it
 let nodeHalf = new Float32Array(0); // half width of the widest road meeting the node
 let reach = new Uint8Array(0);
@@ -200,7 +200,7 @@ let extRate = 0;
 let resTiles: number[] = [], resW: number[] = [];
 let jobTiles: number[] = [], jobW: number[] = [];
 
-const GAP = [0.42, 0.42, 0.4, 0.46, 0.5, 0.4];
+const GAP = [0.42, 0.42, 0.4, 0.46, 0.5, 0.4, 0.48];
 const STOP_SETBACK = 0.85; // how far before a junction a car holds, for a plain one-tile road
 const RING_PATIENCE = 6; // seconds an entering car gives way before it books its turn on the ring
 const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
@@ -276,13 +276,13 @@ function applyNetwork(p: EditPayload): void {
   });
   // Slip roads: note which carriageway they leave or join, on which side, and how far they run
   // alongside it, so cars drift out of the outer lane instead of cutting across from the centre.
-  rampStart = new Int8Array(newSegs.length); rampEnd = new Int8Array(newSegs.length); rampMouth = new Float32Array(newSegs.length);
+  rampStart = new Int8Array(newSegs.length); rampEnd = new Int8Array(newSegs.length); rampMouth = new Float32Array(newSegs.length); rampLane = new Float32Array(newSegs.length);
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   newSegs.forEach((s, i) => {
     if (s.kind !== KIND_RAMP) return;
     for (const end of [0, 1]) {
       const node = end ? segB[i] : segA[i];
-      const road = newSegs.find((o, j) => j !== i && o.kind === KIND_MOTORWAY && (segA[j] === node || segB[j] === node));
+      const road = newSegs.find((o, j) => j !== i && isCarriageway(o.kind) && (segA[j] === node || segB[j] === node));
       if (!road) continue;
       // Travel direction of the carriageway at the node, and the ramp a little way from it.
       const j = newSegs.indexOf(road);
@@ -295,10 +295,11 @@ function applyNetwork(p: EditPayload): void {
       for (let d = 0.5; d < Math.min(s.len - 0.5, 9); d += 0.25) {
         Network.poseAt(s, end ? s.len - d : d, pose);
         mouth = d;
-        if (Network.nearestOn(road, pose.x, pose.z).dist > HALF_WIDTH[KIND_MOTORWAY] + 0.25) break;
+        if (Network.nearestOn(road, pose.x, pose.z).dist > HALF_WIDTH[road.kind] + 0.25) break;
       }
       if (end) rampEnd[i] = side; else rampStart[i] = side;
       rampMouth[i] = Math.max(rampMouth[i], mouth);
+      rampLane[i] = road.kind === KIND_MOTORWAY ? 0.44 : 0.25;
     }
   });
   nodeHalf = new Float32Array(nodeIds.length);
@@ -538,7 +539,7 @@ const legEndNode = (l: Leg): number => (l.fwd ? segB[l.seg] : segA[l.seg]);
 function markRampLegs(legs: Leg[]): void {
   for (let i = 0; i < legs.length; i++) {
     const seg = segs[legs[i].seg];
-    if (seg.kind !== KIND_MOTORWAY) continue;
+    if (!isCarriageway(seg.kind)) continue;
     const next = legs[i + 1], prev = legs[i - 1];
     if (next && segs[next.seg].kind === KIND_RAMP && rampStart[next.seg]) legs[i].toRamp = rampStart[next.seg];
     if (prev && segs[prev.seg].kind === KIND_RAMP && rampEnd[prev.seg]) legs[i].fromRamp = rampEnd[prev.seg];
@@ -735,9 +736,11 @@ function segSpeed(seg: RSeg): number {
 
 function laneOffset(segIndex: number, seg: RSeg, slot: number, leg?: Leg, progress = 0): number {
   if (ringArc[segIndex]) return 0;
-  const OUTER_LANE = 0.44, MERGE = 5;
-  if (seg.kind === KIND_MOTORWAY) {
-    let lane = ((slot % 3) - 1) * OUTER_LANE;
+  const MERGE = 5;
+  if (isCarriageway(seg.kind)) {
+    // Three lanes on a motorway, two on the smaller highway; the outer lane is where ramps meet it.
+    const OUTER_LANE = seg.kind === KIND_MOTORWAY ? 0.44 : 0.25;
+    let lane = seg.kind === KIND_MOTORWAY ? ((slot % 3) - 1) * OUTER_LANE : (slot & 1 ? 1 : -1) * OUTER_LANE;
     if (leg?.toRamp) {
       // Drift into the outer lane over the last stretch before the exit.
       const left = Math.max(0, Math.min(MERGE, leg.p1 - progress));
@@ -751,6 +754,7 @@ function laneOffset(segIndex: number, seg: RSeg, slot: number, leg?: Leg, progre
   }
   if (seg.kind === KIND_RAMP) {
     // Leave and rejoin along the outer lane, easing onto the ramp's own centre line.
+    const OUTER_LANE = rampLane[segIndex] || 0.44;
     const mouth = rampMouth[segIndex] || 1;
     if (rampStart[segIndex] && progress < mouth) return rampStart[segIndex] * OUTER_LANE * (1 - progress / mouth);
     if (rampEnd[segIndex] && seg.len - progress < mouth) return rampEnd[segIndex] * OUTER_LANE * (1 - (seg.len - progress) / mouth);
@@ -1487,7 +1491,7 @@ function stepIncidents(): void {
 }
 
 // ---- economy, rubbish and disasters -------------------------------------------------------------------
-const ROAD_NOISE = [10, 22, 5, 34, 24, 12];
+const ROAD_NOISE = [10, 22, 5, 34, 24, 12, 18];
 const TRANSIT_STOPS = new Set([T_BUS, T_TROLLEY, T_SUBWAY, T_STATION, T_TAXI]);
 function disasterContext() {
   return {

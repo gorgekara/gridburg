@@ -21,7 +21,7 @@ import {
   ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
 } from './constants';
 import { MILESTONES } from './progression';
-import { isMotorway, isOneWayKind, KIND_MOTORWAY, KIND_RAMP } from './roads/network';
+import { isMotorway, isOneWayKind, isCarriageway, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2 } from './roads/network';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, RING_KIND_LIMIT, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
@@ -31,7 +31,7 @@ import type { Game } from './game';
 export type Tool =
   | 'none' | 'inspect'
   | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
-  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'ramp' | 'upgrade'
+  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
@@ -47,7 +47,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
-  road: 0x8fa3b8, motorway: 0xdfe6ec, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
+  road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a,
@@ -187,7 +187,7 @@ export class Input {
   }
 
   private isRoadTool(): boolean {
-    return ['road', 'avenue', 'lane', 'highway', 'motorway', 'ramp', 'parkpath'].includes(this.tool);
+    return ['road', 'avenue', 'lane', 'highway', 'motorway', 'highway2', 'ramp', 'parkpath'].includes(this.tool);
   }
 
   private isRectTool(): boolean {
@@ -533,7 +533,7 @@ export class Input {
 
   /** The kind of road the tool in hand draws, at whatever height it is set to. */
   private drawKind(): number {
-    return this.tool === 'avenue' ? KIND_AVENUE : this.tool === 'lane' ? KIND_LANE : this.tool === 'highway' ? KIND_HIGHWAY : this.tool === 'motorway' ? KIND_MOTORWAY : this.tool === 'ramp' ? KIND_RAMP : KIND_ROAD;
+    return this.tool === 'avenue' ? KIND_AVENUE : this.tool === 'lane' ? KIND_LANE : this.tool === 'highway' ? KIND_HIGHWAY : this.tool === 'motorway' ? KIND_MOTORWAY : this.tool === 'highway2' ? KIND_HIGHWAY2 : this.tool === 'ramp' ? KIND_RAMP : KIND_ROAD;
   }
 
   private roadCost(path: P[]): number {
@@ -816,7 +816,7 @@ export class Input {
       if (ROUNDABOUT_RADIUS[s.kind] > ROUNDABOUT_RADIUS[kind]) kind = s.kind;
     }
     // An expressway arriving at a roundabout slows to avenue size: a six-lane circle would be enormous.
-    return kind === KIND_HIGHWAY || kind === KIND_MOTORWAY ? RING_KIND_LIMIT : kind === KIND_RAMP ? KIND_ROAD : kind;
+    return kind === KIND_HIGHWAY || isCarriageway(kind) ? RING_KIND_LIMIT : kind === KIND_RAMP ? KIND_ROAD : kind;
   }
 
   private roundaboutRadius(c: P): number {

@@ -58,20 +58,22 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   charges the difference; keep clicking and it wraps back to a lane. Extra city entrances arrive on
   expressway; the map's own motorway comes with interchanges to build from.
 - **A motorway across the map.** Every new map has a motorway running its full length just inside the
-  roomier edge: two one-way carriageways side by side, traffic arriving from both ends. Two trumpet
-  interchanges come with it, the layout built where a road ends at a motorway: the road crosses both
-  carriageways on one overpass, two direct slip roads serve the near carriageway on the city side, and
-  two loop ramps on the far side turn traffic through 270° to and from the far carriageway. The city
-  grows from the street node on the inside. Traffic passing through the region rolls along
+  roomier edge: two one-way carriageways side by side, traffic arriving from both ends. A **trumpet
+  interchange** is the city's front door, the layout built where a road ends at a motorway: the road
+  crosses both carriageways on one overpass, two direct slip roads serve the near carriageway on the
+  city side, and two loop ramps on the far side turn traffic through 270° to and from the far
+  carriageway. Further along, a **two-lane highway** crosses the whole map, over the river on a bridge
+  and under the motorway at a **full cloverleaf**: four loops for the left turns, four direct slip roads
+  swung out around them for the right turns. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
   the motorway from one end of the map to the other without ever turning off. The motorway and its interchanges cannot be bulldozed
   and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**
-  ($240/cell, three lanes) and a **highway ramp** ($110/cell, one lane). Both run in the direction you
+  ($240/cell, three lanes), a **two-lane highway** ($170/cell) and a **highway ramp** ($110/cell, one lane). Both run in the direction you
   draw them: lay one carriageway, then the other beside it, and join them to the streets with ramps.
   Start a ramp on a highway for an exit, end it on one for an on-ramp, and press + or − while drawing to
   take it over or under the other roads. Where a ramp splits from or joins a carriageway, traffic merges
   on the move instead of stopping at a junction; a level crossing of two highways still takes turns.
-  Neither has frontage, pavements or parking. Upgrade turns a ramp into a one-way highway and back.
+  None of them has frontage, pavements or parking. Upgrade walks a ramp up to the two-lane highway, then the motorway, and back.
   A slip road behaves like an added lane: the gore between it and the carriageway is paved, the
   carriageway's edge line opens for the mouth, and cars drift into the outer lane before they exit
   and ease over from it after they join. Every junction has rounded kerb corners, and lamps, signals,

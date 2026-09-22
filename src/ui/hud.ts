@@ -13,7 +13,7 @@ import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
 import { T_DOCKS, DOCK_JOBS, T_GAS, T_HYDRO, T_NUCLEAR } from '../constants';
-import { COST_MOTORWAY, COST_RAMP } from '../constants';
+import { COST_MOTORWAY, COST_RAMP, COST_HIGHWAY2 } from '../constants';
 import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
 import { icon } from './icons';
 
@@ -64,6 +64,7 @@ const CATEGORIES: Category[] = [
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
       { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
       { id: 'motorway', label: 'One-way highway', price: `${money(COST_MOTORWAY)} / cell`, note: '3 lanes · one way', hint: 'One carriageway of a motorway, three lanes in the direction you draw it. Draw the other direction as a second road beside it, as in Cities: Skylines 2. No frontage' },
+      { id: 'highway2', label: 'Two-lane highway', price: `${money(COST_HIGHWAY2)} / cell`, note: '2 lanes · one way', hint: 'A smaller one-way highway, two lanes in the direction you draw it. Pair two of them for a regional road; slip roads join it the same way as the motorway' },
       { id: 'ramp', label: 'Highway ramp', price: `${money(COST_RAMP)} / cell`, note: '1 lane · one way', hint: 'A slip road on or off a highway, one way in the direction you draw it. Start it from a highway to make an exit, end it on one to make an on-ramp; press + for a flyover or − to dive under' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
       { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
@@ -811,7 +812,7 @@ export class Hud {
   private refreshHint(): void {
     const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
     if (!def) { this.hint.textContent = ''; return; }
-    if (['lane', 'road', 'avenue', 'highway', 'motorway', 'ramp', 'parkpath'].includes(this.tool)) {
+    if (['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'parkpath'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
       const height = this.elevation > 0 ? 'Bridge: minimum 8 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 8 cells, clear portals. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
