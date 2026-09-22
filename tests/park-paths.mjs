@@ -28,7 +28,8 @@ const saved=decode(encode(g.snapshot())); assert.ok(saved); assert.deepEqual(sav
 const loaded=fresh(); loaded.load(saved); assert.deepEqual(loaded.parkPaths,[line,curve]);
 // A v11 save ends before the newly appended path block (and the later v13 extras block) and still loads.
 const fresh11=fresh().snapshot(); const empty=encode(fresh11); const raw=Buffer.from(empty,'base64url'); raw[0]=11;
-const extrasBytes=4+new TextEncoder().encode(JSON.stringify(extrasToJson(defaultExtras(fresh11.tax)))).length;
+const segHi=fresh11.net.segs.flatMap((seg,k)=>seg[5]&256?[k]:[]);
+const extrasBytes=4+new TextEncoder().encode(JSON.stringify({...extrasToJson(fresh11.extras??defaultExtras(fresh11.tax)),...(segHi.length?{segHi}:{})})).length;
 assert.ok(decode(raw.subarray(0,raw.length-2-extrasBytes).toString('base64url')));
 assert.equal(decode(encode(g.snapshot()).slice(0,-4)),null,'Truncated route block rejected');
 const layer=new ParkPathLayer();layer.rebuild([line]);

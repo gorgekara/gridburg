@@ -143,7 +143,7 @@ const hud = new Hud(uiRoot, {
     game.load(newCity(randomSeed()));
     focusCity(false);
     hud.setTax(10);
-    hud.toast('New map. Build out from the highway.');
+    hud.toast('New map. Build out from the highway interchange.');
   },
   demoCity: () => {
     history.replaceState(null, '', location.pathname);
@@ -443,6 +443,8 @@ game.onState = () => {
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
   incidents.rebuild(game.incidents, game.kind, game.level, game.raster);
+  // The police and traffic helicopters only take to the air once the town is a City.
+  helicopters.group.visible = game.stats.cityLevel >= 4;
   helicopters.watch(game.incidents);
   parked.rebuild(game.net, game.kind, game.level);
   pedestrians.setCrowd(game.stats.pop, daylight(game.cityTime).night);

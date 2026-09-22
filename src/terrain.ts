@@ -25,7 +25,13 @@ export interface Terrain {
 const STEP = 0.5;
 
 /** Everything about the map that comes from the seed alone, so main thread and worker agree. */
-export function generateTerrain(seed: number): Terrain {
+/**
+ * How the river is shaped. 0 is the original generator, kept byte for byte so old cities keep their
+ * valley; 1 adds bends on every scale so the channel never runs straight for long.
+ */
+export const RIVER_VERSION = 1;
+
+export function generateTerrain(seed: number, riverVersion = RIVER_VERSION): Terrain {
   // Scramble the seed so neighboring seeds give unrelated maps.
   const rnd = mulberry32(Math.imul((seed || 1) ^ 0x9e3779b9, 0x85ebca6b) >>> 0);
   for (let k = 0; k < 4; k++) rnd();
@@ -41,10 +47,18 @@ export function generateTerrain(seed: number): Terrain {
   const wf = (Math.PI * 2) / (GRID * (0.3 + rnd() * 0.3));
   const wp = rnd() * Math.PI * 2;
   const drift = (rnd() - 0.5) * 0.25;
+  // Meanders: a middle-sized bend and a small one on top, so the channel keeps turning.
+  const meander = riverVersion >= 1;
+  // Only the new generator draws these numbers, so the old one's sequence (and its highway) is untouched.
+  const [a3, f3, p3, a4, f4, p4] = meander
+    ? [2.5 + rnd() * 2, (Math.PI * 2) / (GRID * (0.13 + rnd() * 0.07)), rnd() * Math.PI * 2, 0.8 + rnd() * 0.8, (Math.PI * 2) / (GRID * (0.06 + rnd() * 0.03)), rnd() * Math.PI * 2]
+    : [0, 1, 0, 0, 1, 0];
+  const bend = meander ? 1.5 : 1; // the original middle-scale bend was too gentle to notice
 
   const river: RiverPoint[] = [];
   for (let t = -4; t <= GRID + 4; t += STEP) {
-    const off = base + drift * (t - GRID / 2) + a1 * Math.sin(f1 * t + p1) + a2 * Math.sin(f2 * t + p2);
+    const off = base + drift * (t - GRID / 2) + a1 * Math.sin(f1 * t + p1) + a2 * bend * Math.sin(f2 * t + p2)
+      + a3 * Math.sin(f3 * t + p3) + a4 * Math.sin(f4 * t + p4);
     const w = w0 + 0.5 * Math.sin(wf * t + wp);
     river.push(northSouth ? { x: off, z: t, w } : { x: t, z: off, w });
   }

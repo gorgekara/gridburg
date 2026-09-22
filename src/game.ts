@@ -13,7 +13,7 @@ import type { PolicyId } from './policies';
 import type { FundingKey } from './management';
 import { levelForPopulation } from './progression';
 import { RES_POP, T_RES, GRID, MAX_CARS, N_TILES, START_MONEY, isService, isZone } from './constants';
-import { Network, KIND_HIGHWAY } from './roads/network';
+import { Network, KIND_MOTORWAY, KIND_RAMP } from './roads/network';
 import { ensureApproaches } from './roads/entries';
 import { rasterize } from './roads/raster';
 import type { Raster } from './roads/raster';
@@ -324,7 +324,7 @@ export class Game {
     this.incidentSave = d.incidents;
     this.incidents = { fires: d.incidents?.fires ?? [], heists: [], crashes: [], crime: [], patrol: [] };
     this.seed = d.seed;
-    this.baseTerrain = generateTerrain(d.seed);
+    this.baseTerrain = generateTerrain(d.seed, this.extras.river);
     this.terrain = shapeTerrain(this.baseTerrain, this.extras.terraform);
     this.maps = null; this.disaster = null;
     this.net = Network.fromPlain(d.net);
@@ -462,26 +462,56 @@ export class Game {
   }
 }
 
-/** A fresh map: a seeded river and the fixed highway stub that connects the city to the outside. */
+/**
+ * A fresh map: a seeded river, and a motorway running right across it just inside the roomier edge,
+ * one carriageway each way, with a diamond interchange at the city's front door and a second one
+ * further along. Traffic from outside arrives on both carriageways from either end of the map.
+ */
 export function newCity(seed: number): SaveData {
   const terrain = generateTerrain(seed);
   const net = new Network();
   const e = terrain.entry;
-  const a = net.addNode(e.x, e.z);
-  a.entry = true;
-  a.fixed = true;
-  // The stub ends on a tile centre so roads drawn from it stay on the grid of squares.
-  const len = 7.5;
-  const bx = Math.max(0.5, Math.min(GRID - 0.5, e.x + e.dx * len));
-  const bz = Math.max(0.5, Math.min(GRID - 0.5, e.z + e.dz * len));
-  const b = net.addNode(bx, bz);
-  b.fixed = true;
-  net.addSeg(a.id, b.id, (a.x + b.x) / 2, (a.z + b.z) / 2, KIND_HIGHWAY, false, true);
+  // `along` runs the length of the highway, `in` measures inwards from the map edge it hugs.
+  const pos = (along: number, inward: number): { x: number; z: number } => e.dx
+    ? { x: e.x + e.dx * inward, z: along }
+    : { x: along, z: e.z + e.dz * inward };
+  const front = e.dx ? e.z : e.x;
+  const carriageway = (from: number, to: number, inward: number): void => {
+    for (const id of net.insertPath([pos(from, inward), pos(to, inward)], KIND_MOTORWAY, true)) net.segs.get(id)!.fixed = true;
+  };
+  carriageway(0.5, GRID - 0.5, INNER); // traffic heading up the map on the city side
+  carriageway(GRID - 0.5, 0.5, OUTER); // and back down on the outside
+  for (const n of net.nodes.values()) if (n.x < 1 || n.z < 1 || n.x > GRID - 1 || n.z > GRID - 1) n.entry = true;
+  interchange(net, pos, front);
+  const second = front + 26 < GRID - 12 ? front + 26 : front - 26;
+  if (second > 12) interchange(net, pos, second);
   ensureApproaches(net);
   return {
     seed, kind: new Uint8Array(N_TILES), level: new Uint8Array(N_TILES), net: net.toPlain(),
-    money: START_MONEY, tick: 0, tax: 10,
+    money: START_MONEY, tick: 0, tax: 10, extras: defaultExtras(10),
   };
+}
+
+/** Where the two carriageways run, measured in from the map edge. */
+export const OUTER = 2.5;
+export const INNER = 4.5;
+/** How far in from the edge an interchange's street node sits: the old highway stub ended here too. */
+export const DOOR = 7.5;
+
+/**
+ * A diamond interchange: slip roads off and on to the inner carriageway, and flyover ramps across it
+ * to the outer one, all meeting at a street node the city grows from.
+ */
+function interchange(net: Network, pos: (along: number, inward: number) => { x: number; z: number }, along: number): void {
+  const door = pos(along, DOOR);
+  const ramps = [
+    ...net.insertPath([pos(along - 6, INNER), door], KIND_RAMP, true),
+    ...net.insertPath([door, pos(along + 6, INNER)], KIND_RAMP, true),
+    ...net.insertPath([pos(along + 8, OUTER), door], KIND_RAMP, true, 1),
+    ...net.insertPath([door, pos(along - 8, OUTER)], KIND_RAMP, true, 1),
+  ];
+  for (const id of ramps) net.segs.get(id)!.fixed = true;
+  for (const n of net.nodes.values()) n.fixed = true;
 }
 
 export function randomSeed(): number {

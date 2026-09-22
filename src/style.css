@@ -208,13 +208,14 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
   background: rgba(0,0,0,0.35); border-radius: 4px; padding: 1px 4px;
 }
 
-.modes {
-  display: flex; flex-direction: column; gap: 4px; padding-right: 10px; margin-right: 2px;
-  border-right: 1px solid var(--line); justify-content: center;
+.modes-wrap {
+  position: sticky; left: 0; z-index: 2; display: flex; gap: 6px; align-self: stretch;
+  padding-right: 8px; margin-right: 2px; background: var(--bg-solid); border-right: 1px solid var(--line);
 }
+.modes { display: flex; flex-direction: column; gap: 4px; justify-content: center; }
 .mlabel { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
 .mode {
-  display: flex; align-items: center; gap: 7px; padding: 4px 10px 4px 7px; border-radius: 7px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; width: 36px; height: 32px; border-radius: 7px; cursor: pointer;
   background: rgba(255,255,255,0.06); color: var(--fg); border: 1.5px solid transparent; font: inherit; font-size: 12px;
 }
 .mode:hover { background: rgba(255,255,255,0.12); }
@@ -418,6 +419,7 @@ body.walking .bottombar, body.walking .dock, body.walking .city-overview, body.w
   position: absolute; top: 108px; left: 12px; z-index: 4; width: 280px; display: flex; flex-direction: column; gap: 4px;
   padding: 10px 12px; border-radius: 12px; background: var(--bg); backdrop-filter: blur(8px); font-size: 12.5px;
 }
+.scenario-card[hidden] { display: none; }
 .scenario-card .goal { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; color: var(--dim); }
 .scenario-card .goal.met { color: var(--fg); }
 .scenario-card .goal.met .goal-mark { color: #62c46a; }

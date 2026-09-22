@@ -1,6 +1,6 @@
 import { roadHeight } from '../roads/structures';
 import * as THREE from 'three';
-import { HALF_WIDTH, Network } from '../roads/network';
+import { HALF_WIDTH, KIND_RAMP, Network } from '../roads/network';
 
 /** Instanced lamps and soft pools avoid hundreds of real-time point lights. */
 export class StreetlightLayer {
@@ -28,7 +28,8 @@ export class StreetlightLayer {
     this.builtNet = net; this.builtVersion = net.version;
     const obj = new THREE.Object3D(); let count = 0;
     for (const seg of net.segs.values()) {
-      if (seg.structure === 2) continue;
+      // Slip roads carry no lamps: they would stand in the mouth of the junction.
+      if (seg.structure === 2 || seg.kind === KIND_RAMP) continue;
       let next = 2.5;
       for (let i = 1; i <= seg.n && count < 3000; i++) {
         if (seg.cum[i] < next || seg.cum[i] > seg.cum[seg.n] - 1.5) continue;

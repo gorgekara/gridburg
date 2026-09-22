@@ -2,8 +2,8 @@
 
 A small 3D city builder that runs in a browser tab. The thing that matters most is traffic.
 
-Your city starts at a highway connection at the edge of the map. Draw roads out from it, zone beside them, and the
-city grows on its own. Cars commute over your roads and queue for real, so busy junctions jam until you
+A motorway runs across the edge of every map, one carriageway each way, with two interchanges already built. Draw
+roads out from an interchange, zone beside them, and the city grows on its own. Cars commute over your roads and queue for real, so busy junctions jam until you
 fix them. Keep the lights on, the water clean, and the factories away from the houses.
 
 **Play:** https://gorgekara.github.io/gridburg/
@@ -55,8 +55,13 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Four road types.** Lanes ($14/cell, one shared carriageway), streets ($25, two lanes), avenues
   ($180, four lanes) and expressways ($430, six lanes, fastest, but nothing can be zoned along them).
   Every kind sits inside its corridor with a verge either side. Upgrade widens a road one step and
-  charges the difference; keep clicking and it wraps back to a lane. City entrances arrive on
-  expressway, so the first street has to be drawn from the end of it.
+  charges the difference; keep clicking and it wraps back to a lane. Extra city entrances arrive on
+  expressway; the map's own motorway comes with interchanges to build from.
+- **A motorway across the map.** Every new map has a motorway running its full length just inside the
+  roomier edge: two one-way carriageways side by side, traffic arriving from both ends. Two diamond
+  interchanges come with it — slip roads to the inner carriageway and flyover ramps to the outer one,
+  meeting at a street node the city grows from. The motorway and its interchanges cannot be bulldozed
+  and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**
   ($240/cell, three lanes) and a **highway ramp** ($110/cell, one lane). Both run in the direction you
   draw them: lay one carriageway, then the other beside it, and join them to the streets with ramps.
@@ -126,7 +131,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   need all three to grow past small. Outlets foul the river downstream, so pumps belong upstream.
 - **Pollution.** Industry and coal pollute the ground around them. It spreads, drives residents away, and
   spoils water towers. Press P to see it.
-- **A different river every map**, generated from a seed that is stored in the save.
+- **A different river every map**, generated from a seed that is stored in the save. Rivers bend on
+  every scale, so the channel never runs straight for long; cities saved before this keep the valley
+  they were built in.
 
 ## City progression and neighborhood services
 

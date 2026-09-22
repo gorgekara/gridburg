@@ -18,14 +18,19 @@ const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS } = await import('../
 const { demoCity } = await import('../src/demo.ts');
 const X = await import('../src/extras.ts');
 /** Bytes the v13 extras block takes for a city that has changed none of them. */
-const extrasLength = (tax) => 4 + new TextEncoder().encode(JSON.stringify(X.extrasToJson(X.defaultExtras(tax)))).length;
+/** Bytes the v13 extras block takes for a city, mirroring what encode() writes (including motorway kind bits). */
+const extrasLength = (city) => {
+  const segHi = city.net.segs.flatMap((seg, k) => (seg[5] & 256 ? [k] : []));
+  const json = { ...X.extrasToJson(city.extras ?? { ...X.defaultExtras(city.tax), river: 0 }), ...(segHi.length ? { segHi } : {}) };
+  return 4 + new TextEncoder().encode(JSON.stringify(json)).length;
+};
 const { newCity } = await import('../src/game.ts');
 const N = await import('../src/roads/network.ts');
 const { Network, HALF_WIDTH, SPEED, KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, UPGRADE_ORDER, nextRoadKind } = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import('../src/management.ts');
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
-const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater } = await import('../src/terrain.ts');
+const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater, RIVER_VERSION: C_RIVER } = await import('../src/terrain.ts');
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
 const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
 let checks = 0;
@@ -280,9 +285,27 @@ test('river valleys never move: the same maps every seed has always made', () =>
   const golden = '69b03eec a72d6265 69020fd6 bb0fdf3a 623474d1 2041838b b6f8bdee 506f4201 17e74ff3 52defdfe 51f43905 6547e6b3 841a48e0 f20a9953 af8ce1da f8f1ec87 85d4d797 7aa0bc57 c7dfaf0c 2d5956db aacd8a34 d8e45250 90bb1bc6 16506900 e3c5ff2b bd562806 7b44873a 414bdc04 7126d800 291d5de7';
   const digests = [];
   for (let seed = 1; seed <= 30; seed++) {
-    digests.push(terrainDigest(generateTerrain(seed)));
+    digests.push(terrainDigest(generateTerrain(seed, 0)));
   }
   assert.equal(digests.join(' '), golden, 'River valley maps must stay byte for byte what they were');
+  // Cities saved before rivers meandered carry no river version and get the old valley back.
+  const old = demoCity(); delete old.extras;
+  assert.equal(decode(encode(old)).extras.river, 0);
+  assert.equal(decode(encode(demoCity())).extras.river, C_RIVER, 'New cities record the generator that shaped them');
+  // The new generator keeps turning: the channel never runs straight for long.
+  const wiggle = (t) => {
+    let total = 0;
+    for (let i = 2; i < t.river.length; i++) {
+      const a = t.river[i - 2], b = t.river[i - 1], c = t.river[i];
+      const d = Math.atan2(c.z - b.z, c.x - b.x) - Math.atan2(b.z - a.z, b.x - a.x);
+      total += Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
+    }
+    return total;
+  };
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const oldRiver = generateTerrain(seed, 0), newRiver = generateTerrain(seed);
+    assert.ok(wiggle(newRiver) > wiggle(oldRiver) * 1.5, `Seed ${seed} bends more than it used to`);
+  }
 });
 const THREE = await import('three');
 test('building picking follows tile instances after rebuilding in a new location', () => {
@@ -528,25 +551,42 @@ test('metro stations form their own underground lines with metro capacity and ca
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 12)), 0);
   assert.equal(transitLineForTrip(net, C.idx(12, 12), C.idx(31, 40)), -1);
 });
-test('entrances run out past the map edge and extending them twice changes nothing', () => {
-  const city = newCity(7), net = Network.fromPlain(city.net);
-  const entry = [...net.nodes.values()].find(n => n.entry);
-  assert.ok(entry, 'A fresh city has a highway entry');
-  const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
-  assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
-  const approach = net.segsAt(entry.id);
-  assert.equal(approach.length, 1);
-  assert.ok(Math.abs(approach[0].len - APPROACH) < 0.01, `Approach length ${approach[0].len}`);
-  const gateId = approach[0].a === entry.id ? approach[0].b : approach[0].a;
-  const gate = net.nodes.get(gateId);
-  assert.ok(net.segsAt(gateId).length === 2, 'The gate joins the approach to the city stub');
-  assert.ok(Math.min(gate.x, gate.z, C.GRID - gate.x, C.GRID - gate.z) <= 0.5, 'The gate sits on the map edge');
+test('a new map has a motorway across it with interchanges, and its entries run out past the edge', () => {
+  const city = newCity(7), net = Network.fromPlain(city.net), terrain = generateTerrain(7);
+  const entries = [...net.nodes.values()].filter(n => n.entry);
+  assert.equal(entries.length, 4, 'Both carriageways come in from both ends of the map');
+  for (const entry of entries) {
+    const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
+    assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
+    const approach = net.segsAt(entry.id);
+    assert.equal(approach.length, 1);
+    assert.ok(Math.abs(approach[0].len - APPROACH) < 0.01, `Approach length ${approach[0].len}`);
+    assert.ok(approach[0].oneway && approach[0].kind === N.KIND_MOTORWAY, 'The approach is one carriageway of the motorway');
+    const gateId = approach[0].a === entry.id ? approach[0].b : approach[0].a;
+    const gate = net.nodes.get(gateId);
+    assert.ok(net.segsAt(gateId).length === 2, 'The gate joins the approach to the carriageway');
+    assert.ok(Math.min(gate.x, gate.z, C.GRID - gate.x, C.GRID - gate.z) <= 0.5, 'The gate sits on the map edge');
+    // Traffic runs the same way on the approach as on the carriageway it continues.
+    const inner = net.segsAt(gateId).find(s => s.id !== approach[0].id);
+    const leaving = approach[0].a === gateId, continues = inner.a === gateId;
+    assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
+  }
+  const kinds = [...net.segs.values()];
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP && s.structure === 1).length, 4, 'Two interchanges each fly two ramps over the inner carriageway');
+  assert.equal(kinds.filter(s => s.kind === N.KIND_RAMP && !s.structure).length, 4, 'and run two slip roads to the inner one');
+  assert.ok(kinds.every(s => s.fixed), 'The motorway and its interchanges cannot be bulldozed');
+  const r = rasterize(net);
+  assert.ok(!Array.from(r.cover).some((v, i) => v && terrain.water[i]), 'None of it stands in the river');
+  // The interchange's street node is where the old highway stub used to end, so the demo still fits.
+  const e = terrain.entry, door = net.nearestNode(e.x + e.dx * 7.5, e.z + e.dz * 7.5, 0.2);
+  assert.ok(door && net.degree(door.id) === 4, 'Four ramps meet at the front door');
   const before = net.toPlain();
   ensureApproaches(net);
   assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');
   assert.deepEqual(net.toPlain().segs.length, before.segs.length);
   const restored = Network.fromPlain(decode(encode(city)).net);
-  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 1, 'Off-map entries survive a save');
+  assert.equal([...restored.nodes.values()].filter(n => n.entry).length, 4, 'Off-map entries survive a save');
+  assert.equal([...restored.segs.values()].filter(s => s.kind === N.KIND_MOTORWAY).length, kinds.filter(s => s.kind === N.KIND_MOTORWAY).length, 'So do the carriageways');
 });
 test('external traffic drives in from off the map without stalling the entrance', () => {
   const city = demoCity(true);
@@ -878,8 +918,9 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
     if (typeof result !== 'string') { planned = result; break; }
   }
   assert.ok(planned);
-  assert.equal([...net.nodes.values()].filter(n => n.entry).length, 1, 'Original network is unchanged');
-  assert.equal([...planned.nodes.values()].filter(n => n.entry).length, 2);
+  const had = [...net.nodes.values()].filter(n => n.entry).length;
+  assert.equal(had, 4, 'Original network is unchanged');
+  assert.equal([...planned.nodes.values()].filter(n => n.entry).length, had + 1);
   assert.equal(typeof entrancePlan(net, terrain, city.kind, 40, 40), 'string');
   // The entrance itself is expressway, which carries no frontage, so a street picks the traffic up.
   const newNode = [...planned.nodes.values()].filter(n => n.entry).at(-1);
@@ -896,7 +937,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   const tile = Array.from(r.accSeg).findIndex((id, i) => served.has(id) && !r.cover[i] && !terrain.water[i] && !terrain.shore[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
-  assert.equal(latest().stats.entries, 2);
+  assert.equal(latest().stats.entries, 3, 'The motorway counts as one gate at each end, plus the new entrance');
   assert.equal(latest().flags[tile] & C.F_NO_ROAD, 0);
 });
 test('offices provide clean jobs, obey unlocks and explain education requirements', () => {
@@ -1034,7 +1075,7 @@ test('fires and patrol protection persist while old v5 saves still migrate', () 
   const restored = decode(encode(city)); assert.deepEqual(restored.incidents, city.incidents);
   const empty = demoCity(); const bytes = Buffer.from(encode(empty), 'base64url');
   // Strip the incident block and the empty rotation, park-path and extras blocks that follow it.
-  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2 + 2 + extrasLength(empty.tax);
+  const tail = new TextEncoder().encode(JSON.stringify({ fires: [], crime: [], patrol: [] })).length + 4 + 2 + 2 + extrasLength(empty);
   // A v5 stream has no policy mask: keep the first 28 header bytes and the body that follows the v9 header.
   const v5 = Buffer.concat([bytes.subarray(0, 28), bytes.subarray(30, bytes.length - tail)]); v5[0] = 5;
   const migrated = decode(v5.toString('base64url')); assert.ok(migrated); assert.equal(migrated.incidents, undefined);
@@ -1460,7 +1501,7 @@ const { StructureLayer } = await import('../src/render/structures.ts');
 test('bridge and tunnel spans cross surface roads without junctions and survive saves', () => {
   const current = Buffer.from(encode(demoCity()), 'base64url');
   // Versions before 9 carry no policy mask, rotation block, park paths or extras: drop them all.
-  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 4 - extrasLength(10))]); legacy[0] = 6;
+  const legacy = Buffer.concat([current.subarray(0, 28), current.subarray(30, current.length - 4 - extrasLength(demoCity()))]); legacy[0] = 6;
   assert.ok(decode(legacy.toString('base64url')), 'Version 6 cities remain readable');
   const net = new Network();
   net.insertPath([{ x: 30, z: 10 }, { x: 30, z: 65 }], 0);

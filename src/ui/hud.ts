@@ -579,32 +579,37 @@ export class Hud {
     for (const c of CATEGORIES) {
       if (c.id === 'bulldoze' || c.id === 'inspect') continue;
       const body = el('div', 'pbody');
+      // Height and draw modes: icon buttons in a column that stays put while the cards scroll past.
+      const side = el('div', 'modes-wrap');
       if (c.id === 'roads') {
         const height = el('div', 'modes');
         height.append(el('span', 'mlabel', 'Height'));
         for (const [level, label, key] of [[-1, 'Tunnel', '−'], [0, 'Surface', ''], [1, 'Bridge', '+']] as [number, string, string][]) {
           const b = el('button', 'mode');
-          b.append(icon(level > 0 ? 'bridge' : level < 0 ? 'tunnel' : 'road', 20), el('span', undefined, label));
+          b.append(icon(level > 0 ? 'bridge' : level < 0 ? 'tunnel' : 'road', 20));
           b.title = key ? `${label} (${key})` : `${label} road`;
+          b.setAttribute('aria-label', label);
           b.addEventListener('click', () => actions.setElevation(level));
           this.heightBtns.set(level, b);
           height.append(b);
         }
-        body.append(height);
+        side.append(height);
       }
       if (c.id === 'roads' || c.id === 'parks') {
         const seg = el('div', 'modes');
         seg.append(el('span', 'mlabel', 'Draw'));
         for (const m of MODES) {
           const b = el('button', 'mode');
-          b.append(icon(m.id, 20), el('span', undefined, m.label));
-          b.title = `${m.hint} (C cycles)`;
+          b.append(icon(m.id, 20));
+          b.title = `${m.label}: ${m.hint} (C cycles)`;
+          b.setAttribute('aria-label', m.label);
           b.addEventListener('click', () => actions.setMode(m.id));
           this.modeBtns.set(`${c.id}:${m.id}`, b);
           seg.append(b);
         }
-        body.append(seg);
+        side.append(seg);
       }
+      if (side.childElementCount) body.append(side);
       for (const t of c.tools) {
         const b = el('button', `card ${t.id}`);
         const art = el('div', 'art');
@@ -950,7 +955,7 @@ export class Hud {
     if (s.disasters?.active === 'tornado') say('disaster', 'Tornado crossing the valley: buildings in its path are being damaged');
     if (s.garbage > 40) say('garbage', 'Rubbish is piling up: build recycling centres so garbage trucks can collect it');
     if (s.goods?.importShare > 0.5 && s.buildings > 20) say('goods', 'Shops are importing most of their stock: zone industry or farmland to supply them');
-    if (!s.placeholder && s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the end of the highway, then zone beside it');
+    if (!s.placeholder && s.buildings === 0 && s.roadLength < 12) say('start', 'Draw a road from the highway interchange, then zone beside it');
     if (s.money < 0) say('budget', 'Treasury in debt: open Budget to reduce funding or take a recovery loan. Existing zones can still grow.');
     if (s.declining > 0) say('declining', `${s.declining} homes losing services: inspect the amber markers before they downgrade`);
     if (s.buildings > 0) {

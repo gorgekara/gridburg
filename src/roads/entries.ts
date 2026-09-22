@@ -32,7 +32,13 @@ export function ensureApproaches(net: Network): void {
     outer.fixed = true;
     node.entry = false;
     node.fixed = true;
-    net.addSeg(outer.id, node.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, KIND_HIGHWAY, false, true);
+    // The approach carries on whatever reaches the edge: a two-way expressway, or one carriageway
+    // of a motorway running the way its traffic does.
+    const seg = net.segsAt(node.id)[0];
+    const kind = seg?.kind ?? KIND_HIGHWAY, oneway = !!seg?.oneway;
+    const arriving = !!seg && seg.b === node.id;
+    if (oneway && arriving) net.addSeg(node.id, outer.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, kind, true, true);
+    else net.addSeg(outer.id, node.id, (outer.x + node.x) / 2, (outer.z + node.z) / 2, kind, oneway, true);
   }
 }
 

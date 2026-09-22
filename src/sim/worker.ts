@@ -244,8 +244,8 @@ function applyNetwork(p: EditPayload): void {
   newSegs.forEach((s, i) => {
     nodeEdges[segA[i]].push({ seg: i, to: segB[i], fwd: true });
     if (!s.oneway) nodeEdges[segB[i]].push({ seg: i, to: segA[i], fwd: false });
-    if (!s.fixed) roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1);
-    roadLength += s.len;
+    // The motorway and its interchanges came with the map: the city neither pays for nor counts them.
+    if (!s.fixed) { roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1); roadLength += s.len; }
   });
   lockOwner = new Int32Array(nodeIds.length).fill(-1);
   ringClaim = new Int32Array(nodeIds.length).fill(-1);
@@ -1070,7 +1070,7 @@ function census(): void {
   const taxPenalty = (extras.taxes[0] - 10) / 40;
   const zoneTax = (z: number): number => (extras.taxes[z] - 10) / 40;
   // Goods: factories and farms supply the shops; a shortfall is imported and a surplus exported.
-  const links = { entries: entryNodes.length, railLines: transit.intercity.length, docks, airports: transit.airports.length };
+  const links = { entries: gateCount(), railLines: transit.intercity.length, docks, airports: transit.airports.length };
   goods = goodsFlow(kind, level, pop, links);
   visitors = tourismFlow(kind, level, riverDistance, links, happiness, extras);
   const commutePenalty = clamp((commuteAvg - 25) / 50, 0, 1);
@@ -1269,6 +1269,16 @@ function grow(): void {
   tick++;
 }
 
+/** Entrances as a player counts them: the two carriageways of a motorway share one gate on the edge. */
+function gateCount(): number {
+  const gates: { x: number; z: number }[] = [];
+  for (const n of entryNodes) {
+    const g = entrySite(nodeX[n], nodeZ[n]);
+    if (!gates.some(o => Math.hypot(o.x - g.x, o.z - g.z) < 4)) gates.push(g);
+  }
+  return gates.length;
+}
+
 function averageOver(field: Float32Array, include: (i: number) => boolean): number {
   let sum = 0, n = 0;
   for (let i = 0; i < N_TILES; i++) if (include(i)) { sum += field[i]; n++; }
@@ -1284,7 +1294,7 @@ function stats(): Stats {
       prevented: incidents.prevented, extinguished: incidents.extinguished, damaged: incidents.damaged,
       robbed: incidents.robbed, foiled: incidents.foiled,
     },
-    transport: { taxiStops: taxiStops.length, taxiRiders: Math.round(taxiWindow), trolleyLines: transit.lines.filter(l => l.mode === 'trolley').length, busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, intercityLines: transit.intercity.length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, railPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: entryNodes.length,
+    transport: { taxiStops: taxiStops.length, taxiRiders: Math.round(taxiWindow), trolleyLines: transit.lines.filter(l => l.mode === 'trolley').length, busLines: transit.lines.filter(l => l.mode === 'bus').length, railLines: transit.lines.filter(l => l.mode === 'rail').length, intercityLines: transit.intercity.length, subwayLines: transit.lines.filter(l => l.mode === 'subway').length, airports: transit.airports.length, riders, airPassengers, railPassengers, fareIncome }, treatedSewage: Math.round(treatedSewage), entries: gateCount(),
     funding: { ...funding }, policies: { ...policies }, policyExpense: policyCost, tollIncome, fishingIncome, docks, debt, taxIncome, roadExpense: roadUpkeep, serviceExpense, loanExpense, declining: neglect.reduce((n, v) => n + (v > 0 ? 1 : 0), 0),
     cityLevel, happiness, civic: civicState.average,
     money: Math.round(money), pop, jobs: comJobs + indJobs + officeJobs, cars: activeCars, commute: commuteAvg,
@@ -1483,8 +1493,10 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   const m = ev.data;
   switch (m.type) {
     case 'load': {
-      baseTerrain = generateTerrain(m.seed);
       extras = m.extras ? { ...m.extras, district: m.extras.district.slice(), terraform: m.extras.terraform.slice() } : defaultExtras(m.tax);
+      // Old cities carry no extras and keep the valley they were built in.
+      if (!m.extras) extras.river = 0;
+      baseTerrain = generateTerrain(m.seed, extras.river);
       terrain = baseTerrain;
       setTerrain();
       garbage.fill(0); disasters.reset();

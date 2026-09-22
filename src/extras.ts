@@ -1,5 +1,6 @@
 import { GRID, N_TILES } from './constants';
 import type { Terrain } from './terrain';
+import { RIVER_VERSION } from './terrain';
 
 /**
  * City settings that arrived after the fixed save header: tax per zone, districts and their local
@@ -47,19 +48,21 @@ export interface CityExtras {
   terraform: Uint8Array;
   scenario?: ScenarioState;
   disasters: boolean;
+  /** Which river generator shaped the map: absent in old cities, which keep their original valley. */
+  river: number;
 }
 
 export function defaultExtras(tax = 10): CityExtras {
   return {
     taxes: [tax, tax, tax, tax], district: new Uint8Array(N_TILES), districtNames: [...DEFAULT_DISTRICT_NAMES],
-    districtPolicies: new Array(DISTRICT_COUNT).fill(0), terraform: new Uint8Array(N_TILES), disasters: true,
+    districtPolicies: new Array(DISTRICT_COUNT).fill(0), terraform: new Uint8Array(N_TILES), disasters: true, river: RIVER_VERSION,
   };
 }
 
 export function cloneExtras(e: CityExtras): CityExtras {
   return {
     taxes: [...e.taxes] as Taxes, district: e.district.slice(), districtNames: [...e.districtNames],
-    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), scenario: e.scenario ? { ...e.scenario } : undefined, disasters: e.disasters,
+    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), scenario: e.scenario ? { ...e.scenario } : undefined, disasters: e.disasters, river: e.river,
   };
 }
 
@@ -91,7 +94,7 @@ function unrle(pairs: unknown, max: number): Uint8Array | null {
 export function extrasToJson(e: CityExtras): unknown {
   return {
     taxes: e.taxes, district: rle(e.district), names: e.districtNames, policies: e.districtPolicies,
-    terraform: rle(e.terraform), scenario: e.scenario, disasters: e.disasters,
+    terraform: rle(e.terraform), scenario: e.scenario, disasters: e.disasters, river: e.river,
   };
 }
 
@@ -113,6 +116,8 @@ export function extrasFromJson(data: unknown, tax: number): CityExtras | null {
   if (s !== undefined && (typeof s !== 'object' || typeof s.id !== 'string' || !Number.isInteger(s.startTick))) return null;
   e.scenario = s ? { id: s.id, startTick: s.startTick, done: s.done === 'won' || s.done === 'lost' ? s.done : undefined } : undefined;
   e.disasters = d.disasters !== false;
+  // A v13 city saved before rivers meandered has no river field: it keeps the valley it was built in.
+  e.river = Number.isInteger(d.river) ? d.river as number : 0;
   return e;
 }
 

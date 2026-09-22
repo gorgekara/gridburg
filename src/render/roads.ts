@@ -4,7 +4,7 @@ import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, signalPhase } from '../roads/network';
-import type { Pose } from '../roads/network';
+import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from './crossings';
@@ -43,7 +43,7 @@ export class RoadLayer {
   private builtNet: Network | null = null;
   private builtVersion = -1;
   private builtTerrain: Terrain | null = null;
-  private sign = new THREE.Group();
+  private signs: THREE.Group[] = [];
 
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
@@ -88,19 +88,25 @@ export class RoadLayer {
     this.stopSigns.castShadow = true;
     this.group.add(this.stopSigns);
 
-    // Highway sign at the entry.
-    const board = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 0.06), new THREE.MeshStandardMaterial({ color: 0x1f7a4d }));
-    board.position.y = 1.25;
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 0.07), new THREE.MeshStandardMaterial({ color: 0xffffff }));
-    stripe.position.y = 1.25;
-    this.sign.add(board, stripe);
-    for (const x of [-0.7, 0.7]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.0, 0.06), new THREE.MeshStandardMaterial({ color: 0x777777 }));
-      leg.position.set(x, 0.5, 0);
-      this.sign.add(leg);
+    // Highway signs: one beside each road coming in from outside, on the verge to the right of it.
+    const green = new THREE.MeshStandardMaterial({ color: 0x1f7a4d }), white = new THREE.MeshStandardMaterial({ color: 0xffffff }), grey = new THREE.MeshStandardMaterial({ color: 0x777777 });
+    for (let n = 0; n < 4; n++) {
+      const sign = new THREE.Group();
+      const board = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 0.06), green);
+      board.position.y = 1.25;
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 0.07), white);
+      stripe.position.y = 1.25;
+      sign.add(board, stripe);
+      for (const x of [-0.7, 0.7]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.0, 0.06), grey);
+        leg.position.set(x, 0.5, 0);
+        sign.add(leg);
+      }
+      sign.traverse((o) => { o.castShadow = true; });
+      sign.visible = false;
+      this.signs.push(sign);
+      this.group.add(sign);
     }
-    this.sign.traverse((o) => { o.castShadow = true; });
-    this.group.add(this.sign);
   }
 
   rebuild(net: Network, terrain: Terrain): void {
@@ -232,8 +238,13 @@ export class RoadLayer {
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
-      const trimA = Math.max(net.degree(s.a) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[0] ?? 0) + 0.23);
-      const trimB = Math.max(net.degree(s.b) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[1] ?? 0) + 0.23);
+      const motorwayKind = s.kind === KIND_MOTORWAY || s.kind === KIND_RAMP;
+      // Where a slip road splits from or joins a carriageway the two run side by side for a while:
+      // the ramp's own lines stop where it is clear of the highway, and the highway keeps its lines
+      // through the node except the edge line on the ramp's side, which opens up for the mouth.
+      const mouthA = motorwayKind ? rampMouth(net, s, s.a) : null, mouthB = motorwayKind ? rampMouth(net, s, s.b) : null;
+      const trimA = Math.max(mouthA ? (s.kind === KIND_RAMP ? mouthA.length : 0.2) : net.degree(s.a) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[0] ?? 0) + 0.23);
+      const trimB = Math.max(mouthB ? (s.kind === KIND_RAMP ? mouthB.length : 0.2) : net.degree(s.b) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[1] ?? 0) + 0.23);
       const from = trimA;
       const to = s.len - trimB;
       if (to - from < 0.5) continue;
@@ -262,8 +273,13 @@ export class RoadLayer {
       if (s.kind === KIND_MOTORWAY || s.kind === KIND_RAMP) {
         // Highway carriageways: solid edge lines, dashed lane lines, and arrows showing the flow.
         const edge = HALF_WIDTH[s.kind] - 0.06;
-        strip(from, to, 0.02, edge, WHITE);
-        strip(from, to, 0.02, -edge, s.kind === KIND_RAMP ? WHITE : LINE);
+        // Each edge line stops short of a ramp mouth on its own side.
+        for (const side of [1, -1]) {
+          const openA = mouthA && s.kind !== KIND_RAMP && mouthA.side === side ? mouthA.length : 0;
+          const openB = mouthB && s.kind !== KIND_RAMP && mouthB.side === side ? mouthB.length : 0;
+          const f = Math.max(from, openA), t = Math.min(to, s.len - openB);
+          if (t - f > 0.3) strip(f, t, 0.02, side * edge, side > 0 || s.kind === KIND_RAMP ? WHITE : LINE);
+        }
         if (s.kind === KIND_MOTORWAY) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of [-0.22, 0.22]) strip(d, d + 0.5, 0.018, l, WHITE);
         for (let d = from + 0.5; d < to; d += 2.2) {
           Network.poseAt(s, d, pose);
@@ -314,22 +330,30 @@ export class RoadLayer {
     }
 
     // The highway continues off the map so the entry reads as a connection to somewhere.
-    this.sign.visible = false;
+    for (const sign of this.signs) sign.visible = false;
+    let signs = 0;
     for (const entry of net.nodes.values()) {
       if (!entry.entry) continue;
       const e = entrySite(entry.x, entry.z);
-      // The drivable approach already reaches the entry node; the painted highway carries on from there.
-      const ex = e.x - half, ez = e.z - half;
+      const seg = net.segsAt(entry.id)[0];
+      const kind = seg?.kind ?? KIND_HIGHWAY;
+      // The drivable approach already reaches the entry node; the painted road carries on from there
+      // at the same width, so a motorway carriageway does not turn into an avenue at the horizon.
       const fx = entry.x - half, fz = entry.z - half;
       const far = new Float32Array([fx, fz, fx - e.dx * 140, fz - e.dz * 140]);
-      const hw = HALF_WIDTH[KIND_AVENUE];
+      const hw = HALF_WIDTH[kind];
       b.ribbon(far, 2, hw + 0.09, 0.03, CURB);
       b.ribbon(far, 2, hw, 0.045, ASPHALT);
-      b.ribbon(far, 2, 0.02, 0.056, LINE, -0.045);
-      b.ribbon(far, 2, 0.02, 0.056, LINE, 0.045);
-      this.sign.visible = true;
-      this.sign.position.set(ex + e.dx * 1.5 - e.dz * 1.3, 0, ez + e.dz * 1.5 + e.dx * 1.3);
-      this.sign.rotation.y = Math.atan2(e.dx, e.dz);
+      if (kind === KIND_MOTORWAY) { b.ribbon(far, 2, 0.02, 0.056, WHITE, hw - 0.06); b.ribbon(far, 2, 0.02, 0.056, WHITE, -(hw - 0.06)); }
+      else { b.ribbon(far, 2, 0.02, 0.056, LINE, -0.045); b.ribbon(far, 2, 0.02, 0.056, LINE, 0.045); }
+      // A sign greets traffic coming in: beside the road on the verge, never on the carriageway.
+      const inbound = !seg?.oneway || seg.a === entry.id;
+      if (!inbound || signs >= this.signs.length) continue;
+      const sign = this.signs[signs++];
+      const gx = e.x - half, gz = e.z - half, off = hw + 0.95;
+      sign.visible = true;
+      sign.position.set(gx + e.dx * 1.5 - e.dz * off, 0, gz + e.dz * 1.5 + e.dx * off);
+      sign.rotation.y = Math.atan2(e.dx, e.dz);
     }
 
     this.mesh.geometry.dispose();
@@ -473,3 +497,26 @@ function roundaboutFlares(net: Network, b: MeshBuilder): void {
   }
 }
 
+/**
+ * Where a ramp meets a carriageway at `node`: how far along `seg` the two roads overlap, and on which
+ * side of `seg` (+1 right of a → b, -1 left) the other road lies. Null when no ramp meets there.
+ */
+function rampMouth(net: Network, seg: RSeg, node: number): { length: number; side: number } | null {
+  const others = net.segsAt(node).filter(o => o.id !== seg.id && (o.kind === KIND_MOTORWAY || o.kind === KIND_RAMP) && !o.structure);
+  if (!others.length || net.degree(node) !== 3) return null;
+  if (seg.kind !== KIND_RAMP && !others.some(o => o.kind === KIND_RAMP)) return null;
+  const other = seg.kind === KIND_RAMP ? others.find(o => o.kind !== KIND_RAMP) ?? others[0] : others.find(o => o.kind === KIND_RAMP)!;
+  const clearance = HALF_WIDTH[seg.kind] + HALF_WIDTH[other.kind] + 0.06;
+  const fromA = seg.a === node;
+  let length = 0.2, side = 1;
+  for (let d = 0.2; d < Math.min(seg.len - 0.2, 12); d += 0.2) {
+    Network.poseAt(seg, fromA ? d : seg.len - d, pose);
+    const hit = Network.nearestOn(other, pose.x, pose.z);
+    // Which side the other road's nearest point falls on, relative to this road's direction of travel.
+    const cross = (hit.x - pose.x) * pose.tz - (hit.z - pose.z) * pose.tx;
+    side = (cross > 0 ? -1 : 1) * (fromA ? 1 : -1);
+    length = d;
+    if (hit.dist > clearance) break;
+  }
+  return { length: Math.min(length + 0.2, seg.len * 0.45), side };
+}

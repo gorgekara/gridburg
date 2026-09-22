@@ -100,7 +100,7 @@ export function encode(d: SaveData): string {
   // v13: everything newer as one JSON block, so later additions need no new binary layout.
   // The segment flag byte is full, so the one-way highway and ramp kinds keep their high bit here.
   const segHi = segs.flatMap((s, k) => (s[5] & 256 ? [k] : []));
-  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}) }));
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? { ...defaultExtras(d.tax), river: 0 }) as object), ...(segHi.length ? { segHi } : {}) }));
   bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
   for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
