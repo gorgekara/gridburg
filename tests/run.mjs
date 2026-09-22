@@ -563,6 +563,13 @@ test('a new map has a motorway across it with interchanges, and its entries run 
   // The interchange's street node is where the old highway stub used to end, so the demo still fits.
   const e = terrain.entry, door = net.nearestNode(e.x + e.dx * DOOR, e.z + e.dz * DOOR, 0.2);
   assert.ok(door && net.degree(door.id) === 3, 'The overpass and two slip roads meet at the front door');
+  // On every map the two interchanges keep their slip roads apart: eight ramps, each between a carriageway and a street node.
+  for (const seed of [1, 2, 3, 4, 5, 6, 8, 12, 99, 424242]) {
+    const other = Network.fromPlain(newCity(seed).net);
+    const ramps = [...other.segs.values()].filter(q => q.kind === N.KIND_RAMP);
+    assert.equal(ramps.length, 8, `Seed ${seed}: two interchanges, four slip roads each (got ${ramps.length})`);
+    for (const q of ramps) assert.ok(other.degree(q.a) === 3 && other.degree(q.b) === 3, `Seed ${seed}: a slip road meets nothing but its carriageway and its street`);
+  }
   const before = net.toPlain();
   ensureApproaches(net);
   assert.deepEqual(net.toPlain().nodes.length, before.nodes.length, 'Already extended entrances are left alone');

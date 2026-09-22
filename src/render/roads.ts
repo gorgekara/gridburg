@@ -285,9 +285,10 @@ export class RoadLayer {
           if (t - f > 0.3) strip(f, t, 0.02, side * edge, side > 0 || s.kind === KIND_RAMP ? WHITE : LINE);
         }
         if (s.kind === KIND_MOTORWAY) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of [-0.22, 0.22]) strip(d, d + 0.5, 0.018, l, WHITE);
-        for (let d = from + 0.5; d < to; d += 2.2) {
+        // A sparse set of arrows is enough to show the flow; a carpet of them just looks busy.
+        for (let d = from + 1.2; d < to - 0.4; d += s.kind === KIND_MOTORWAY ? 7 : 4.5) {
           Network.poseAt(s, d, pose);
-          for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.13, 0.057, WHITE);
+          for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.12, 0.057, WHITE);
         }
       } else if (s.oneway) {
         for (let d = from + 0.3; d < to; d += 1.6) {
@@ -573,7 +574,9 @@ function junctionFillets(net: Network, b: MeshBuilder): void {
       if (t < -0.2 || u < -0.2 || t > 4 || u > 4) continue;
       const cx = facingA.x + A.ux * t, cz = facingA.z + A.uz * t;
       // Round the corner off with a radius that suits the wider road, but never past the arm's far end.
-      const r = Math.min(0.35 + Math.max(A.hw, B.hw) * 0.45, Math.max(0.15, A.s.len - t - 0.4), Math.max(0.15, B.s.len - u - 0.4));
+      // Highway corners are swept wide, as they would be for fast traffic.
+      const fast = A.s.kind === KIND_MOTORWAY || A.s.kind === KIND_RAMP || B.s.kind === KIND_MOTORWAY || B.s.kind === KIND_RAMP;
+      const r = Math.min(fast ? 1.1 : 0.35 + Math.max(A.hw, B.hw) * 0.45, Math.max(0.15, A.s.len - t - 0.4), Math.max(0.15, B.s.len - u - 0.4));
       const sx = cx + A.ux * r, sz = cz + A.uz * r, ex = cx + B.ux * r, ez = cz + B.uz * r;
       const steps = curve.length / 2;
       for (let k = 0; k < steps; k++) {
@@ -597,7 +600,8 @@ function rampGores(net: Network, b: MeshBuilder): void {
     if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
     for (const node of [ramp.a, ramp.b]) {
       const mouth = rampMouth(net, ramp, node);
-      if (!mouth) continue;
+      // Only a shallow merge gets a paved gore; a ramp turning sharply off is an ordinary corner.
+      if (!mouth || mouth.length < 2.2) continue;
       const fromA = ramp.a === node;
       // The carriageway that carries on the way the ramp runs.
       Network.poseAt(ramp, fromA ? 0.3 : ramp.len - 0.3, p);
@@ -610,7 +614,7 @@ function rampGores(net: Network, b: MeshBuilder): void {
         if (dot > best) { best = dot; road = o; }
       }
       if (!road || best < 0.5) continue;
-      const length = Math.min(mouth.length + 0.6, ramp.len - 0.3, road.len - 0.3);
+      const length = Math.min(mouth.length + 0.4, 5.5, ramp.len - 0.3, road.len - 0.3);
       const steps = 10, pts: number[] = [];
       // Out along the carriageway's edge on the ramp's side, then back along the ramp's near edge.
       const roadFromA = road.a === node, rampSide = mouth.side * (fromA ? 1 : -1);

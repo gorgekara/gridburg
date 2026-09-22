@@ -509,8 +509,10 @@ export function newCity(seed: number): SaveData {
   else { carriageway(GRID - 0.5, 0.5, INNER); carriageway(0.5, GRID - 0.5, OUTER); }
   const d = rightIsCity ? 1 : -1; // which way the inner carriageway runs along the map
   interchange(net, pos, front, d);
-  const second = front + 28 < GRID - 12 ? front + 28 : front - 28;
-  if (second > 12) interchange(net, pos, second, d);
+  // A second interchange as far along as the map allows, so the two never crowd each other.
+  // Far enough that the two interchanges' slip roads never meet: they reach 12 cells each way.
+  const second = [30, 26].flatMap(gap => [front + gap, front - gap]).find(at => at > 13 && at < GRID - 13);
+  if (second !== undefined) interchange(net, pos, second, d);
   for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
   return {
@@ -535,10 +537,11 @@ function interchange(net: Network, pos: (along: number, inward: number) => { x: 
   const fix = (ids: number[]): void => { for (const id of ids) net.segs.get(id)!.fixed = true; };
   fix(net.insertPath([outside, inside], KIND_ROAD, false, 1));
   // Slip roads leave each carriageway before the bridge and rejoin after it, in its direction of travel.
-  fix(net.insertPath([pos(along - 11 * d, INNER), pos(along - 4 * d, INNER + 0.3), inside], KIND_RAMP, true));
-  fix(net.insertPath([inside, pos(along + 4 * d, INNER + 0.3), pos(along + 11 * d, INNER)], KIND_RAMP, true));
-  fix(net.insertPath([pos(along + 11 * d, OUTER), pos(along + 4 * d, OUTER - 0.3), outside], KIND_RAMP, true));
-  fix(net.insertPath([outside, pos(along - 4 * d, OUTER - 0.3), pos(along - 11 * d, OUTER)], KIND_RAMP, true));
+  // Long, gentle slip roads: the diamond is spread out so the ramps read as separate lanes.
+  fix(net.insertPath([pos(along - 12 * d, INNER), pos(along - 5 * d, INNER + 0.3), inside], KIND_RAMP, true));
+  fix(net.insertPath([inside, pos(along + 5 * d, INNER + 0.3), pos(along + 12 * d, INNER)], KIND_RAMP, true));
+  fix(net.insertPath([pos(along + 12 * d, OUTER), pos(along + 5 * d, OUTER - 0.3), outside], KIND_RAMP, true));
+  fix(net.insertPath([outside, pos(along - 5 * d, OUTER - 0.3), pos(along - 12 * d, OUTER)], KIND_RAMP, true));
 }
 
 export function randomSeed(): number {
