@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { buildingGeometry, rotorGeometry, VARIANTS } from './buildingGeo';
+import { bodyOfGeometry } from './streetDetail';
+import type { Body } from './streetDetail';
 
 const m4 = new THREE.Matrix4();
 const pivot = new THREE.Matrix4();
@@ -34,6 +36,7 @@ function key(kind: number, level: number, variant: number): number {
 export class BuildingLayer {
   readonly group = new THREE.Group();
   private meshes = new Map<number, THREE.InstancedMesh>();
+  private bodies = new Map<number, Body | null>();
   private zones: THREE.InstancedMesh;
   private rotors: THREE.InstancedMesh;
   private rotorSites: { x: number; z: number; rot: number; phase: number }[] = [];
@@ -93,9 +96,20 @@ export class BuildingLayer {
     this.group.add(this.zones);
   }
 
+  /** The walls of a zone building's model, for the street detail to hang things on. */
+  body(kind: number, level: number, variant: number): Body | null {
+    const k = key(kind, level, variant);
+    if (!this.bodies.has(k)) {
+      const mesh = this.meshes.get(k);
+      this.bodies.set(k, mesh ? bodyOfGeometry(mesh.geometry) : null);
+    }
+    return this.bodies.get(k) ?? null;
+  }
+
   setDetail(detail: VisualDetail): void {
     if (this.detail === detail) return;
     this.detail = detail;
+    this.bodies.clear();
     for (const [id, mesh] of this.meshes) {
       const variant = id % 16, group = Math.floor(id / 16);
       const level = group % 4, kind = Math.floor(group / 4);

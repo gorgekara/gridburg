@@ -11,6 +11,10 @@ export interface AmbientState {
   height: number; // camera height above the ground
   night: number; // 0 day .. 1 night
   emergencies: number; // fire engines and police cars out
+  /** How far the nearest emergency vehicle is from the camera, in world units (Infinity if none). */
+  sirenDistance?: number;
+  /** How much the player's tyres are sliding, 0..1. */
+  skid?: number;
   driving: number | null; // speed in km/h while driving
   walking: boolean; // a walker who is moving
   storm: boolean;
@@ -24,7 +28,8 @@ export class CityAudio {
   private hum: GainNode | null = null;
   private humFilter: BiquadFilterNode | null = null;
   private wind: GainNode | null = null;
-  private siren: { osc: OscillatorNode; gain: GainNode } | null = null;
+  private siren: { osc: OscillatorNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
+  private screech: { gain: GainNode; filter: BiquadFilterNode } | null = null;
   private engine: { osc: OscillatorNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
   private noise: AudioBuffer | null = null;
   private nextBird = 0;
@@ -79,10 +84,16 @@ export class CityAudio {
     };
     [this.hum, this.humFilter] = loop('lowpass', 420);
     [this.wind] = loop('bandpass', 700);
-    const osc = ctx.createOscillator(); osc.type = 'triangle'; osc.frequency.value = 700;
+    // A siren: a soft sine through a low-pass filter, gliding up and down rather than switching tones.
+    const osc = ctx.createOscillator(); osc.type = 'sine'; osc.frequency.value = 700;
+    const sFilter = ctx.createBiquadFilter(); sFilter.type = 'lowpass'; sFilter.frequency.value = 1400;
     const gain = ctx.createGain(); gain.gain.value = 0;
-    osc.connect(gain).connect(this.master); osc.start();
-    this.siren = { osc, gain };
+    osc.connect(sFilter).connect(gain).connect(this.master); osc.start();
+    this.siren = { osc, gain, filter: sFilter };
+    // Tyres squealing: the noise, narrowed to a high band.
+    const [sGain, sBand] = loop('bandpass', 2600);
+    sBand.Q.value = 6;
+    this.screech = { gain: sGain, filter: sBand };
     const eOsc = ctx.createOscillator(); eOsc.type = 'sawtooth'; eOsc.frequency.value = 40;
     const eFilter = ctx.createBiquadFilter(); eFilter.type = 'lowpass'; eFilter.frequency.value = 300;
     const eGain = ctx.createGain(); eGain.gain.value = 0;
@@ -118,6 +129,14 @@ export class CityAudio {
     osc.start(ctx.currentTime + at); osc.stop(ctx.currentTime + at + duration + 0.05);
   }
 
+  /** A car knocking into something: a thud and a crunch, louder the harder the knock. */
+  crash(strength: number): void {
+    if (!this.ctx || !this.enabled) return;
+    this.burst(0.25 + strength * 0.2, 700 + strength * 1500, 0.15 + strength * 0.35, 180);
+    this.tone(90, 0, 0.18, 0.12 + strength * 0.2, 'sine', 45);
+    if (strength > 0.4) this.burst(0.35, 4000, strength * 0.12, 1500); // glass and plastic
+  }
+
   play(cue: Cue): void {
     if (!this.ctx || !this.enabled) return;
     switch (cue) {
@@ -135,17 +154,24 @@ export class CityAudio {
   /** Called every frame with the state of the city and the camera. */
   update(s: AmbientState, dt: number): void {
     const ctx = this.ctx;
-    if (!ctx || !this.hum || !this.wind || !this.siren || !this.engine || !this.humFilter) return;
+    if (!ctx || !this.hum || !this.wind || !this.siren || !this.engine || !this.humFilter || !this.screech) return;
     const now = ctx.currentTime;
     const near = Math.max(0, Math.min(1, 1 - (s.height - 2) / 60)); // 1 at street level, 0 high above
     const street = s.driving !== null || s.walking || s.height < 1;
     this.hum.gain.setTargetAtTime(Math.min(0.35, 0.04 + s.traffic / 900) * (0.35 + near * 0.65), now, 0.4);
     this.humFilter.frequency.setTargetAtTime(street ? 900 : 320 + near * 300, now, 0.4);
     this.wind.gain.setTargetAtTime((1 - near) * 0.12 + (s.storm ? 0.25 : 0), now, 0.8);
-    // A two-tone wail while emergency vehicles are out, louder close to the ground.
-    const wail = s.emergencies > 0 ? Math.min(0.05, 0.015 * s.emergencies) * (0.3 + near * 0.7) : 0;
-    this.siren.gain.gain.setTargetAtTime(wail, now, 0.3);
-    this.siren.osc.frequency.setTargetAtTime(Math.floor(now * 1.4) % 2 ? 960 : 720, now, 0.05);
+    // A siren only when a fire engine or police car on a call is near enough to hear: quiet, fading
+    // with distance, and gliding slowly up and down.
+    const distance = s.sirenDistance ?? Infinity;
+    const heard = s.emergencies > 0 && Number.isFinite(distance) ? Math.max(0, 1 - distance / 14) : 0;
+    this.siren.gain.gain.setTargetAtTime(0.012 * heard * heard, now, 0.5);
+    this.siren.osc.frequency.setTargetAtTime(760 + Math.sin(now * 1.3) * 170, now, 0.08);
+    this.siren.filter.frequency.setTargetAtTime(700 + heard * 900, now, 0.3);
+    // Tyres squeal while the car slides.
+    const skid = s.driving !== null ? s.skid ?? 0 : 0;
+    this.screech.gain.gain.setTargetAtTime(skid * 0.09, now, 0.06);
+    this.screech.filter.frequency.setTargetAtTime(2200 + skid * 900 + Math.sin(now * 23) * 120, now, 0.05);
     // The engine rises with speed.
     const kmh = s.driving ?? 0;
     this.engine.gain.gain.setTargetAtTime(s.driving !== null ? 0.08 + Math.min(0.07, kmh / 1500) : 0, now, 0.1);

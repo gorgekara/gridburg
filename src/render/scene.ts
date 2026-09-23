@@ -100,16 +100,41 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
 
   let frame = 0;
   let walking = false;
+  /**
+   * At street level the sun's shadows are drawn from a small box around the camera at four times the
+   * resolution, every frame, so a lamp post, a bench or a person casts a crisp shadow that moves with
+   * them; the haze comes in closer too, for depth. Back on the map the wide, coarse box returns.
+   */
+  const STREET_BOX = 9;
   function setWalking(on: boolean): void {
+    if (walking === on) { controls.enabled = !on; return; }
     walking = on;
     controls.enabled = !on;
+    const box = on ? STREET_BOX : 58;
+    sc.left = -box; sc.right = box; sc.top = box; sc.bottom = -box;
+    sc.updateProjectionMatrix();
+    sun.shadow.mapSize.set(on ? 4096 : 2048, on ? 4096 : 2048);
+    sun.shadow.map?.dispose();
+    (sun.shadow as unknown as { map: THREE.WebGLRenderTarget | null }).map = null;
+    sun.shadow.bias = on ? -0.00018 : -0.0008;
+    sun.shadow.normalBias = on ? 0.004 : 0.02;
+    sun.shadow.autoUpdate = on;
+    sun.shadow.needsUpdate = true;
+    const fog = scene.fog as THREE.Fog;
+    fog.near = on ? 28 : 120; fog.far = on ? 150 : 280;
     if (!on) controls.update();
   }
   function update(dt: number, seconds: number): void {
     if (++frame % 3 === 0) sun.shadow.needsUpdate = true;
     if (walking) {
-      // The walker owns the camera; keep the sun's shadow box centred on it.
-      sun.target.position.set(camera.position.x, 0, camera.position.z);
+      // The walker owns the camera; keep the sun's shadow box centred a little ahead of it, snapped to
+      // whole shadow texels so the edges of shadows do not crawl as you move.
+      const ahead = new THREE.Vector3();
+      camera.getWorldDirection(ahead);
+      const texel = (STREET_BOX * 2) / sun.shadow.mapSize.x;
+      const tx = Math.round((camera.position.x + ahead.x * STREET_BOX * 0.45) / texel) * texel;
+      const tz = Math.round((camera.position.z + ahead.z * STREET_BOX * 0.45) / texel) * texel;
+      sun.target.position.set(tx, 0, tz);
       light(seconds, sun.target.position);
       return;
     }

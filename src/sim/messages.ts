@@ -94,7 +94,8 @@ export type MainToWorker =
   | ({ type: 'load'; extras?: CityExtras; disasterRate?: number; incidents?: IncidentSnapshot; policies?: Policies; funding?: Funding; debt?: number; neglect?: Uint8Array; cityLevel: number; seed: number; level: Uint8Array; money: number; tick: number; tax: number } & EditPayload)
   | ({ type: 'edit'; spent: number } & EditPayload)
   | { type: 'speed'; value: number }
-  | { type: 'streetView'; active: boolean }
+  | { type: 'streetView'; active: boolean; driving?: boolean; racing?: boolean }
+  | { type: 'player'; at: { x: number; z: number } | null }
   | { type: 'tax'; value: number }
   | { type: 'taxes'; taxes: Taxes }
   | { type: 'districtPolicy'; district: number; mask: number }

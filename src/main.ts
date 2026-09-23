@@ -15,6 +15,16 @@ import { HelicopterLayer } from './render/helicopters';
 import { BoatLayer } from './render/boats';
 import { Walker } from './render/walker';
 import { Driver } from './render/driver';
+import type { TrafficCar } from './render/driver';
+import { vehicleLength } from './sim/trafficSpace';
+import { StreetDetailLayer } from './render/streetDetail';
+import { RaceWorld } from './racing/race';
+import type { RaceRoute } from './racing/routes';
+import { loadGarage, saveGarage, driveStats } from './racing/garage';
+import { playerCarGeometry } from './racing/carModels';
+import { GaragePanel } from './ui/garage';
+import { RaceHudView } from './ui/raceHud';
+import type { DetailSource } from './render/streetDetail';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
@@ -86,6 +96,7 @@ const boats = new BoatLayer();
 const incidents = new IncidentLayer();
 const pedestrians = new PedestrianLayer();
 const furniture = new StreetFurnitureLayer();
+const streetDetail = new StreetDetailLayer();
 const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
@@ -99,7 +110,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -117,7 +128,7 @@ const hud = new Hud(uiRoot, {
   loan: (action) => game.loan(action),
   rotatePlacement: () => input.rotatePlacement(),
   toggleWalk: () => { if (walker.active) walker.exit(); else startWalking(); },
-  toggleDrive: () => { if (driver.active) driver.exit(); else startDriving(); },
+  toggleDrive: () => driveButton(),
   setElevation: (level) => input.setElevation(level),
   setBrush: (size) => { input.brushSize = size; },
   setRingSize: (id) => { input.ringSize = id; },
@@ -326,18 +337,95 @@ function blockedAt(x: number, z: number, y = 0): boolean {
   }
   return false;
 }
+/** What the street detail is built from: the game as it stands when each chunk is built. */
+function detailSource(): DetailSource {
+  return {
+    get kind() { return game.kind; },
+    get level() { return game.level; },
+    get raster() { return game.raster; },
+    get net() { return game.net; },
+    get terrain() { return game.terrain; },
+    get terraform() { return game.extras.terraform; },
+    relief: (x, z) => hills.heightAt(x, z),
+    surface: (tile) => game.waterSurface ? game.waterSurface[tile] : NaN,
+    body: (k, l, v) => buildings.body(k, l, v),
+  };
+}
 const walker = new Walker(camera, canvas, {
   blocked: blockedAt,
   ground: groundAt,
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); touch.setMode('map'); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); streetDetail.setActive(false); touch.setMode('map'); },
 });
 const driver = new Driver(camera, scene, {
   // Parked cars are in the way of a car, though a pedestrian squeezes past them.
-  blocked: (x, z, y) => blockedAt(x, z, y) || (y < 0.12 && parked.hits(x, z)),
+  // Parked cars are cleared off the streets for a race.
+  blocked: (x, z, y) => blockedAt(x, z, y) || (y < 0.12 && !raceWorld.racing && parked.hits(x, z)) || raceWorld.blocks(x, z, y),
   ground: groundAt,
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); touch.setMode('map'); },
+  traffic: (x, z, radius) => {
+    const out: TrafficCar[] = [], cars = game.carsNext, heights = game.carHeights;
+    for (let i = 0; i < MAX_CARS; i++) {
+      const o = i * 4, type = Math.round(cars[o + 3]);
+      if (type < 1 || type > 10 || Math.abs(cars[o] - x) > radius || Math.abs(cars[o + 1] - z) > radius) continue;
+      out.push({ x: cars[o], z: cars[o + 1], angle: cars[o + 2], length: vehicleLength(type), y: heights[i] ?? 0 });
+    }
+    return raceWorld.racing ? raceWorld.cars() : out.concat(raceWorld.cars());
+  },
+  impact: (strength) => { audio.crash(strength); raceWorld.impact(strength); },
+  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); streetDetail.setActive(false); touch.setMode('map'); raceWorld.abort(); raceWorld.setVisible(false); raceHud.hideResult(); },
 });
 const touch = new TouchControls(uiRoot, canvas, controls, walker, driver, () => { walker.exit(); driver.exit(); });
+// ---- the garage and street racing ------------------------------------------------------------------
+const garageState = loadGarage();
+const raceWorld = new RaceWorld();
+scene.add(raceWorld.group);
+/** Put the garage's selected car, as painted and tuned, under the driver. */
+function applyCar(): void {
+  const car = garageState.cars[garageState.selected];
+  driver.setCar(playerCarGeometry(car.model, car.color), driveStats(car));
+}
+/** Rivals and the police get a little quicker as the player wins. */
+const difficulty = (): number => 0.93 + Math.min(0.14, garageState.wins * 0.012);
+function startRace(race: RaceRoute): void {
+  raceHud.hideResult();
+  if (!driver.active) startDriving();
+  if (!driver.active) return;
+  applyCar();
+  raceWorld.start(race, driver, difficulty());
+}
+const garagePanel = new GaragePanel(uiRoot, garageState, {
+  drive: () => { if (!driver.active) startDriving(); else applyCar(); },
+  race: (race) => startRace(race),
+  races: () => { raceWorld.plan(game.net, game.seed); return raceWorld.races; },
+  changed: () => { if (driver.active && !raceWorld.racing) applyCar(); },
+});
+const raceHud = new RaceHudView(uiRoot, {
+  again: (race) => startRace(race),
+  garage: () => { raceWorld.abort(); driver.exit(); garagePanel.show(); },
+  drive: () => { raceWorld.abort(); },
+});
+// A race clears the streets: the parked cars go and the traffic all but stops; they come back after.
+raceWorld.onRacing = (racing) => {
+  // The few emergency vehicles still out on calls keep running in the city, unseen.
+  parked.group.visible = !racing;
+  cars.mesh.visible = !racing;
+  if (driver.active) game.setStreetView(true, true, racing);
+};
+raceWorld.onFinish = (result) => {
+  garageState.cash += result.reward;
+  if (result.won) garageState.wins++;
+  const best = garageState.best[result.race.id];
+  garageState.best[result.race.id] = result.race.kind === 'drift' ? Math.max(best ?? 0, result.score) : Math.min(best ?? 99, result.busted ? 99 : result.place);
+  if (garageState.best[result.race.id] === 99) delete garageState.best[result.race.id];
+  saveGarage(garageState);
+  audio.play(result.share > 0 ? 'achievement' : 'error');
+  raceHud.showResult(result, garageState.cash);
+};
+/** The car button and M: out of the car if driving, otherwise the garage. */
+function driveButton(): void {
+  if (driver.active) driver.exit();
+  else garagePanel.toggle();
+}
+
 /** Take the wheel on the nearest street to the middle of the view, driving on the right. */
 function startDriving(): void {
   if (driver.active || !playing) return;
@@ -358,9 +446,14 @@ function startDriving(): void {
   const x = hit.x - tz * lane - GRID / 2, z = hit.z + tx * lane - GRID / 2;
   input.suspended = true;
   setWalking(true);
-  game.setStreetView(true);
+  game.setStreetView(true, true);
   furniture.setVisible(true);
+  streetDetail.setActive(true, detailSource());
+  applyCar();
   driver.enter(x, z, Math.atan2(tx, tz));
+  raceWorld.plan(game.net, game.seed);
+  raceWorld.setVisible(true);
+  streetDetail.update(camera.position, true);
   hud.setWalking(true, 'drive');
   touch.setMode('drive');
 }
@@ -381,14 +474,19 @@ function startWalking(): void {
   setWalking(true);
   game.setStreetView(true);
   furniture.setVisible(true);
+  streetDetail.setActive(true, detailSource());
   walker.enter(spot.x, spot.z, Math.atan2(-dir.x, -dir.z));
+  streetDetail.update(camera.position, true);
   hud.setWalking(true, 'walk');
   touch.setMode('walk');
 }
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
   if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') { if (walker.active) walker.exit(); else startWalking(); }
-  if (e.code === 'KeyM' || e.key === 'm' || e.key === 'M') { if (driver.active) driver.exit(); else startDriving(); }
+  if (e.code === 'KeyM' || e.key === 'm' || e.key === 'M') driveButton();
+  // At a race ring, Enter starts the race; in a race, R puts the car back on the route.
+  if (driver.active && e.key === 'Enter' && raceWorld.nearby && !raceWorld.racing) startRace(raceWorld.nearby);
+  if (driver.active && (e.code === 'KeyR' || e.key === 'r') && raceWorld.racing) raceWorld.reset(driver);
 });
 
 const tileCentre = (tile: number): { x: number; z: number } => ({ x: tile % 80 + 0.5, z: Math.floor(tile / 80) + 0.5 });
@@ -525,6 +623,7 @@ function applySettings(s: Settings): void {
   buildings.setDetail(s.visualDetail);
   landscape.setDetail(s.visualDetail);
   cars.setDetail(s.visualDetail);
+  streetDetail.setDetail(s.visualDetail);
   renderer.shadowMap.enabled = s.shadows;
   scene.traverse(o => { const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material; if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true; });
   setDayLength(s.dayLength);
@@ -608,8 +707,20 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { streetDetail, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
+
+/** How far the nearest fire engine or police car is from the camera: what the siren fades with. */
+function nearestSiren(): number {
+  const cars = game.carsNext, cx = camera.position.x, cz = camera.position.z;
+  let best = Infinity;
+  for (let i = 0; i < MAX_CARS; i++) {
+    const type = Math.round(cars[i * 4 + 3]);
+    if (type !== 5 && type !== 6) continue;
+    best = Math.min(best, Math.hypot(cars[i * 4] - cx, cars[i * 4 + 1] - cz, camera.position.y));
+  }
+  return best;
+}
 
 let last = performance.now();
 renderer.setAnimationLoop((now: number) => {
@@ -618,6 +729,16 @@ renderer.setAnimationLoop((now: number) => {
   dbg.frames++;
   walker.update(dt);
   driver.update(dt);
+  if (driver.active) {
+    raceWorld.plan(game.net, game.seed);
+    raceWorld.setVisible(true);
+    raceWorld.update(dt, driver, now / 1000);
+  }
+  raceHud.render(driver.active ? raceWorld.hud : null, driver.active ? raceWorld.nearby : null);
+  if ((walker.active || driver.active) && dbg.frames % 6 === 0) {
+    const at = driver.active ? driver.position : { x: camera.position.x, z: camera.position.z };
+    game.setPlayer({ x: at.x + GRID / 2, z: at.z + GRID / 2 });
+  }
   if (driver.active) hud.setDriveSpeed(driver.kmh);
   if (flight) {
     // Ease the camera across rather than cutting, so it stays obvious where the map moved to.
@@ -630,6 +751,7 @@ renderer.setAnimationLoop((now: number) => {
   }
   updateScene(dt, game.cityTime);
   landscape.update(camera.position);
+  streetDetail.update(camera.position);
   const light = daylight(game.cityTime);
   buildings.setNight(light.night);
   streetlights.update(light.night);
@@ -651,6 +773,7 @@ renderer.setAnimationLoop((now: number) => {
   audio.update({
     traffic: game.stats.cars, height: camera.position.y, night: light.night,
     emergencies: game.stats.incidents.fireEngines + (game.stats.incidents.fires + game.stats.incidents.heists ? game.stats.incidents.patrols : 0),
+    sirenDistance: nearestSiren(), skid: driver.slip,
     driving: driver.active ? driver.kmh : null, walking: walker.active && walker.moving, storm: !!game.disaster,
   }, dt);
   transport.update(game.simTime);

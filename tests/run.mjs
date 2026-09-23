@@ -1411,6 +1411,170 @@ test('dense traffic never overlaps vehicle bodies and produces recoverable colli
   assert.ok(crashSeen, 'Random collisions should create visible blocked-lane incidents');
 });
 
+const { StreetDetailLayer, bodyOfGeometry } = await import('../src/render/streetDetail.ts');
+test('street detail streams in around the camera, nearest first and finest near, and goes when you leave', () => {
+  const city = demoCity(true), net = Network.fromPlain(city.net), terrain = generateTerrain(city.seed), raster = rasterize(net);
+  const bodies = new Map();
+  const source = {
+    kind: city.kind, level: city.level, raster, net, terrain, terraform: city.extras.terraform,
+    relief: () => 0, surface: () => NaN,
+    body: (k, l, v) => { const key = `${k}:${l}:${v}`; if (!bodies.has(key)) bodies.set(key, bodyOfGeometry(buildingGeometry(k, l, v))); return bodies.get(key); },
+  };
+  // A house's walls: well inside its lot, and taller than a person.
+  const house = source.body(C.T_RES, 1, 0);
+  assert.ok(house && house.x1 - house.x0 > 0.3 && house.x1 - house.x0 < 0.9 && house.h > 0.35, JSON.stringify(house));
+  const layer = new StreetDetailLayer();
+  layer.setDetail(1);
+  layer.setActive(true, source);
+  const eye = { x: 42.5 - 40, y: 0.13, z: 24.5 - 40 };
+  layer.update(eye, true);
+  const { chunks, triangles } = layer.stats;
+  assert.ok(chunks > 10 && triangles > 20000, `Detail should fill the streets around the camera: ${JSON.stringify(layer.stats)}`);
+  let fine = 0;
+  for (const mesh of layer.group.children) {
+    const p = mesh.geometry.attributes.position.array;
+    for (let k = 0; k < p.length; k++) assert.ok(Number.isFinite(p[k]), 'Detail geometry is finite');
+    const c = mesh.geometry.boundingSphere.center;
+    assert.ok(Math.hypot(c.x - eye.x, c.z - eye.z) < 12 + 6, 'Only chunks within reach exist');
+    if (mesh.castShadow) fine++;
+  }
+  assert.ok(fine > 0 && fine < chunks, 'The nearest chunks are built finer (and cast shadows), the rest coarser');
+  // Nothing is rebuilt while standing still; walking away drops what falls behind.
+  const built = layer.stats.built;
+  layer.update(eye); layer.update(eye);
+  assert.equal(layer.stats.built, built, 'Standing still rebuilds nothing');
+  for (let k = 0; k < 40; k++) layer.update({ x: -30, y: 0.13, z: 30 }, false);
+  for (const mesh of layer.group.children) assert.ok(Math.hypot(mesh.geometry.boundingSphere.center.x + 30, mesh.geometry.boundingSphere.center.z - 30) < 18, 'Chunks left behind are dropped');
+  // A change to the streets rebuilds the chunks it touches.
+  net.version++;
+  const before = layer.stats.built;
+  for (let k = 0; k < 25; k++) layer.update({ x: -30, y: 0.13, z: 30 }, false);
+  assert.ok(layer.stats.built > before, 'A changed map is rebuilt');
+  layer.setActive(false);
+  assert.equal(layer.group.children.length, 0, 'Leaving the street throws the detail away');
+});
+const { Driver } = await import('../src/render/driver.ts');
+test('the driven car slides under the handbrake, leaves skid marks, and bumps off traffic instead of passing through it', () => {
+  // The driver listens for keys on the window; a stand-in is enough to build one here.
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = { addEventListener: () => {} };
+  let traffic = [];
+  const knocks = [];
+  const driver = new Driver(new THREE.PerspectiveCamera(), new THREE.Scene(), {
+    blocked: () => false, ground: () => 0, traffic: () => traffic, impact: (s) => knocks.push(s), onExit: () => {},
+  });
+  if (!hadWindow) delete globalThis.window;
+  driver.enter(0, 0, 0);
+  const keys = driver.keys;
+  keys.add('KeyW'); keys.add('ShiftLeft');
+  for (let f = 0; f < 90; f++) driver.update(1 / 60);
+  assert.ok(driver.kmh > 40, `Full throttle gets going: ${driver.kmh}`);
+  assert.ok(driver.slip < 0.05, 'Driving straight, the tyres grip');
+  keys.add('KeyA'); keys.add('Space');
+  let most = 0;
+  for (let f = 0; f < 40; f++) { driver.update(1 / 60); most = Math.max(most, driver.slip); }
+  assert.ok(most > 0.5, `The handbrake in a turn breaks the back loose: ${most}`);
+  assert.ok(driver.marks.count > 5, 'A slide leaves skid marks on the road');
+  const pointing = driver.heading, going = Math.atan2(driver.vx, driver.vz);
+  assert.ok(Math.abs(Math.atan2(Math.sin(pointing - going), Math.cos(pointing - going))) > 0.3, 'The car points one way and travels another');
+  keys.clear();
+  // A parked lorry straight ahead: the car stops against it and bounces back, rather than driving through.
+  driver.exit(); driver.enter(0, 0, 0);
+  traffic = [{ x: 0, z: 0.8, angle: Math.PI / 2, length: 0.56, y: 0 }];
+  keys.add('KeyW');
+  let closest = Infinity;
+  for (let f = 0; f < 240; f++) { driver.update(1 / 60); closest = Math.min(closest, Math.abs(driver.position.z - 0.8)); }
+  assert.ok(closest > 0.1, `The car never overlaps the lorry: ${closest.toFixed(3)} from its middle`);
+  assert.ok(knocks.length > 0, 'Running into it is a knock the player hears');
+});
+const { planRaces, routeAt } = await import('../src/racing/routes.ts');
+const { RaceWorld } = await import('../src/racing/race.ts');
+const { defaultGarage, driveStats, partCost, MODELS } = await import('../src/racing/garage.ts');
+test('street races are planned on the city streets, with barriers on the side streets, and run to a result', () => {
+  const city = demoCity(true), net = Network.fromPlain(city.net);
+  const races = planRaces(net, city.seed);
+  const kinds = new Set(races.map(r => r.kind));
+  for (const k of ['circuit', 'sprint', 'drift', 'drag', 'police']) assert.ok(kinds.has(k), `The demo has a ${k} race: ${[...kinds]}`);
+  assert.deepEqual(planRaces(net, city.seed).map(r => r.id), races.map(r => r.id), 'The same city gets the same races');
+  for (const r of races) {
+    for (let i = 1; i < r.xs.length; i++) assert.ok(Math.hypot(r.xs[i] - r.xs[i - 1], r.zs[i] - r.zs[i - 1]) < 0.8, `${r.name} runs along the roads without gaps`);
+    if (r.loop) assert.ok(Math.hypot(r.xs[0] - r.xs.at(-1), r.zs[0] - r.zs.at(-1)) < 1e-6, `${r.name} closes its loop`);
+    assert.ok(r.reward > 0 && r.length > 8, `${r.name} is worth racing`);
+    // The start and the finish lie along a street, clear of any junction.
+    for (const d of r.kind === 'drag' ? [] : r.loop ? [0] : [0, r.length]) {
+      const p = routeAt(r, d);
+      for (const n of net.nodes.values()) if (net.degree(n.id) >= 3) assert.ok(Math.hypot(n.x - 40 - p.x, n.z - 40 - p.z) > 0.6, `${r.name} starts and finishes clear of junctions`);
+    }
+    // The rivals' line rounds the corners off: no right-angle pivots from one step to the next.
+    let sharpest = 0;
+    for (let i = 2; i < r.lx.length; i++) {
+      const a = Math.atan2(r.lx[i - 1] - r.lx[i - 2], r.lz[i - 1] - r.lz[i - 2]), b = Math.atan2(r.lx[i] - r.lx[i - 1], r.lz[i] - r.lz[i - 1]);
+      sharpest = Math.max(sharpest, Math.abs(Math.atan2(Math.sin(b - a), Math.cos(b - a))));
+    }
+    assert.ok(sharpest < 0.35, `${r.name}'s racing line turns smoothly: ${sharpest.toFixed(2)} rad in one step`);
+  }
+  const circuit = races.find(r => r.kind === 'circuit');
+  assert.ok(circuit.barriers.length > 0, 'Side streets off a circuit are barred');
+  const drag = races.find(r => r.kind === 'drag'), a = routeAt(drag, 0.5), b = routeAt(drag, drag.length - 0.5);
+  assert.ok(Math.abs(Math.atan2(a.tx * b.tz - a.tz * b.tx, a.tx * b.tx + a.tz * b.tz)) < 0.6, 'A drag strip runs straight');
+
+  // Race it: a driver that sticks to the racing line, flat out.
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = { addEventListener: () => {} };
+  const driver = new Driver(new THREE.PerspectiveCamera(), new THREE.Scene(), { blocked: () => false, ground: () => 0, traffic: () => [], onExit: () => {} });
+  if (!hadWindow) delete globalThis.window;
+  driver.enter(0, 0, 0);
+  const world = new RaceWorld();
+  const sprint = races.find(r => r.kind === 'sprint');
+  let result = null;
+  world.onFinish = r => { result = r; };
+  world.start(sprint, driver, 0.8);
+  assert.equal(world.hud.phase, 'countdown');
+  assert.equal(world.hud.place, sprint.rivals + 1, 'The player starts at the back of the grid');
+  for (const rival of world.cars()) assert.ok(Math.hypot(rival.x - driver.position.x, rival.z - driver.position.z) > 0.25, 'Every car on the grid has a place of its own');
+  const start = { ...driver.position };
+  for (let f = 0; f < 60; f++) { driver.update(1 / 60); world.update(1 / 60, driver, f / 60); }
+  assert.ok(Math.hypot(driver.position.x - start.x, driver.position.z - start.z) < 0.05, 'The car is held on the grid through the countdown');
+  // A barrier across a side street stops the car.
+  const bar = sprint.barriers[0] ?? circuit.barriers[0];
+  if (sprint.barriers.length) assert.ok(world.blocks(bar.x, bar.z, bar.y), 'Barriers are solid');
+  // Wrong way: facing back down the route while moving.
+  for (let f = 0; f < 200 && world.hud.phase === 'countdown'; f++) world.update(1 / 60, driver, 1);
+  let s = world.progress;
+  const back = routeAt(sprint, s);
+  driver.teleport(back.x, back.z, Math.atan2(-back.tx, -back.tz)); driver.vx = -back.tx * 1.5; driver.vz = -back.tz * 1.5;
+  world.update(1 / 60, driver, 1);
+  assert.ok(world.hud.wrongWay, 'Driving back down the route shows the wrong-way warning');
+  // Then along the route to the finish, faster than the rivals.
+  for (let f = 0; f < 20000 && !result; f++) {
+    s = Math.min(sprint.length, s + 5 / 60);
+    const p = routeAt(sprint, s);
+    driver.teleport(p.x, p.z, Math.atan2(p.tx, p.tz)); driver.vx = p.tx * 5; driver.vz = p.tz * 5;
+    world.update(1 / 60, driver, f / 60);
+  }
+  assert.ok(result, 'The race finishes');
+  assert.equal(result.place, 1, 'Quicker than the rivals, the player wins');
+  assert.ok(result.won && result.reward === sprint.reward, 'A win pays the whole purse');
+  world.abort();
+  assert.equal(world.racing, false);
+  // Sitting still in a pursuit gets you caught.
+  const pursuit = races.find(r => r.kind === 'police');
+  result = null;
+  world.start(pursuit, driver, 1);
+  for (let f = 0; f < 60 * 40 && !result; f++) { driver.update(1 / 60); world.update(1 / 60, driver, f / 60); }
+  assert.ok(result && result.busted && !result.won && result.reward === 0, 'The police catch a car that does not run');
+  world.abort();
+
+  // The garage: a starting car, upgrades that make it faster, and dearer cars that are better.
+  const garage = defaultGarage();
+  assert.equal(garage.cars.length, 1);
+  const stock = driveStats(garage.cars[0]);
+  garage.cars[0].parts.engine = 3; garage.cars[0].parts.tyres = 2;
+  const tuned = driveStats(garage.cars[0]);
+  assert.ok(tuned.top > stock.top && tuned.grip > stock.grip, 'Upgrades improve the car');
+  assert.ok(partCost('super', 0) > partCost('hatch', 0), 'Parts cost more on dearer cars');
+  assert.ok(MODELS.super.top > MODELS.coupe.top && MODELS.coupe.top > MODELS.hatch.top, 'Dearer cars are faster');
+});
 const { ParkedCarLayer, PARK_INSET } = await import('../src/render/parkedCars.ts');
 test('cars park along built streets, clear of traffic lanes, junctions and roundabouts', () => {
   const city = demoCity(), net = Network.fromPlain(city.net);

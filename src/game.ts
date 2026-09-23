@@ -376,8 +376,13 @@ export class Game {
     };
   }
 
-  setStreetView(active: boolean): void {
-    this.send({ type: 'streetView', active });
+  /** Where the player stands or drives, in map coordinates, so the traffic stops for them. */
+  setPlayer(at: { x: number; z: number } | null): void {
+    this.send({ type: 'player', at });
+  }
+
+  setStreetView(active: boolean, driving = false, racing = false): void {
+    this.send({ type: 'streetView', active, driving, racing });
   }
 
   setSpeed(v: number): void {

@@ -66,6 +66,34 @@ let tick = 0;
 let tax = 10;
 let speed = 1;
 let streetView = false;
+/** How much of the usual traffic is on the road: less while the player drives, so the streets are drivable. */
+let trafficScale = 1;
+/** A race is on: the streets are cleared of everything but emergencies answering a call. */
+let racing = false;
+/** Where the player's own car (or the player on foot) stands, in map coordinates, if on a road. */
+let player: { x: number; z: number } | null = null;
+/** Lane key → how far along that lane the player stands, for the traffic behind to stop for. */
+const playerLanes = new Map<number, number>();
+
+/** Find the lanes the player blocks: the side of each road they stand on, or both near the middle. */
+function locatePlayer(): void {
+  playerLanes.clear();
+  if (!player) return;
+  const { x, z } = player;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const reach = HALF_WIDTH[seg.kind] + 0.05;
+    if (x < seg.minX - reach || x > seg.maxX + reach || z < seg.minZ - reach || z > seg.maxZ + reach) continue;
+    const hit = Network.nearestOn(seg, x, z);
+    if (hit.dist > reach) continue;
+    const pose = { x: 0, z: 0, tx: 0, tz: 1 };
+    Network.poseAt(seg, hit.s, pose);
+    // Which side of the centre line: right of a → b is where the forward lane runs.
+    const side = (x - pose.x) * -pose.tz + (z - pose.z) * pose.tx;
+    if (side > -0.1 || seg.oneway) playerLanes.set(i * 2, hit.s);
+    if (side < 0.1 && !seg.oneway) playerLanes.set(i * 2 + 1, seg.len - hit.s);
+  }
+}
 let simTime = 0;
 let pop = 0, comJobs = 0, indJobs = 0, officeJobs = 0, buildings = 0;
 let commuteAvg = 0;
@@ -661,23 +689,23 @@ function spawn(dt: number): void {
     const congestion = (line.mode === 'bus' || line.mode === 'trolley') ? Math.max(segCong[accSeg[line.a]] ?? 0, segCong[accSeg[line.b]] ?? 0) : 0;
     transitTokens[i] = Math.min(line.capacity, (transitTokens[i] ?? 0) + line.capacity / 20 * dt * (1 - congestion * 0.8));
     transitDepartures[i] = (transitDepartures[i] ?? 0) + dt;
-    if ((line.mode === 'bus' || line.mode === 'trolley') && transitDepartures[i] >= 12 && !slots.some(c => c?.line === i)) {
+    if (!racing && (line.mode === 'bus' || line.mode === 'trolley') && transitDepartures[i] >= 12 && !slots.some(c => c?.line === i)) {
       if (spawnTrip(accSeg[line.a], accS[line.a], accSeg[line.b], accS[line.b], line.mode === 'trolley' ? 8 : 4, i)) transitDepartures[i] = 0;
     }
   });
   // After dark, and only in a city big enough to have a scene, the racers come out for a while.
-  if (cityLevel >= 3 && raceUntil < simTime && nightTime() && Math.random() < 0.0016 * dt * SIM_HZ) {
+  if (!racing && cityLevel >= 3 && raceUntil < simTime && nightTime() && Math.random() < 0.0016 * dt * SIM_HZ) {
     raceUntil = simTime + 45;
     startRace();
   }
-  spawnBudget = Math.min(8, spawnBudget + tripRate * dt);
-  extBudget = Math.min(4, extBudget + extRate * dt);
+  spawnBudget = Math.min(8, spawnBudget + tripRate * dt * trafficScale);
+  extBudget = Math.min(4, extBudget + extRate * dt * trafficScale);
   // Through traffic keeps rolling whatever the city does; it never counts towards commutes.
-  throughBudget = Math.min(2, throughBudget + THROUGH_RATE * dt);
-  if (throughBudget >= 1 && freeList.length > 60) { throughBudget -= 1; throughTrip(); }
+  throughBudget = Math.min(2, throughBudget + THROUGH_RATE * dt * trafficScale);
+  if (throughBudget >= 1 && freeList.length > 60 && !racing) { throughBudget -= 1; throughTrip(); }
   // Freight: trucks carry goods from factories and farms to the shops, and the surplus out of town.
   freightBudget = Math.min(2, freightBudget + Math.min(0.12, (goods.local + goods.exported) / 60 * 0.006) * dt);
-  if (freightBudget >= 1 && freeList.length > 40) {
+  if (freightBudget >= 1 && freeList.length > 40 && !racing) {
     freightBudget -= 1;
     const makers = jobTiles.filter(t => zoneBase(kind[t]) === T_IND);
     const origin = makers[Math.floor(Math.random() * makers.length)];
@@ -826,8 +854,11 @@ function stepCars(dt: number): void {
     if (!lane.length) continue;
     lane.sort((a, b) => slots[b]!.p - slots[a]!.p);
     let leaderP = Infinity, leaderLength = 0.34;
+    const playerP = playerLanes.get(key);
     for (const slot of lane) {
       const c = slots[slot]!;
+      // The player's car (or the player on foot) in this lane: traffic behind stops for it.
+      if (playerP !== undefined && c.p < playerP - 0.02 && playerP < leaderP) { leaderP = playerP; leaderLength = 0.34; }
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
       const v = segSpeed(seg) * (c.vehicle === 7 ? 1.55 : 1);
@@ -1429,6 +1460,7 @@ function collectGarbage(tile: number): void {
 }
 /** Recycling centres send trucks round to the fullest bins in their area. */
 function dispatchGarbage(): void {
+  if (racing) return;
   for (let i = 0; i < N_TILES; i++) {
     if (kind[i] !== T_RECYCLING || flags[i] || !tileConnected(i) || dispatchCooldown.has(i)) continue;
     if (slots.filter(c => c?.mission?.origin === i).length >= 2) continue;
@@ -1491,7 +1523,7 @@ function stepIncidents(): void {
       if (!mission) {
         const targets = [...resTiles, ...jobTiles].filter(t => distance(t, i) < SERVICES[k].radius!);
         const tile = targets[Math.floor(Math.random() * targets.length)];
-        if (tile !== undefined) mission = { kind: 'patrol', origin: i, tile, work: 4 };
+        if (tile !== undefined && !racing) mission = { kind: 'patrol', origin: i, tile, work: 4 };
       }
     }
     if (mission && spawnTrip(accSeg[i], accS[i], accSeg[mission.tile], accS[mission.tile], k === T_FIRE ? 6 : 5, undefined, mission)) dispatchCooldown.set(i, k === T_FIRE ? 8 : 18);
@@ -1662,6 +1694,28 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     }
     case 'streetView':
       streetView = m.active;
+      // Driving thins the traffic to a third; a race clears the streets almost entirely.
+      trafficScale = !m.active || !m.driving ? 1 : m.racing ? 0 : 0.35;
+      racing = !!(m.active && m.driving && m.racing);
+      if (m.active && m.driving) {
+        const keep = m.racing ? 0 : 0.35;
+        for (let s = 0; s < MAX_CARS; s++) {
+          const c = slots[s];
+          if (!c) continue;
+          // Fire engines at a fire and police at a robbery or a crash carry on; patrols and bin rounds
+          // wait for the race to end.
+          const urgent = c.mission && (c.mission.kind === 'fire' || c.mission.kind === 'heist' || c.mission.kind === 'crash');
+          if (urgent || (!m.racing && (c.mission || c.working))) continue;
+          // Outside a race the buses keep running; in one, they go too.
+          if (!m.racing && (c.line !== undefined || c.vehicle === 4 || c.vehicle === 8)) continue;
+          if (Math.random() > keep) freeCar(s);
+        }
+      }
+      if (!m.active) { player = null; playerLanes.clear(); }
+      break;
+    case 'player':
+      player = m.at;
+      locatePlayer();
       break;
     case 'speed':
       speed = m.value;

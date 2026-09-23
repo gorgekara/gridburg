@@ -302,7 +302,7 @@ export class Hud {
     const driving = on && mode === 'drive';
     this.walkTitle.textContent = driving ? 'Driving' : 'Walking';
     this.walkKeys.textContent = driving
-      ? 'W / S to drive and brake · A D to steer · Shift for speed · Space handbrake · V driver’s seat · Esc or M to park'
+      ? 'W / S drive and brake · A D steer · Shift nitrous · Space handbrake (drift) · V driver’s seat · Enter at a race ring · R back on the route · Esc or M to park'
       : 'W A S D to walk · Shift to run · click, then move the mouse to look · Esc or F to leave';
     this.speedo.hidden = !driving;
   }
@@ -529,7 +529,7 @@ export class Hud {
     const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
     const walkBtn = iconBtn('walk', 'Walk the streets (F)', () => actions.toggleWalk());
     this.walkBtn = walkBtn;
-    const driveBtn = iconBtn('drive', 'Drive around town (M)', () => actions.toggleDrive());
+    const driveBtn = iconBtn('drive', 'Garage and street racing (M)', () => actions.toggleDrive());
     this.driveBtn = driveBtn;
     this.speedo.hidden = true;
     this.walkHint.append(this.walkTitle, this.speedo, this.walkKeys);
@@ -627,7 +627,7 @@ export class Hud {
         }
         side.append(seg);
       }
-      if (c.id === 'roads') {
+      if (c.tools.some(t => t.id === 'roundabout')) {
         // Only with the roundabout tool: which ring it draws.
         const ring = el('div', 'modes');
         ring.append(el('span', 'mlabel', 'Ring'));

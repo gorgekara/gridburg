@@ -82,6 +82,20 @@ export class Builder {
     this.paint(g, color);
   }
 
+  /** A wheel on its side, its axle along x: tyre, rim and hub cap, centred on (x, y, z). */
+  wheel(r: number, w: number, x: number, y: number, z: number, tyre: number, rim: number, seg = 12): void {
+    const t = new THREE.CylinderGeometry(r, r, w, seg);
+    t.rotateZ(Math.PI / 2); t.translate(x, y, z);
+    this.paint(t, tyre);
+    const out = Math.sign(x) || 1;
+    const c = new THREE.CylinderGeometry(r * 0.62, r * 0.62, 0.006, seg);
+    c.rotateZ(Math.PI / 2); c.translate(x + out * (w / 2 + 0.002), y, z);
+    this.paint(c, rim);
+    const h = new THREE.CylinderGeometry(r * 0.2, r * 0.2, 0.008, 8);
+    h.rotateZ(Math.PI / 2); h.translate(x + out * (w / 2 + 0.005), y, z);
+    this.paint(h, 0x5d676d);
+  }
+
   /** Gable roof: a triangular prism along z sitting on top of a body of width w, plus overhanging planks. */
   gable(w: number, d: number, y: number, rise: number, wallColor: number, roofColor: number): void {
     const shape = new THREE.Shape();

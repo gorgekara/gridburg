@@ -128,10 +128,52 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   along the kerbs of streets and avenues in front of built lots, half up on the pavement so the lanes
   stay free, and clear of junctions, crossings, roundabouts and bike tracks. You can
   walk up the ramps and over bridges.
+- **Street-level detail.** Walking or driving, the streets around you fill in with the small things
+  you only see up close: paving joints, kerb stones, gutters, drains, manholes, patched and cracked
+  asphalt, litter and fallen leaves; street name signs at junctions, traffic signs, parking meters
+  outside shops, wooden utility poles with sagging wires along the house streets, and the odd road
+  works. Houses get mailboxes, bins, garden paths, flower beds, lawns, and back gardens with sheds,
+  washing lines, trampolines, barbecues, vegetable beds, paddling pools, trees, bicycles and the
+  occasional cat on the fence. Walls get drainpipes, air conditioners, meters and satellite dishes.
+  Shops get awnings, blade signs, A-boards, café tables, crates of produce, pigeons and dumpsters
+  round the back; offices flagpoles, planters, bollards and sculptures; factories fences, pallets,
+  barrels, containers, forklifts and gas cages; farms fences, hay bales, tractors, scarecrows and
+  chickens. Open ground grows grass, wildflowers, rocks, bushes, saplings, logs and mushrooms, and
+  the river banks reeds and lily pads. Only the streets near you are built, the nearest in the most
+  detail, a few at a time as you move, and all of it goes when you return to the map. The graphics
+  detail setting decides how far it reaches.
 - **Drive around town.** Press M, or the car button, to take a car out on the nearest street. W / S
   drive and brake (and reverse), A D steer, Shift for a burst of speed, Space is the handbrake and V
-  swaps the chase camera for the driver's seat. Buildings and the river stop you; bridges carry you.
-  Esc or M parks it and returns to the map.
+  swaps the chase camera for the driver's seat. The car has momentum of its own: pull the handbrake
+  in a turn, or floor it through a fast corner, and the back steps out into a drift, laying skid
+  marks and tyre smoke while the tyres squeal. Other cars are solid: you bump off them with a crunch,
+  and the traffic behind you stops rather than driving through you (it stops for you on foot, too).
+  Taking the wheel thins the traffic to about a third so the streets are drivable. The car leans in
+  corners, pitches up and down the bridge ramps, and the camera follows close behind, widening its
+  view with speed. Buildings and the river stop you. Esc or M parks it and returns to the map.
+- **Garage and street racing.** The car button (or M) opens the garage: your cars (a hatchback to
+  start with), the showroom (a sports coupé, a rally car, a muscle car and a supercar), a turntable
+  with the selected car, its ratings, ten paints, and five upgrades of three levels each (engine,
+  nitrous, tyres, suspension, brakes) bought with race winnings. It lists the races the city's streets
+  make: **circuits** (laps against three rivals), **sprints** (point to point), **drift** events (slide
+  round a loop to beat a score, with chain multipliers that a knock loses), a **drag** strip down the
+  longest straight (a perfect launch on the green gives a shove), and **pursuits** (reach the finish
+  with a police car on your tail; let it box you in and you're busted). Start one from the garage, or
+  drive into its glowing ring on the road and press Enter. A race bars every side street along the
+  route with striped boards and chevrons pointing the way on, paints a chequered line across the road
+  at the start and finish (always halfway along a street, never on a junction), lights amber chevrons
+  along the road ahead to show the way, and marks arrows through the bends; the rivals round the
+  corners on a smoothed racing line rather than turning on the spot. The HUD shows your place, lap,
+  time and a flashing wrong-way warning; R puts you back on the route. Winnings (a full purse for a win, less for second and third,
+  or by medal) buy cars and parts, and rivals get quicker as you win. The garage is yours rather than
+  a city's: it follows you from city to city.
+- **Street level looks its best.** Walking or driving, the sun's shadows are drawn at four times the
+  resolution from a small box around you and updated every frame, so people, cars, lamp posts and
+  benches cast crisp shadows that move with them, and the haze comes in closer. Cars have round
+  wheels with rims, number plates, grilles, bumpers, mirrors, door handles and exhausts; people have
+  hair, faces, necks, collars and belts, arms that swing with their stride, hands, shoes, differing
+  heights, and some carry backpacks. Sirens are only heard near a fire engine or police car on a
+  call, softly, fading with distance.
 - **Fishing docks.** Build them on the river bank (Water menu, from Small town). Each one employs 24
   people, turns its jetty to the water and sends two fishing boats out to work the river and come
   home. The catch sells for up to $2.40 a second per dock, shown as Fishing in the budget, but sewage

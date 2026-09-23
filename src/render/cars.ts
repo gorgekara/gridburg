@@ -65,8 +65,32 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
     }
   }
   for (const x of [-0.13, 0.13]) for (const z of [-length * 0.31, length * 0.31]) {
-    b.box(0.05, 0.1, 0.1, x, 0.055, z, 0x252b30);
-    b.box(0.055, 0.04, 0.045, x, 0.085, z, 0x859299);
+    if (detail > 0) {
+      // Round wheels with rims and hub caps, under dark wheel arches.
+      b.wheel(0.052, 0.05, x, 0.105, z, 0x1f2327, model >= 3 ? 0x9aa3a8 : 0xc4ccd0);
+      b.box(0.012, 0.03, 0.13, x * 1.02, 0.13, z, 0x1b1f23);
+    } else {
+      b.box(0.05, 0.1, 0.1, x, 0.055, z, 0x252b30);
+      b.box(0.055, 0.04, 0.045, x, 0.085, z, 0x859299);
+    }
+  }
+  if (detail > 0) {
+    // Number plates, a grille, bumpers, door mirrors, door handles, an exhaust and an aerial.
+    b.pane(0.07, 0.022, 0, 0.115, length / 2 + 0.019, 0, 0xf2f2ea);
+    b.pane(0.05, 0.006, 0, 0.118, length / 2 + 0.02, 0, 0x2a2f36);
+    b.pane(0.07, 0.022, 0, 0.16, -length / 2 - 0.018, Math.PI, 0xf2d94a);
+    b.pane(0.05, 0.006, 0, 0.163, -length / 2 - 0.019, Math.PI, 0x2a2f36);
+    for (let y = 0.165; y < 0.19; y += 0.008) b.pane(0.1, 0.003, 0, y, length / 2 + 0.0165, 0, 0x7c878c);
+    b.box(0.24, 0.022, 0.02, 0, 0.09, -length / 2 - 0.004, 0x2c3237);
+    b.box(0.24, 0.022, 0.02, 0, 0.09, length / 2 + 0.004, 0x2c3237);
+    const mirrorZ = model === 1 ? 0.105 : model === 3 ? 0.33 : length / 2 - 0.07, mirrorY = model === 1 ? 0.2 : model === 3 ? 0.3 : 0.26;
+    for (const side of [-1, 1]) {
+      b.box(0.03, 0.006, 0.01, side * 0.138, mirrorY + 0.01, mirrorZ, 0x2a2f36);
+      b.box(0.012, 0.024, 0.03, side * 0.155, mirrorY, mirrorZ, 0x3a4046);
+      if (model <= 2) for (const z of model === 1 ? [0.03, -0.09] : [0.08]) b.box(0.004, 0.006, 0.022, side * 0.127, 0.19, z, 0x9aa3a8);
+    }
+    b.pipe(0.006, 0.04, 0.07, 0.085, -length / 2 - 0.01, 0x6b7378);
+    if (model === 1) b.box(0.003, 0.09, 0.003, 0.08, 0.31, -0.1, 0x2a2f36);
   }
   for (const x of [-0.085, 0.085]) {
     b.box(0.05, 0.035, 0.016, x, 0.14, length / 2 + 0.005, 0xffedb0);
