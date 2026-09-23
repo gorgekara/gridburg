@@ -144,7 +144,10 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Cars with some shape.** Cars, taxis, police cars, vans and the player's cars are built from a side
   profile: a nose that rounds down to the bumper, a raked windscreen, a roof and a sloping rear
   screen, arches cut round the wheels and every edge rounded, with glass, pillars, lamps, grilles,
-  plates and mirrors. Lorries and buses keep their boxy shape but with rounded edges.
+  plates and mirrors. Buses have a rounded nose and tail, a big curved windscreen, a band of windows
+  between slim pillars, doors on the kerb side, a destination board and a roof pod; lorries a rounded
+  cab with a wraparound screen, grille, mirrors and steps on a chassis, with a ribbed box, a fire
+  engine's lockers and ladder, or a bin lorry's hopper behind.
 - **Street-level detail.** Walking or driving, the streets around you fill in with the small things
   you only see up close: paving joints, kerb stones, gutters, drains, manholes, patched and cracked
   asphalt, litter and fallen leaves; street name signs at junctions, traffic signs, parking meters

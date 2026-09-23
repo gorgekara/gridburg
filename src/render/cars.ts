@@ -3,7 +3,7 @@ import { VEHICLE_SCALE } from '../sim/trafficSpace';
 import * as THREE from 'three';
 import { MAX_CARS } from '../constants';
 import { Builder } from './buildingGeo';
-import { carShell, SEDAN, COUPE, VAN } from './carShell';
+import { carShell, busShell, truckShell, SEDAN, COUPE, VAN, BUS_LAMP_Y, TRUCK_LAMP_Y } from './carShell';
 import type { CarSpec } from './carShell';
 
 /** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer, 8 trolleybus, 9 taxi, 10 garbage truck. */
@@ -42,6 +42,52 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
       for (const x of [-0.09, 0.09]) b.box(0.01, 0.01, spec.length * 0.6, x, spec.cabin.roof + 0.004, -0.05, 0x3a4046);
     }
     // Tyres on the asphalt, which stands a little proud of the ground the cars are placed on.
+    const geometry = b.build(); geometry.translate(0, 0.066, 0); geometry.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE); return geometry;
+  }
+  // Buses and lorries are shaped too: a rounded, raked front, windows, arches and all.
+  if (detail > 0 && (model === 3 || model === 4)) {
+    if (model === 4) {
+      busShell(b, length, 0.25, 0.43, { paint: body, glass: 0x243a4b, trim: 0x2a2f36, stripe: type === 8 ? 0x1f6f60 : 0xc8541f });
+      if (type === 8) {
+        // Twin roof collectors distinguish electric trolleybuses from diesel buses.
+        b.roundBox(0.2, 0.02, 0.4, 0, 0.43, -0.05, 0xe4eee4, 0.008);
+        for (const x of [-0.055, 0.055]) {
+          // The shoes meet the wires at the same height as ever, allowing for the lift onto the asphalt.
+          b.cyl(0.012, 0.68, x, 0.45, -0.12, 0x424a4b, 6);
+          b.box(0.025, 0.025, 0.14, x, 1.19 - 0.066, -0.12, 0x272f30);
+        }
+      }
+    } else {
+      const cabColor = type === 6 ? 0xd44434 : type === 10 ? 0xf2f2ee : body;
+      truckShell(b, length, 0.25, { paint: cabColor, glass: 0x243a4b, trim: 0x2a2f36 });
+      const z0 = length / 2 - 0.255, z1 = -length / 2 + 0.01, bodyLen = z0 - z1, mid = (z0 + z1) / 2;
+      const load = type === 6 ? 0xcc4434 : type === 10 ? 0x3f8a4a : 0xe1e0d7;
+      b.roundBox(0.27, 0.27, bodyLen, 0, 0.11, mid, load, 0.025);
+      if (type === 3) {
+        // A box van body: ribs down the sides and doors at the back.
+        for (let z = z1 + 0.05; z < z0 - 0.02; z += 0.07) for (const side of [-1, 1]) b.box(0.006, 0.25, 0.012, side * 0.136, 0.12, z, 0xc2c6c4);
+        b.box(0.002, 0.24, 0.004, 0, 0.12, z1 - 0.002, 0x8a9296);
+        for (const x of [-0.06, 0.06]) b.box(0.01, 0.2, 0.006, x, 0.14, z1 - 0.004, 0x6b757b);
+      } else if (type === 6) {
+        // A fire engine: lockers down the sides, a ladder on top, a light bar on the cab.
+        for (const side of [-1, 1]) for (let z = z1 + 0.06; z < z0 - 0.04; z += 0.1) {
+          b.box(0.004, 0.13, 0.085, side * 0.137, 0.14, z, 0xd8dcdc);
+          b.box(0.005, 0.006, 0.03, side * 0.138, 0.2, z, 0x6b757b);
+        }
+        for (const x of [-0.085, 0.085]) b.box(0.02, 0.02, bodyLen + 0.08, x, 0.39, mid + 0.02, 0xd5dddd);
+        for (let z = z1 + 0.02; z < z0 + 0.05; z += 0.06) b.box(0.17, 0.014, 0.014, 0, 0.392, z, 0xd5dddd);
+        b.roundBox(0.19, 0.02, 0.045, 0, 0.39, length / 2 - 0.12, 0x263947, 0.008);
+        b.roundBox(0.08, 0.026, 0.04, -0.05, 0.4, length / 2 - 0.12, 0x428dff, 0.008);
+        b.roundBox(0.08, 0.026, 0.04, 0.05, 0.4, length / 2 - 0.12, 0xff5343, 0.008);
+      } else if (type === 10) {
+        // A bin lorry: a stripe, and the loading hopper at the back.
+        for (const side of [-1, 1]) b.box(0.004, 0.03, bodyLen - 0.02, side * 0.137, 0.22, mid, 0xf2f2ee);
+        b.roundBox(0.25, 0.2, 0.08, 0, 0.1, z1 - 0.03, 0x2f6f3f, 0.02);
+        b.box(0.2, 0.05, 0.004, 0, 0.14, z1 - 0.072, 0x1f2226);
+        b.box(0.03, 0.03, 0.01, 0.09, 0.26, z1 - 0.07, 0xf2a21f);
+      }
+      for (const side of [-1, 1]) b.roundBox(0.035, 0.03, 0.01, side * 0.1, 0.12, z1 - 0.004, 0xc8282a, 0.004);
+    }
     const geometry = b.build(); geometry.translate(0, 0.066, 0); geometry.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE); return geometry;
   }
   // Lorries and buses keep their boxy shape, but with rounded edges and corners.
@@ -191,6 +237,13 @@ function lightGeometry(type: number): THREE.BufferGeometry {
     for (const side of [-1, 1]) {
       lamp(side * spec.width * 0.32, spec.nose - 0.018 + 0.066, spec.length / 2 + 0.006, 0.058, 0.024, warm);
       lamp(side * spec.width * 0.33, spec.deck - 0.021 + 0.066, -spec.length / 2 - 0.004, 0.052, 0.022, red);
+    }
+  } else if (model === 3 || model === 4) {
+    // Over the shaped lorry's and bus's own lamps.
+    const y = (model === 4 ? BUS_LAMP_Y : TRUCK_LAMP_Y) + 0.066;
+    for (const side of [-1, 1]) {
+      lamp(side * 0.25 * 0.33, y, length / 2 + 0.006, 0.05, 0.022, warm);
+      lamp(side * 0.1, 0.135 + 0.066, -length / 2 - 0.006, 0.038, 0.032, red);
     }
   } else {
     const front = length / 2;
