@@ -15,7 +15,7 @@ import {
   T_FARM, T_LEISURE, FARM_JOBS, LEISURE_JOBS, LEISURE_UNLOCK, zoneBase, zoneOccupants, ZONE_NAMES,
 } from '../constants';
 import { defaultFunding, FUNDING_KEYS, validFunding, serviceFunding, fundingOutput, LOAN_AMOUNT, LOAN_TOTAL, LOAN_PAYMENT, NEGLECT_LIMIT } from '../management';
-import { entrySite } from '../roads/entries';
+import { mapGates } from '../roads/entries';
 import { civicShortfalls } from './growth';
 import { airportClearanceMask } from '../airports';
 import { isPolicyId, noPolicies, policyEffects, policyExpense, POLICIES } from '../policies';
@@ -176,6 +176,8 @@ let nodeHalf = new Float32Array(0); // half width of the widest road meeting the
 let reach = new Uint8Array(0);
 let component = new Int32Array(0);
 let entryNodes: number[] = [];
+/** Where roads from outside come onto the map, for the transit and trade that use them. */
+let gates: { x: number; z: number; dx: number; dz: number }[] = [];
 let entries: { seg: number; s: number }[] = [];
 let segCong = new Float32Array(0);
 let roadUpkeep = 0;
@@ -252,6 +254,7 @@ function applyNetwork(p: EditPayload): void {
     nodeType.push(n.ring ? J_RING : deg >= 3 && !interchange ? (n.light ? J_LIGHT : n.stop ? J_STOP : J_YIELD) : J_PLAIN);
     if (n.entry) entryNodes.push(nodeIds.length - 1);
   }
+  gates = mapGates(net);
   // Keep surviving segments at stable indices where possible is not needed: cars are remapped by id below.
   const newSegs: RSeg[] = [];
   const segIndex = new Map<number, number>();
@@ -1012,8 +1015,8 @@ function writeFrame(): void {
   }
   const cong = new Uint8Array(segs.length);
   for (let i = 0; i < segs.length; i++) cong[i] = Math.min(255, (segCong[i] * 255) | 0);
-  // The water surface changes slowly, so it rides along every third frame.
-  const wet = frames++ % 3 === 0 ? river.visible() : undefined, flooded = wet ? river.flooded.slice() : undefined;
+  // The water level changes slowly, so it rides along every third frame.
+  const wet = frames++ % 3 === 0 ? river.frame() : undefined, flooded = wet ? river.flooded.slice() : undefined;
   post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
 }
 
@@ -1174,7 +1177,6 @@ function census(): void {
   demand[3] = cityLevel >= OFFICE_UNLOCK ? clamp(0.2 + (pop * 0.35 - officeJobs) / Math.max(60, pop * 0.35 + officeJobs) * 0.6 + civic.education / 250 - zoneTax(3), -1, 1) : -1;
   const signature = `${serial}:` + Array.from(kind, (k, i) => SERVICES[k]?.transport && !flags[i] ? i : '').filter(String).join(',');
   if (signature !== transitSignature) {
-    const gates = entryNodes.map(n => entrySite(nodeX[n], nodeZ[n]));
     transit = transitNetwork(kind, i => tileConnected(i) && flags[i] === 0, (a, b) => kind[a] === T_TROLLEY ? !!wiredRoute(accSeg[a], accS[a], accSeg[b], accS[b]) : kind[a] === T_STATION ? component[segA[accSeg[a]]] === component[segA[accSeg[b]]] : !!route(accSeg[a], accS[a], accSeg[b], accS[b]), gates);
     taxiStops = Array.from(kind.keys()).filter(i => kind[i] === T_TAXI && tileConnected(i) && flags[i] === 0);
     for (let i = 0; i < slots.length; i++) if (slots[i]?.taxiStop !== undefined && !taxiStops.includes(slots[i]!.taxiStop!)) freeCar(i);
@@ -1362,14 +1364,11 @@ function grow(): void {
   tick++;
 }
 
-/** Entrances as a player counts them: the two carriageways of a motorway share one gate on the edge. */
+/** Entrances as a player counts them: the two carriageways of a highway share one gate on the edge. */
 function gateCount(): number {
-  const gates: { x: number; z: number }[] = [];
-  for (const n of entryNodes) {
-    const g = entrySite(nodeX[n], nodeZ[n]);
-    if (!gates.some(o => Math.hypot(o.x - g.x, o.z - g.z) < 4)) gates.push(g);
-  }
-  return gates.length;
+  const distinct: { x: number; z: number }[] = [];
+  for (const g of gates) if (!distinct.some(o => Math.hypot(o.x - g.x, o.z - g.z) < 4)) distinct.push(g);
+  return distinct.length;
 }
 
 function averageOver(field: Float32Array, include: (i: number) => boolean): number {

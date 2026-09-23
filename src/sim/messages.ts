@@ -109,7 +109,7 @@ export type WorkerToMain =
   | { type: 'notice'; message: string }
   | { type: 'inspection'; report: TileReport | null }
   | { type: 'state'; incidents: IncidentView; incidentSave: IncidentSnapshot; neglect: Uint8Array; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; maps?: CityMaps; disaster?: DisasterView | null; stats: Stats }
-  | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; cars: Float32Array; segCong: Uint8Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface to draw (NaN where there is nothing to draw) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };
+  | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; cars: Float32Array; segCong: Uint8Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface height of every tile holding water worth drawing (NaN elsewhere) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };
 
 export function emptyStats(money: number): Stats {
   return {

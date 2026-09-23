@@ -36,6 +36,18 @@ export const UPGRADE_ORDER = [KIND_LANE, KIND_ROAD, KIND_AVENUE, KIND_HIGHWAY];
 export const ROUNDABOUT_RADIUS = [1.9, 2.6, 1.5, 4.0, 2.6, 1.9, 2.6];
 /** The widest carriageway a roundabout circulates on: an expressway arm still meets an avenue-sized ring. */
 export const RING_KIND_LIMIT = 1; // KIND_AVENUE
+/**
+ * The roundabouts a player can pick: sized to the widest road that meets them, or a single-lane
+ * circle, a two-lane one, or a grand two-lane circle for the busiest crossings. `kind` is the ring's
+ * carriageway (null follows the roads); `radius` null takes the carriageway's own size.
+ */
+export const RING_SIZES = [
+  { id: 'auto', label: 'Match the roads', hint: 'The ring takes after the widest road that meets it', kind: null, radius: null, cost: 1 },
+  { id: 'single', label: 'Single lane', hint: 'A small circle with one lane round it, for streets and lanes', kind: KIND_ROAD, radius: 1.9, cost: 1 },
+  { id: 'double', label: 'Two lanes', hint: 'An avenue-sized circle with two lanes round it', kind: KIND_AVENUE, radius: 2.6, cost: 1.5 },
+  { id: 'grand', label: 'Grand', hint: 'A wide two-lane circle that takes many arms and a lot of traffic', kind: KIND_AVENUE, radius: 4, cost: 2.4 },
+] as const;
+export type RingSize = typeof RING_SIZES[number]['id'];
 // A ramp widens into a one-way highway and back; the rest walk the ordinary order.
 export const nextRoadKind = (kind: number): number => kind === KIND_RAMP ? KIND_HIGHWAY2 : kind === KIND_HIGHWAY2 ? KIND_MOTORWAY : kind === KIND_MOTORWAY ? KIND_RAMP : UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
 export const LIGHT_CYCLE = 18;
@@ -401,10 +413,11 @@ export class Network {
    * Insert a road along guide points. Endpoints snap to existing nodes and segments,
    * and every crossing with an existing road becomes a junction. Returns new segment ids.
    */
-  insertPath(points: { x: number; z: number }[], kind: number, oneway = false, structure: 0 | 1 | 2 = 0): number[] {
+  insertPath(points: { x: number; z: number }[], kind: number, oneway = false, structure: 0 | 1 | 2 = 0, clampToMap = true): number[] {
     const added: number[] = [];
     if (points.length < 2) return added;
-    const pts = points.map((p) => ({ x: Math.max(0.3, Math.min(GRID - 0.3, p.x)), z: Math.max(0.3, Math.min(GRID - 0.3, p.z)) }));
+    // A player's road stays on the map; the map's own motorway and interchange run outside it.
+    const pts = points.map((p) => clampToMap ? { x: Math.max(0.3, Math.min(GRID - 0.3, p.x)), z: Math.max(0.3, Math.min(GRID - 0.3, p.z)) } : { x: p.x, z: p.z });
     const startId = this.resolveEndpoint(pts[0].x, pts[0].z);
     const endId = this.resolveEndpoint(pts[pts.length - 1].x, pts[pts.length - 1].z);
     const sn = this.nodes.get(startId)!;

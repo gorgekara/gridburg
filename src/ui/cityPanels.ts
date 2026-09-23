@@ -4,7 +4,6 @@ import type { AchievementLog } from '../achievements';
 import { DISTRICT_COLORS, DISTRICT_COUNT, DISTRICT_POLICIES, DISTRICT_POLICY_IDS, districtHas } from '../extras';
 import type { Game } from '../game';
 import type { Stats } from '../sim/messages';
-import { daysLeft, scenarioById } from '../scenarios';
 import { deleteSlot, listSlots, loadSlot, saveSlot } from '../slots';
 import type { SaveData } from '../save';
 import { N_TILES, isZone } from '../constants';
@@ -44,7 +43,7 @@ export interface PanelActions {
 }
 
 /**
- * Panels that sit beside the HUD: map views, statistics, achievements, districts, the scenario tracker
+ * Panels that sit beside the HUD: map views, statistics, achievements, districts
  * and named saves. They reuse the HUD's popover styling and add their buttons to its top-right bar.
  */
 export class CityPanels {
@@ -55,8 +54,6 @@ export class CityPanels {
   private trophyPop = el('div', 'popover trophies');
   private districtPop = el('div', 'popover districts');
   private savePop = el('div', 'popover saves');
-  private scenarioCard = el('div', 'scenario-card');
-  private scenarioResult = el('div', 'scenario-result');
   private viewBtns = new Map<MapView, HTMLButtonElement>();
   private charts: { canvas: HTMLCanvasElement; label: HTMLElement; draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void }[] = [];
   private undoBtn: HTMLButtonElement;
@@ -188,9 +185,7 @@ export class CityPanels {
     };
     menu.prepend(menuItem('save', 'Save or load cities', () => { this.renderSaves(); this.savePop.classList.add('open'); }));
 
-    this.scenarioCard.hidden = true;
-    this.scenarioResult.hidden = true;
-    root.append(this.viewPop, this.statsPop, this.trophyPop, this.districtPop, this.savePop, this.scenarioCard, this.scenarioResult);
+    root.append(this.viewPop, this.statsPop, this.trophyPop, this.districtPop, this.savePop);
   }
 
   private setSoundIcon(on: boolean): void {
@@ -246,7 +241,7 @@ export class CityPanels {
     this.savePop.replaceChildren(el('div', 'ptitle', 'Saved cities'));
     const row = el('div', 'save-row');
     const name = el('input'); name.type = 'text'; name.placeholder = 'Name this city'; name.maxLength = 40;
-    name.value = this.game.extras.scenario ? `${scenarioById(this.game.extras.scenario.id)?.title ?? 'Scenario'} day ${this.actions.day()}` : `City day ${this.actions.day()}`;
+    name.value = `City day ${this.actions.day()}`;
     const save = el('button', 'finance-action', 'Save');
     save.addEventListener('click', () => {
       if (saveSlot(name.value, this.game.snapshot(), this.actions.day())) this.renderSaves();
@@ -281,7 +276,6 @@ export class CityPanels {
     if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
     if (this.statsPop.classList.contains('open') && this.history.length % 2 === 0) this.drawCharts();
     this.undoBtn.disabled = !this.game.canUndo;
-    this.updateScenario(s);
   }
 
   private drawCharts(): void {
@@ -293,31 +287,4 @@ export class CityPanels {
     }
   }
 
-  onScenarioDone: ((result: 'won' | 'lost') => void) | null = null;
-
-  private updateScenario(s: Stats): void {
-    const state = this.game.extras.scenario;
-    const scenario = state ? scenarioById(state.id) : undefined;
-    this.scenarioCard.hidden = !scenario;
-    if (!scenario || !state) return;
-    const left = daysLeft(scenario, state.startTick, s.tick);
-    this.scenarioCard.replaceChildren(el('strong', undefined, scenario.title), el('span', 'pnote', state.done ? (state.done === 'won' ? 'Won — keep building' : 'Out of time — keep building') : `${Math.max(0, left).toFixed(1)} days left`));
-    for (const g of scenario.goals) {
-      const row = el('div', `goal${g.met(s) ? ' met' : ''}`);
-      row.append(el('span', 'goal-mark', g.met(s) ? '✓' : '○'), el('span', undefined, g.label), el('span', 'goal-value', g.value(s)));
-      this.scenarioCard.append(row);
-    }
-    if (state.done) return;
-    const result = scenario.goals.every(g => g.met(s)) ? 'won' : left < 0 ? 'lost' : null;
-    if (!result) return;
-    state.done = result;
-    this.scenarioResult.replaceChildren();
-    const card = el('div', 'scenario-result-card');
-    const close = el('button', 'menu-mini primary', 'Keep building');
-    close.addEventListener('click', () => { this.scenarioResult.hidden = true; });
-    card.append(el('h2', undefined, result === 'won' ? 'Scenario complete!' : 'Out of time'), el('p', undefined, result === 'won' ? `You met every goal of “${scenario.title}”.` : `The deadline for “${scenario.title}” has passed. You can keep playing this city, or try the scenario again from the main menu.`), close);
-    this.scenarioResult.append(card);
-    this.scenarioResult.hidden = false;
-    this.onScenarioDone?.(result);
-  }
 }

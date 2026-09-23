@@ -12,6 +12,8 @@ import { CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import type { Stats, TileReport } from '../sim/messages';
 import type { RoadMode, Tool } from '../input';
+import { RING_SIZES } from '../roads/network';
+import type { RingSize } from '../roads/network';
 import { T_DOCKS, DOCK_JOBS, T_GAS, T_HYDRO, T_NUCLEAR } from '../constants';
 import { COST_MOTORWAY, COST_RAMP, COST_HIGHWAY2 } from '../constants';
 import { COST_AVENUE, COST_LANE, COST_HIGHWAY, COST_LIGHT, COST_STOP, COST_CALM, COST_ROAD, COST_ROUNDABOUT, COST_ZONE, SERVICES, T_COAL, T_OUTLET, T_PUMP, T_TOWER, T_WIND, T_SOLAR } from '../constants';
@@ -34,6 +36,8 @@ export interface HudActions {
   toggleDrive(): void;
   setElevation(level: number): void;
   setBrush(size: number): void;
+  /** Which roundabout the roundabout tool draws. */
+  setRingSize(id: RingSize): void;
   /** Move the camera to whatever a message is about; false when there is nothing to show. */
   focusOn(id: string): boolean;
   closeInspection(): void;
@@ -74,7 +78,7 @@ const CATEGORIES: Category[] = [
   {
     id: 'traffic', label: 'Traffic',
     tools: [
-      { id: 'roundabout', label: 'Roundabout', key: 'O', price: money(COST_ROUNDABOUT), note: 'Never stops', hint: 'Click a junction. Traffic circulates one way and nobody has to wait' },
+      { id: 'roundabout', label: 'Roundabout', key: 'O', price: `${money(COST_ROUNDABOUT)}+`, note: 'Never stops', hint: 'Click a junction. Traffic circulates one way and nobody has to wait. Pick the ring beside the cards: matched to the roads, single lane, two lanes, or grand' },
       { id: 'light', label: 'Signal', key: 'T', price: money(COST_LIGHT), note: 'Busy crossings', hint: 'Click a junction to add or remove traffic lights. Best where two busy roads cross' },
       { id: 'stopsign', label: 'Stop signs', key: 'K', price: money(COST_STOP), note: 'All-way halt', hint: 'Click a junction to make every approach stop before entering. Slower than lights, but it keeps a quiet crossing orderly and needs no signal' },
       { id: 'oneway', label: 'One-way', key: 'Y', price: 'Free', note: 'Click to cycle', hint: 'Click a road to cycle: one-way, reversed, two-way' },
@@ -117,10 +121,9 @@ const CATEGORIES: Category[] = [
   {
     id: 'land', label: 'Land',
     tools: [
-      { id: 'dig', label: 'Dig out', price: `${money(COST_DIG)} / cell`, note: 'Ponds and inlets', hint: 'Paint over open ground to dig it out to water. A pond counts as waterfront: pumps, docks and river views work beside it. Digging out old fill restores the river' },
-      { id: 'fill', label: 'Fill in', price: `${money(COST_FILL)} / cell`, note: 'Reclaim the bank', hint: 'Paint over the river to fill it in as buildable land. Narrow it, move it into a channel you dug, or dam it outright: the water gathers behind a dam and spills over the banks when it can rise no further. Filling a dug pond restores the ground' },
-      { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)} / cell`, note: 'Hills and ridges', hint: 'Paint to pile earth up, a storey at a time up to four, on land or in the river. Go over the same ground again to build it higher. Nothing can be built or driven on raised ground, but forests climb it' },
-      { id: 'lower', label: 'Lower ground', price: `${money(COST_LOWER)} / cell`, note: 'Take a hill down', hint: 'Paint over raised ground to take it down a storey at a time' },
+      { id: 'lower', label: 'Lower ground', price: `${money(COST_LOWER)}–${money(COST_DIG)} / cell`, note: 'Take down, then dig', hint: 'Paint to take the ground down a storey with every pass: a hill comes down cheaply, and at ground level you dig in, up to three storeys, the river bed too. A basin fills from below into a lake; a channel cut from the river bank carries the river along it, and damming the old bed then moves the river for good' },
+      { id: 'raise', label: 'Raise ground', price: `${money(COST_RAISE)}–${money(COST_FILL)} / cell`, note: 'Fill, then pile up', hint: 'Paint to bring the ground up a storey with every pass: a hole or the river is filled in to buildable land (dam the river and the water gathers behind it), and level ground is piled into hills up to four storeys. Nothing can be built or driven on raised ground, but forests climb it' },
+      { id: 'flat', label: 'Flatten', price: 'By the storey', note: 'Back to level', hint: 'Paint to bring the ground back to bank level whatever it was: hills come down, holes are filled, and river cells become land' },
     ],
   },
   {
@@ -228,6 +231,8 @@ export class Hud {
   private modeBtns = new Map<string, HTMLButtonElement>();
   private heightBtns = new Map<number, HTMLButtonElement>();
   private brushBtns: [number, HTMLButtonElement][] = [];
+  private ringRow: HTMLElement | null = null;
+  private ringBtns: [RingSize, HTMLButtonElement][] = [];
   private elevation = 0;
   private panels = new Map<string, HTMLElement>();
   private panel = el('div', 'panel');
@@ -270,6 +275,10 @@ export class Hud {
     this.elevation = level;
     for (const [value, button] of this.heightBtns) button.classList.toggle('active', value === level);
     this.setTool(this.tool);
+  }
+
+  setRingSize(id: RingSize): void {
+    for (const [value, button] of this.ringBtns) button.classList.toggle('active', value === id);
   }
 
   setBrush(size: number): void {
@@ -618,6 +627,24 @@ export class Hud {
         }
         side.append(seg);
       }
+      if (c.id === 'roads') {
+        // Only with the roundabout tool: which ring it draws.
+        const ring = el('div', 'modes');
+        ring.append(el('span', 'mlabel', 'Ring'));
+        for (const size of RING_SIZES) {
+          const b = el('button', 'mode');
+          b.append(icon(`ring-${size.id}`, 20));
+          b.title = `${size.label}: ${size.hint}${size.cost > 1 ? ` (${money(Math.round(COST_ROUNDABOUT * size.cost))})` : ''}`;
+          b.setAttribute('aria-label', size.label);
+          b.classList.toggle('active', size.id === 'auto');
+          b.addEventListener('click', () => { actions.setRingSize(size.id); this.setRingSize(size.id); });
+          this.ringBtns.push([size.id, b]);
+          ring.append(b);
+        }
+        ring.hidden = true;
+        this.ringRow = ring;
+        side.append(ring);
+      }
       if (c.id === 'land' || c.id === 'districts') {
         const brush = el('div', 'modes');
         brush.append(el('span', 'mlabel', 'Brush'));
@@ -800,6 +827,7 @@ export class Hud {
     for (const [id, body] of this.panels) body.classList.toggle('open', id === this.openCat);
     this.panel.classList.toggle('open', this.openCat !== null);
     this.panelTitle.textContent = cat ? cat.label : '';
+    if (this.ringRow) this.ringRow.hidden = t !== 'roundabout';
     this.refreshHint();
   }
 

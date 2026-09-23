@@ -1,6 +1,5 @@
 import { visualDetail, type VisualDetail } from '../render/detail';
 import { icon } from './icons';
-import { SCENARIOS } from '../scenarios';
 import { deleteSlot, listSlots } from '../slots';
 
 export interface Settings {
@@ -36,7 +35,6 @@ export interface MenuActions {
   resume(): void;
   help(): void;
   apply(settings: Settings): void;
-  startScenario(id: string): void;
   loadSlot(name: string): void;
 }
 
@@ -81,7 +79,6 @@ export class MainMenu {
     this.buildHome();
     this.buildNew();
     this.buildSettings();
-    this.buildScenarios();
     this.slotsPage.className = 'menu-page';
     this.pages.set('slots', this.slotsPage);
     this.panels.append(this.slotsPage);
@@ -122,7 +119,6 @@ export class MainMenu {
       this.continueBtn,
       this.button('New city', 'A fresh river valley to build on', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
       this.button('Demo city', 'A finished city to look around', () => this.actions.demoCity(), 'city'),
-      this.button('Scenarios', 'Prepared cities with goals and a deadline', () => this.show('scenarios'), 'flag'),
       this.button('Saved cities', 'Cities you saved by name', () => { this.buildSlots(); this.show('slots'); }, 'save'),
       this.button('Settings', 'Graphics, day length and cheats', () => this.show('settings'), 'menu'),
       this.button('How to play', 'The basics, in five steps', () => this.actions.help(), 'help'),
@@ -166,19 +162,6 @@ export class MainMenu {
     back.addEventListener('click', () => this.show('home'));
     row.append(back);
     return row;
-  }
-
-  private buildScenarios(): void {
-    const page = el('div', 'menu-page');
-    page.append(el('h2', 'menu-heading', 'Scenarios'), el('p', 'menu-note', 'Meet every goal at the same time before the deadline. The city stays yours to keep building afterwards.'));
-    for (const sc of SCENARIOS) {
-      const b = this.button(sc.title, `${sc.days} days · ${sc.goals.map(g => g.label).join(' · ')}`, () => this.actions.startScenario(sc.id), 'flag');
-      b.title = sc.brief;
-      page.append(b);
-    }
-    page.append(this.back());
-    this.pages.set('scenarios', page);
-    this.panels.append(page);
   }
 
   private buildSlots(): void {

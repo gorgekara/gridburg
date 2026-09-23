@@ -23,6 +23,8 @@ export interface Terrain {
 }
 
 const STEP = 0.5;
+/** How far in from the map edge the river's source lies. */
+export const SOURCE = 10;
 
 /** Everything about the map that comes from the seed alone, so main thread and worker agree. */
 export function generateTerrain(seed: number): Terrain {
@@ -42,10 +44,15 @@ export function generateTerrain(seed: number): Terrain {
   const wp = rnd() * Math.PI * 2;
   const drift = (rnd() - 0.5) * 0.25;
 
+  // The river rises on the map itself, a little way in from one edge, as a stream a cell wide, and
+  // gathers width as it runs to the far edge and off it.
   const river: RiverPoint[] = [];
-  for (let t = -4; t <= GRID + 4; t += STEP) {
+  for (let t = SOURCE; t <= GRID + 4; t += STEP) {
     const off = base + drift * (t - GRID / 2) + a1 * Math.sin(f1 * t + p1) + a2 * Math.sin(f2 * t + p2);
-    const w = w0 + 0.5 * Math.sin(wf * t + wp);
+    const full = w0 + 0.5 * Math.sin(wf * t + wp);
+    const grown = Math.max(0, Math.min(1, (t - SOURCE) / (GRID * 0.7)));
+    // Never thinner than a cell and a half, so the stream's tiles stay joined edge to edge on a diagonal.
+    const w = Math.max(0.8, full * (0.3 + 0.7 * grown * grown * (3 - 2 * grown)));
     river.push(northSouth ? { x: off, z: t, w } : { x: t, z: off, w });
   }
 

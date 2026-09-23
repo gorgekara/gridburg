@@ -12,7 +12,7 @@ import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK }
 import { DISTRICT_COLORS, terraformAllowed } from './extras';
 import type { TerraformAction } from './extras';
 
-const LAND_TOOLS = ['dig', 'fill', 'raise', 'lower'] as const;
+const LAND_TOOLS = ['lower', 'raise', 'flat'] as const;
 /** Brush radii in cells for the three sizes of the land brush. */
 export const BRUSH_RADIUS = [0.5, 1.6, 2.8];
 import * as THREE from 'three';
@@ -22,7 +22,8 @@ import {
 } from './constants';
 import { MILESTONES } from './progression';
 import { isMotorway, isOneWayKind, isCarriageway, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2 } from './roads/network';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, RING_KIND_LIMIT, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY, ROAD_LABEL, ROUNDABOUT_RADIUS, RING_KIND_LIMIT, RING_SIZES, nextRoadKind, buildPieces, measurePath, sampleCurve } from './roads/network';
+import type { RingSize } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
 import { MeshBuilder } from './render/meshBuilder';
@@ -37,7 +38,7 @@ export type Tool =
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
   | 'cemetery' | 'crematorium' | 'postoffice' | 'barrier' | 'landmark'
-  | 'district' | 'undistrict' | 'dig' | 'fill' | 'raise' | 'lower'
+  | 'district' | 'undistrict' | 'lower' | 'raise' | 'flat'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
 export type RoadMode = 'straight' | 'curve' | 'smooth';
@@ -51,7 +52,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a,
-  district: 0xffffff, undistrict: 0xe04b3a, dig: 0x4f9fcf, fill: 0xa98a5a, raise: 0x9c9a62, lower: 0x7a6a50,
+  district: 0xffffff, undistrict: 0xe04b3a, lower: 0x4f9fcf, raise: 0x9c9a62, flat: 0x7a9d5c,
   bulldoze: 0xe04b3a,
 };
 export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS, cemetery: T_CEMETERY, crematorium: T_CREMATORIUM, postoffice: T_POST_OFFICE, barrier: T_FLOOD_BARRIER, landmark: T_LANDMARK };
@@ -90,6 +91,8 @@ export class Input {
   onDistrict: (() => void) | null = null;
   /** Land brush size: 0 small, 1 medium, 2 large. */
   brushSize = 1;
+  /** Which roundabout the tool draws: matched to the roads, or a size the player picked. */
+  ringSize: RingSize = 'auto';
   private painted = new Set<number>();
   /** Live label next to the cursor; null hides it. */
   onCost: ((text: string | null, x: number, y: number, ok: boolean) => void) | null = null;
@@ -796,11 +799,11 @@ export class Input {
       g.spend(0);
       g.flush();
     } else if (this.tool === 'roundabout') {
-      const c = this.roundaboutCenter(p);
-      if (!g.canAfford(COST_ROUNDABOUT)) { this.onToast?.('Not enough money'); return; }
+      const c = this.roundaboutCenter(p), cost = this.roundaboutCost();
+      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
       const kind = this.roundaboutKind(c);
-      if (!net.addRoundabout(c.x, c.z, ROUNDABOUT_RADIUS[kind], kind)) { this.onToast?.('No room for a roundabout here'); return; }
-      g.spend(COST_ROUNDABOUT);
+      if (!net.addRoundabout(c.x, c.z, this.roundaboutRadius(c), kind)) { this.onToast?.('No room for a roundabout here'); return; }
+      g.spend(cost);
       g.flush();
     } else {
       const k = SERVICE_TOOL[this.tool];
@@ -819,8 +822,14 @@ export class Input {
     this.onRotate?.(this.placeRotation);
   }
 
-  /** A ring takes after the widest road that meets it, so an avenue circle is bigger than a lane one. */
+  private ring(): typeof RING_SIZES[number] { return RING_SIZES.find(s => s.id === this.ringSize) ?? RING_SIZES[0]; }
+
+  private roundaboutCost(): number { return Math.round(COST_ROUNDABOUT * this.ring().cost); }
+
+  /** The ring's carriageway: the size the player picked, or else the widest road that meets it. */
   private roundaboutKind(c: P): number {
+    const picked = this.ring().kind;
+    if (picked !== null) return picked;
     let kind = KIND_LANE;
     for (const s of this.game.net.segs.values()) {
       if (s.structure || Network.nearestOn(s, c.x, c.z).dist > ROUNDABOUT_RADIUS[s.kind] + 0.8) continue;
@@ -831,7 +840,7 @@ export class Input {
   }
 
   private roundaboutRadius(c: P): number {
-    return ROUNDABOUT_RADIUS[this.roundaboutKind(c)];
+    return this.ring().radius ?? ROUNDABOUT_RADIUS[this.roundaboutKind(c)];
   }
 
   private roundaboutCenter(p: P): P {
@@ -864,14 +873,14 @@ export class Input {
     if (this.tool === 'roundabout') {
       const c = this.roundaboutCenter(p);
       const b = new MeshBuilder();
-      const ok = this.game.canAfford(COST_ROUNDABOUT);
+      const cost = this.roundaboutCost(), ok = this.game.canAfford(cost);
       const r = this.roundaboutRadius(c);
       b.ring(c.x - half, c.z - half, r - 0.45, r + 0.45, 0.09, ok ? TOOL_COLOR.roundabout : BAD);
       this.shape.geometry.dispose();
       this.shape.geometry = b.build();
       this.shape.visible = true;
       this.hover.visible = false;
-      this.onCost?.(`$${COST_ROUNDABOUT}`, e.clientX, e.clientY, ok);
+      this.onCost?.(`$${cost}`, e.clientX, e.clientY, ok);
       return;
     }
     let hx = Math.floor(p.x) + 0.5, hz = Math.floor(p.z) + 0.5;

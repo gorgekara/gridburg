@@ -2,7 +2,7 @@ import { Network, HALF_WIDTH, KIND_HIGHWAY, isMotorway } from './network';
 import type { RSeg } from './network';
 import type { Raster } from './raster';
 import { GRID, SERVICES, T_STATION } from '../constants';
-import { APPROACH, entryGate } from './entries';
+import { APPROACH, mapGates } from './entries';
 
 /** Length of the elevated platform at each end of a line; the track is centred on the station hall. */
 export const PLATFORM_LENGTH = 2.45;
@@ -185,7 +185,7 @@ export function railTrack(net: Network, raster: Raster, a: number, b: number, st
  */
 export function intercityTrack(net: Network, raster: Raster, station: number, step = 0.25): TrackPoint[] {
   const sx = station % GRID, sz = Math.floor(station / GRID);
-  const gates = [...net.nodes.values()].filter(n => n.entry).map(entryGate)
+  const gates = mapGates(net)
     .sort((a, b) => Math.hypot(a.x - sx, a.z - sz) - Math.hypot(b.x - sx, b.z - sz));
   let fallback: TrackPoint[] = [];
   for (const gate of gates) {

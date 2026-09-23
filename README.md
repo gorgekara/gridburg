@@ -26,8 +26,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Deathcare and post.** Cemeteries, crematoria and post offices (Services, from Thriving town). Once the city is a City, new towers need 30% deathcare and post coverage.
 - **Power and water follow the roads.** Each connected road network shares only its own power plants, pumps and outlets, so a neighbourhood cut off from the grid goes dark.
 - **Districts.** Paint up to eight named districts (Districts menu) with the same round brush as the land tools, in three sizes, and give each its own policies: high-rise ban, quiet streets, green district, tourist quarter, tax break or neighbourhood watch. Local policies are billed per building.
-- **Land.** A paintbrush in three sizes (Land menu): dig out ponds and inlets, fill in the river bank to make building land, or raise the ground into hills and ridges a storey at a time (up to four) and lower it again. Forests climb raised ground; nothing can be built or driven on it. Earth can be piled into the river too, so digging a new channel and raising the old bed moves the river, or a wall of it dams the river outright.
-- **Water that moves.** The river is simulated as water on the ground: it flows in at one edge, down a gently falling bed and out at the other. Dam it and the water gathers behind the dam, rises up the banks and spreads over the land until it finds another way down, wrecking what it covers; take the dam out and it drains again. A flood disaster is a surge down the river that overtops the low banks. Flood barriers raise the ground they guard so the water goes elsewhere.
+- **Land.** A paintbrush in three sizes (Land menu) and three tools: **Lower** takes the ground down a storey with every pass (a hill comes down, then you dig in, up to three storeys, the river bed too), **Raise** brings it up (a hole or the river is filled to buildable land, then earth piles into hills up to four storeys), and **Flatten** puts any cell back to bank level. Forests climb raised ground; nothing can be built or driven on it. Earth can be piled into the river too, so digging a new channel and raising the old bed moves the river, or a wall of it dams the river outright.
+- **Water that moves.** The river rises on the map itself, a stream a cell wide a little way in from one edge, and gathers water along its upper course until it runs off the far edge as a river a few cells wide, tipping over a waterfall into a gorge where it leaves the map and carrying on through the hills to the horizon. It is simulated as water on the ground, down a gently falling bed. Dam it and the water gathers behind the dam, rises up the banks and spreads over the land until it finds another way down, wrecking what it covers; take the dam out and it drains again. A flood disaster is a surge down the river that overtops the low banks. Flood barriers raise the ground they guard so the water goes elsewhere. Dig a basin (a storey deeper with each pass, up to three, and the river bed itself can be dug deeper) and groundwater fills it into a lake; dig a channel from the bank and the river runs along it, so a channel plus a dam on the old bed moves the river. Dug ground is cut into the land as a real pit, with earth walls and a gravel floor.
 - **Disasters.** From Small town, the river occasionally floods the low ground beside it and tornadoes cross the valley, knocking buildings down a level or two. Flood barriers on the bank protect everything within seven cells. Switch disasters off in Settings.
 - **Map views.** Land value, well-being, noise, crime, rubbish, districts and flood risk, from the layers button.
 - **Statistics.** Charts of population, treasury, income, happiness, land value, visitors and demand since the city was loaded.
@@ -35,13 +35,13 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Saved cities.** Save and load named cities from the menu, beside the autosave.
 - **Achievements.** Twenty-two, from the first family moving in to a World city, remembered in this browser.
 - **Two more milestones.** Megalopolis at 10,000 residents and World city at 15,000, each with a grant.
-- **Scenarios.** Rust belt revival, Gridlock, Flood plain and Tourist trap: a prepared city, goals to meet together and a deadline in days.
 - **Sound.** A city hum that follows the traffic, birdsong by day and crickets at night, sirens while emergency services are out, building and bulldozing cues, an engine when driving and footsteps when walking. All synthesised; toggle it from the speaker button.
 - **Touch.** On phones and tablets one finger pans and two pinch and turn (one finger draws while a tool is in hand), and walking and driving get an on-screen joystick.
 
 ## What is in it
 
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
+- **The demo city.** A city of some twenty thousand filling the whole map: an old town on a street grid with a downtown of shops and offices round a roundabout, industry behind a green belt, suburbs, a riverside park on the peninsula inside the river's loop, and a new town across three bridges with farms, industry and the airport. Rail, metro, buses and taxis run, and the river leaves the map over a waterfall.
   The HUD menu button reopens it in game and pauses. Settings cover visual detail (Low, Balanced or High), shadows, day length, autosaving and the
   infinite money cheat, and they persist in the browser. Visual detail changes apply immediately: Low simplifies buildings, trees and vehicles; Balanced keeps moderate detail; High adds shutters, flower boxes, roof seams, balconies, roof terraces, shop displays, denser foliage and vehicle trim.
 - **Six silhouettes per building type.** Shops, blocks, offices and towers come in six shapes and
@@ -58,12 +58,12 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   Every kind sits inside its corridor with a verge either side. Upgrade widens a road one step and
   charges the difference; keep clicking and it wraps back to a lane. Extra city entrances arrive on
   expressway; the map's own motorway comes with interchanges to build from.
-- **A motorway across the map.** Every new map has a motorway running its full length just inside the
+- **A motorway past the map.** Every new map has a motorway passing the city by just outside its
   roomier edge: two one-way carriageways side by side, traffic arriving from both ends. A **two-lane
-  highway** comes in from that edge and passes under the motorway at a **full cloverleaf**, laid out
-  like the real thing: four loops for the left turns and four wide arcs for the right turns. A little
-  way past the cloverleaf the highway simply stops, each carriageway ending on its own: the city is
-  built out from those two ends, one for traffic arriving and one for traffic leaving. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
+  highway** leaves it at a **full cloverleaf**, also outside the map and laid out like the real thing
+  (four loops for the left turns, four wide arcs for the right), and comes onto the map a few cells
+  before it simply stops, each carriageway ending on its own: those two stubs are the only ground the
+  highways take, and the city is built out from them, one for traffic arriving and one for traffic leaving. Traffic from outside arrives on both highways. Traffic passing through the region rolls along
   the motorway from one end of the map to the other without ever turning off. The motorway and its interchanges cannot be bulldozed
   and cost nothing to keep. Helicopters take to the air once the town is a City.
 - **Highways the Cities: Skylines 2 way.** Besides the two-way expressway there is a **one-way highway**
@@ -78,7 +78,10 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   and ease over from it after they join. Every junction has rounded kerb corners, and lamps, signals,
   stop signs, signs, furniture and parked cars are all kept off the carriageway.
 - **More traffic control.** Signals and roundabouts, plus all-way stop signs ($60 a junction) and
-  traffic calming ($45/cell) that halves a street's speed and all but ends collisions on it.
+  traffic calming ($45/cell) that halves a street's speed and all but ends collisions on it. The
+  roundabout tool offers four rings, picked beside the cards: one matched to the widest road that
+  meets it, a small single-lane circle ($900), a two-lane one ($1,350) or a grand two-lane circle
+  ($2,160) for the busiest crossings.
 - **Turn a building before you place it.** Right-click, press G, or use the Rotate button in the tool
   panel. Rectangular sites like the railway station turn with it, and the facing is saved.
 - **Robberies, street racing and helicopters.** From City level a robbery occasionally hits a shop or

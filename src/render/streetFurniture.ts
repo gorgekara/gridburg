@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRID, N_TILES, T_BUS, tileHash } from '../constants';
 import { HALF_WIDTH, KIND_AVENUE, isMotorway } from '../roads/network';
-import type { Network } from '../roads/network';
+import { Network } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { sample } from './pedestrians';
@@ -128,10 +128,20 @@ export class StreetFurnitureLayer {
     for (let i = 0; i < N_TILES; i++) {
       if (kind[i] !== T_BUS || raster.accSeg[i] < 0) continue;
       const cx = i % GRID + 0.5, cz = Math.floor(i / GRID) + 0.5;
-      const dx = raster.accX[i] - cx, dz = raster.accZ[i] - cz, d = Math.hypot(dx, dz) || 1;
       const seg = net.segs.get(raster.accSeg[i]);
-      const back = seg ? HALF_WIDTH[seg.kind] + 0.08 : 0.44;
-      put(SHELTER, raster.accX[i] - dx / d * back - half, CURB_TOP + (seg ? roadHeight(seg, 0) : 0), raster.accZ[i] - dz / d * back - half, Math.atan2(dx, dz));
+      if (!seg) continue;
+      // On the stop's side of its street, sliding along it away from a junction until the kerb is
+      // clear of every other road, or no shelter at all.
+      const back = HALF_WIDTH[seg.kind] + 0.08, at = Network.nearestOn(seg, raster.accX[i], raster.accZ[i]).s;
+      for (const shift of [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]) {
+        const s = at + shift;
+        if (s < 0.2 || s > seg.len - 0.2) continue;
+        const p = sample(seg, s), side = (cx - p.x) * -p.tz + (cz - p.z) * p.tx > 0 ? 1 : -1;
+        const x = p.x - p.tz * back * side, z = p.z + p.tx * back * side;
+        if (net.onRoad(x, z, seg.id)) continue;
+        put(SHELTER, x - half, CURB_TOP + roadHeight(seg, s), z - half, Math.atan2(p.x - x, p.z - z));
+        break;
+      }
     }
     this.meshes.forEach((m, t) => { m.count = counts[t]; m.instanceMatrix.needsUpdate = true; });
   }

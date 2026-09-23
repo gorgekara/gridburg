@@ -3,7 +3,7 @@ import type { Terrain } from './terrain';
 
 /**
  * City settings that arrived after the fixed save header: tax per zone, districts and their local
- * policies, dug and filled ground, the scenario being played and whether disasters strike. They are
+ * policies, dug and filled ground, and whether disasters strike. They are
  * shared by the main thread, the worker and the save file, which stores them as one JSON block.
  */
 
@@ -36,17 +36,27 @@ export const FILLED = 2;
 /** Raised ground: values HILL_BASE + 1 .. HILL_BASE + HILL_MAX are hills of that height. */
 export const HILL_BASE = 2;
 export const HILL_MAX = 4;
+/** Ground dug deeper than one storey: values DEEP_BASE + 1 .. DEEP_BASE + DIG_MAX - 1 are two or more storeys down. */
+export const DEEP_BASE = HILL_BASE + HILL_MAX;
+export const DIG_MAX = 3;
+/** The highest value a terraform byte takes. */
+export const TERRAFORM_MAX = DEEP_BASE + DIG_MAX - 1;
+/** How many storeys deep a tile is dug, 0 if not dug. */
+export const digLevel = (v: number): number => v === DUG ? 1 : v > DEEP_BASE ? v - DEEP_BASE + 1 : 0;
+/** The terraform value for ground dug that many storeys deep. */
+export const digValue = (level: number): number => level <= 0 ? 0 : level === 1 ? DUG : DEEP_BASE + level - 1;
+/** How far below the bank dug ground lies, by storeys: the first goes under the river's level, each more a storey further. */
+export const digDepth = (level: number): number => 1.5 + 0.9 * (level - 1);
+/** Moving earth, per storey: taking a hill down, digging below the ground, piling one up, and filling a hole or the river. */
 export const COST_DIG = 120;
 export const COST_FILL = 260;
 export const COST_RAISE = 70;
 export const COST_LOWER = 35;
-export type TerraformAction = 'dig' | 'fill' | 'raise' | 'lower';
+export type TerraformAction = 'lower' | 'raise' | 'flat';
 /** How many storeys of earth stand on a tile, 0 on level ground. */
-export const hillLevel = (v: number): number => Math.max(0, v - HILL_BASE);
+export const hillLevel = (v: number): number => v > HILL_BASE && v <= HILL_BASE + HILL_MAX ? v - HILL_BASE : 0;
 /** Height in world units of a hill of that level, before smoothing. */
 export const HILL_STEP = 0.9;
-
-export interface ScenarioState { id: string; startTick: number; done?: 'won' | 'lost' }
 
 export interface CityExtras {
   taxes: Taxes;
@@ -55,7 +65,6 @@ export interface CityExtras {
   districtNames: string[];
   districtPolicies: number[];
   terraform: Uint8Array;
-  scenario?: ScenarioState;
   disasters: boolean;
 }
 
@@ -69,7 +78,7 @@ export function defaultExtras(tax = 10): CityExtras {
 export function cloneExtras(e: CityExtras): CityExtras {
   return {
     taxes: [...e.taxes] as Taxes, district: e.district.slice(), districtNames: [...e.districtNames],
-    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), scenario: e.scenario ? { ...e.scenario } : undefined, disasters: e.disasters,
+    districtPolicies: [...e.districtPolicies], terraform: e.terraform.slice(), disasters: e.disasters,
   };
 }
 
@@ -85,23 +94,23 @@ function rle(map: Uint8Array): number[] {
   return out;
 }
 
-function unrle(pairs: unknown, max: number): Uint8Array | null {
+function unrle(pairs: unknown, max: number, length = N_TILES): Uint8Array | null {
   if (!Array.isArray(pairs) || pairs.length % 2) return null;
-  const out = new Uint8Array(N_TILES);
+  const out = new Uint8Array(length);
   let i = 0;
   for (let k = 0; k < pairs.length; k += 2) {
     const v = pairs[k], run = pairs[k + 1];
-    if (!Number.isInteger(v) || v < 0 || v > max || !Number.isInteger(run) || run < 1 || i + run > N_TILES) return null;
+    if (!Number.isInteger(v) || v < 0 || v > max || !Number.isInteger(run) || run < 1 || i + run > length) return null;
     out.fill(v, i, i + run);
     i += run;
   }
-  return i === N_TILES ? out : null;
+  return i === length ? out : null;
 }
 
 export function extrasToJson(e: CityExtras): unknown {
   return {
     taxes: e.taxes, district: rle(e.district), names: e.districtNames, policies: e.districtPolicies,
-    terraform: rle(e.terraform), scenario: e.scenario, disasters: e.disasters,
+    terraform: rle(e.terraform), disasters: e.disasters,
   };
 }
 
@@ -112,16 +121,13 @@ export function extrasFromJson(data: unknown, tax: number): CityExtras | null {
   const taxes = d.taxes;
   if (!Array.isArray(taxes) || taxes.length !== 4 || !taxes.every(t => Number.isInteger(t) && t >= 0 && t <= 30)) return null;
   e.taxes = taxes as Taxes;
-  const district = unrle(d.district, DISTRICT_COUNT), terraform = unrle(d.terraform, HILL_BASE + HILL_MAX);
+  const district = unrle(d.district, DISTRICT_COUNT), terraform = unrle(d.terraform, TERRAFORM_MAX);
   if (!district || !terraform) return null;
   e.district = district; e.terraform = terraform;
   if (!Array.isArray(d.names) || d.names.length !== DISTRICT_COUNT || !d.names.every(n => typeof n === 'string' && n.length <= 32)) return null;
   e.districtNames = d.names as string[];
   if (!Array.isArray(d.policies) || d.policies.length !== DISTRICT_COUNT || !d.policies.every(p => Number.isInteger(p) && p >= 0 && p < 1 << DISTRICT_POLICY_IDS.length)) return null;
   e.districtPolicies = d.policies as number[];
-  const s = d.scenario as ScenarioState | undefined;
-  if (s !== undefined && (typeof s !== 'object' || typeof s.id !== 'string' || !Number.isInteger(s.startTick))) return null;
-  e.scenario = s ? { id: s.id, startTick: s.startTick, done: s.done === 'won' || s.done === 'lost' ? s.done : undefined } : undefined;
   e.disasters = d.disasters !== false;
   return e;
 }
@@ -134,12 +140,12 @@ export function shapeTerrain(base: Terrain, edits: Uint8Array): Terrain {
   if (!edits.some(v => v)) return base;
   const water = base.water.slice(), shore = base.shore.slice(), flow = base.flow.slice();
   for (let i = 0; i < N_TILES; i++) {
-    if (edits[i] === DUG) { water[i] = 1; shore[i] = 0; }
+    if (digLevel(edits[i]) > 0) { water[i] = 1; shore[i] = 0; }
     else if (edits[i] === FILLED || hillLevel(edits[i]) > 0) { water[i] = 0; shore[i] = 0; flow[i] = -1; }
   }
   // A dug pond joins the river's flow where it touches it; otherwise it is still water.
   for (let i = 0; i < N_TILES; i++) {
-    if (edits[i] !== DUG) continue;
+    if (!digLevel(edits[i]) || base.water[i]) continue;
     const x = i % GRID, z = Math.floor(i / GRID);
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, nz = z + dz;
@@ -151,19 +157,52 @@ export function shapeTerrain(base: Terrain, edits: Uint8Array): Terrain {
 
 /** Whether a tile is water once the player's edits are applied: dug out, or river that is neither filled nor built up. */
 export const isWet = (base: Terrain, edits: Uint8Array, tile: number): boolean =>
-  edits[tile] === DUG || (!!base.water[tile] && edits[tile] !== FILLED && hillLevel(edits[tile]) === 0);
+  digLevel(edits[tile]) > 0 || (!!base.water[tile] && edits[tile] !== FILLED && hillLevel(edits[tile]) === 0);
 
 /**
- * Whether this tile may be dug out, filled in, raised or lowered. The river can be narrowed, moved or
- * dammed outright: the water then finds its own way, gathering behind the dam until it spills.
+ * Every tile stands at a whole number of storeys against the bank: hills above zero, dug ground
+ * below it. The river bed counts as one storey down, so lowering the bank digs, lowering the river
+ * deepens it, and raising the river fills it to land before piling earth on top.
  */
-export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): boolean {
+export function elevation(base: Terrain, edits: Uint8Array, tile: number): number {
+  const v = edits[tile], hill = hillLevel(v), dig = digLevel(v);
+  if (hill > 0) return hill;
+  if (base.water[tile]) return v === FILLED ? 0 : -1 - dig;
+  return -dig;
+}
+
+/** The terraform value that puts a tile at `elev` storeys. */
+export function elevationValue(base: Terrain, tile: number, elev: number): number {
+  if (elev > 0) return HILL_BASE + elev;
+  if (base.water[tile]) return elev === 0 ? FILLED : elev === -1 ? 0 : digValue(-elev - 1);
+  return digValue(-elev);
+}
+
+/** How far a tile may go: four storeys up, three down into the ground (below the bed, for the river). */
+export const lowestElevation = (base: Terrain, tile: number): number => base.water[tile] ? -1 - DIG_MAX : -DIG_MAX;
+
+/**
+ * What an action does to a tile: the value it leaves and what it costs, or null when it can do
+ * nothing there. Lowering takes a hill down, then digs; raising fills a hole (or the river) then
+ * piles earth up; flattening brings the tile back to the bank's level whatever it was.
+ */
+export function terraformStep(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): { value: number; cost: number } | null {
   const x = tile % GRID, z = Math.floor(tile / GRID);
-  if (x < 1 || z < 1 || x >= GRID - 1 || z >= GRID - 1) return false;
-  const wet = isWet(base, edits, tile);
-  // Earth piles up a storey at a time, on water too, which turns the river bed into a bank.
-  if (action === 'raise') return hillLevel(edits[tile]) < HILL_MAX;
-  if (action === 'lower') return hillLevel(edits[tile]) > 0;
-  if (hillLevel(edits[tile]) > 0) return false;
-  return action === 'dig' ? !wet : wet;
+  if (x < 1 || z < 1 || x >= GRID - 1 || z >= GRID - 1) return null;
+  const from = elevation(base, edits, tile);
+  const to = action === 'lower' ? from - 1 : action === 'raise' ? from + 1 : 0;
+  if (to === from || to > HILL_MAX || to < lowestElevation(base, tile)) return null;
+  // Each storey costs what that kind of earthwork costs: cheap to take a hill down or build one,
+  // dear to dig into the ground or fill it back in.
+  let cost = 0;
+  for (let e = from; e !== to; e += to > from ? 1 : -1) {
+    const next = e + (to > from ? 1 : -1);
+    cost += to > from ? (e < 0 ? COST_FILL : COST_RAISE) : (next < 0 ? COST_DIG : COST_LOWER);
+  }
+  return { value: elevationValue(base, tile, to), cost };
+}
+
+/** Whether this tile may be lowered, raised or flattened. */
+export function terraformAllowed(base: Terrain, edits: Uint8Array, tile: number, action: TerraformAction): boolean {
+  return terraformStep(base, edits, tile, action) !== null;
 }

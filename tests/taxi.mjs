@@ -32,7 +32,8 @@ assert.equal(layer.mesh.children.filter(m => m.count > 0).length, 2, 'taxi body 
 const { demoCity } = await import('../src/demo.ts');
 const city = demoCity(true);
 let taxiSites = [];
-for (let i = 0; i < C.N_TILES; i++) if (city.kind[i] === C.T_BUS) { city.kind[i] = C.T_TAXI; taxiSites.push(i); }
+// Every bus stop becomes a taxi stand, alongside the stands the demo already has.
+for (let i = 0; i < C.N_TILES; i++) if (city.kind[i] === C.T_BUS || city.kind[i] === C.T_TAXI) { city.kind[i] = C.T_TAXI; taxiSites.push(i); }
 assert.ok(taxiSites.length >= 2);
 let state, clock, frames = 0, moved = false, peak = 0, passengers = 0, seen = new Map(), report;
 globalThis.self = { postMessage: m => {

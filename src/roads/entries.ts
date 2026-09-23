@@ -19,6 +19,34 @@ const offMap = (x: number, z: number): boolean => x < 0 || z < 0 || x > GRID || 
 export const entryGate = (node: { x: number; z: number }): { x: number; z: number; dx: number; dz: number } => entrySite(node.x, node.z);
 
 /**
+ * The gates on the map edge: one for each entrance whose road actually comes onto the map. Followed
+ * from its far end along the road (through interchanges, staying on the same kind of road), an
+ * entrance either reaches a node inside the map, and its gate is where that road meets the edge, or
+ * it stays outside, like the motorway that passes the city by, and has no gate.
+ */
+export function mapGates(net: Network): { x: number; z: number; dx: number; dz: number }[] {
+  const inside = (n: { x: number; z: number }): boolean => n.x >= 0 && n.z >= 0 && n.x <= GRID && n.z <= GRID;
+  const gates: { x: number; z: number; dx: number; dz: number }[] = [];
+  for (const entry of net.nodes.values()) {
+    if (!entry.entry) continue;
+    let at = entry, seg = net.segsAt(entry.id)[0];
+    const seen = new Set<number>([entry.id]);
+    while (seg) {
+      const next = net.nodes.get(seg.a === at.id ? seg.b : seg.a)!;
+      if (inside(next)) { gates.push(entrySite(next.x, next.z)); break; }
+      if (seen.has(next.id)) break;
+      seen.add(next.id);
+      // Carry on along the same road: at an interchange the continuation is the arm of the same kind.
+      const kind = seg.kind, from = seg;
+      seg = net.segsAt(next.id).find(s => s.id !== from.id && s.kind === kind && (!s.oneway || s.a === next.id))
+        ?? net.segsAt(next.id).find(s => s.id !== from.id && s.kind === kind)!;
+      at = next;
+    }
+  }
+  return gates;
+}
+
+/**
  * Carry every entrance out past the map edge. Traffic from outside the city is created and retired at the
  * far end of that stretch, so cars roll in from off the map instead of appearing on the doorstep, and the
  * queue to leave forms out there rather than across the entrance itself.

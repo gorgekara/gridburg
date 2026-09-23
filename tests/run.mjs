@@ -32,7 +32,7 @@ const { defaultFunding, LOAN_TOTAL, LOAN_AMOUNT, NEGLECT_LIMIT } = await import(
 const { gridPoint, roadPoint, buildingRotation } = await import('../src/placement.ts');
 const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater } = await import('../src/terrain.ts');
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
-const { ensureApproaches, APPROACH } = await import('../src/roads/entries.ts');
+const { ensureApproaches, APPROACH, mapGates } = await import('../src/roads/entries.ts');
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`✓ ${name}`); }
 
@@ -281,8 +281,8 @@ function landPatches(water) {
 }
 
 test('river valleys never move: the same maps every seed has always made', () => {
-  // Recorded from the original generator. The demo city and saved cities depend on it.
-  const golden = '69b03eec a72d6265 69020fd6 bb0fdf3a 623474d1 2041838b b6f8bdee 506f4201 17e74ff3 52defdfe 51f43905 6547e6b3 841a48e0 f20a9953 af8ce1da f8f1ec87 85d4d797 7aa0bc57 c7dfaf0c 2d5956db aacd8a34 d8e45250 90bb1bc6 16506900 e3c5ff2b bd562806 7b44873a 414bdc04 7126d800 291d5de7';
+  // Recorded when the river was given its source on the map. The demo city and saved cities depend on it.
+  const golden = 'f272459c 3ea82131 ba8277cb f0fd2f71 477952c3 31602100 0395ad58 5928309e af3927f2 d8576852 5af6c196 b9d936e1 91b8c17d 1e1dace5 09059278 98f8760c 756d6448 127a3edb 1308917d bc08d156 f3e65eac 71166345 be710460 05fb1ecf 5952e065 4cf5a13c f220eaeb 3d33125e a0616741 4c1f6c69';
   const digests = [];
   for (let seed = 1; seed <= 30; seed++) {
     digests.push(terrainDigest(generateTerrain(seed)));
@@ -540,21 +540,23 @@ test('a new map has a motorway, a crossing highway with a cloverleaf, and entrie
   assert.equal(entries.length, 6, 'The motorway comes in from both ends of the map, the crossing highway from the outside');
   for (const entry of entries) {
     const outside = Math.min(entry.x, entry.z, C.GRID - entry.x, C.GRID - entry.z);
-    assert.ok(outside <= -APPROACH + 1, `Entry should sit ${APPROACH} cells beyond the edge, got ${outside}`);
+    assert.ok(outside <= -APPROACH + 1, `Entry should sit at least ${APPROACH} cells beyond the edge, got ${outside}`);
     const approach = net.segsAt(entry.id);
-    assert.equal(approach.length, 1);
-    assert.ok(Math.abs(approach[0].len - APPROACH) < 0.01, `Approach length ${approach[0].len}`);
+    assert.equal(approach.length, 1, 'An entry is the far end of one carriageway');
     assert.ok(approach[0].oneway && N.isCarriageway(approach[0].kind), 'The approach is one carriageway of a highway');
-    const gateId = approach[0].a === entry.id ? approach[0].b : approach[0].a;
-    const gate = net.nodes.get(gateId);
-    assert.ok(net.segsAt(gateId).length === 2, 'The gate joins the approach to the carriageway');
-    assert.ok(Math.min(gate.x, gate.z, C.GRID - gate.x, C.GRID - gate.z) <= 0.5, 'The gate sits on the map edge');
-    // Traffic runs the same way on the approach as on the carriageway it continues.
-    const inner = net.segsAt(gateId).find(s => s.id !== approach[0].id);
-    const leaving = approach[0].a === gateId, continues = inner.a === gateId;
-    assert.notEqual(leaving, continues, 'An approach carries traffic straight on, not back on itself');
   }
   const kinds = [...net.segs.values()];
+  // The motorway and its cloverleaf stand entirely outside the map; only the crossing highway comes on, a little way.
+  const hl = highwayLayout(terrain), ent = terrain.entry;
+  const inwardOf = (x, z) => ent.dx ? (x - ent.x) * ent.dx : (z - ent.z) * ent.dz;
+  for (const s of kinds) {
+    if (s.kind === N.KIND_HIGHWAY2) continue;
+    for (let k = 0; k <= s.n; k++) assert.ok(inwardOf(s.pts[k * 2], s.pts[k * 2 + 1]) < -0.5, `${s.kind === N.KIND_RAMP ? 'Ramps' : 'The motorway'} keep off the map`);
+  }
+  const gates = mapGates(net);
+  assert.equal(gates.length, 2, 'Only the crossing highway has gates on the map edge');
+  assert.ok(gates.every(g => Math.abs(inwardOf(g.x, g.z) - 0.5) < 0.01), 'Both gates sit where the highway crosses the edge');
+  assert.ok(gates.every(g => Math.abs((ent.dx ? g.z : g.x) - hl.cross) <= 1.01), 'at the crossing highway');
   assert.equal(kinds.filter(s => s.kind === N.KIND_MOTORWAY && s.structure === 1).length, 2, 'The motorway bridges the crossing highway at the cloverleaf');
   // Cloverleaf: four four-piece arcs and four loops of five or six pieces.
   const rampPieces = kinds.filter(s => s.kind === N.KIND_RAMP).length;
@@ -733,11 +735,11 @@ test('nothing but waterside works stands where the river is drawn', () => {
 test('railways connect themselves, and a station by an entrance runs out of town', () => {
   const city = demoCity(true);
   const stations = Array.from(city.kind, (k, i) => k === C.T_STATION ? i : -1).filter(i => i >= 0);
-  assert.ok(stations.length > 1, 'The demo has two stations');
+  assert.ok(stations.length > 1, 'The demo has several stations');
   load(city);
   send({ type: 'warm', ticks: 150 });
   const transport = latest().stats.transport;
-  assert.equal(transport.railLines, 1, 'Two stations pair up on their own');
+  assert.equal(transport.railLines, stations.length - 1, `Stations pair up on their own, each with its nearest neighbour (${stations.length} stations, ${transport.railLines} lines, ${JSON.stringify(stations.map(i => [i % C.GRID, Math.floor(i / C.GRID)]))})`);
   assert.equal(transport.intercityLines, 1, 'The station nearest the city entrance also runs out of town');
 
   // Those trains carry people who would otherwise arrive and leave by road.
@@ -757,9 +759,9 @@ test('railways connect themselves, and a station by an entrance runs out of town
   assert.deepEqual(far, [], 'Stations beyond the range of an entrance stay local');
   assert.deepEqual(intercityStations([{ x: stations[0] % C.GRID, z: Math.floor(stations[0] / C.GRID) }], stations), [stations[0]]);
 
-  // Demolishing a station takes its services with it.
+  // Demolishing stations takes their services with them: one left on its own makes no line.
   const razed = { ...city, kind: Uint8Array.from(city.kind) };
-  for (const t of footprint(stations[1], C.T_STATION)) razed.kind[t] = 0;
+  for (const s of stations.slice(1)) for (const t of footprint(s, C.T_STATION)) razed.kind[t] = 0;
   load(razed);
   send({ type: 'warm', ticks: 30 });
   assert.equal(latest().stats.transport.railLines, 0, 'One station cannot make a line by itself');
@@ -942,18 +944,22 @@ test('recycling keeps industrial pollution down', () => {
   const dirty = demoCity(true);
   load(dirty);
   send({ type: 'warm', ticks: 150 });
-  const unregulated = latest().stats.resPollution;
+  // Across the whole city: the demo keeps homes well away from its industry.
+  const total = () => latest().pollution.reduce((sum, v) => sum + v, 0);
+  const unregulated = total();
   load(dirty);
   send({ type: 'policy', id: 'recycling', on: true });
   send({ type: 'warm', ticks: 150 });
-  const regulated = latest().stats.resPollution;
+  const regulated = total();
   assert.ok(regulated < unregulated, `Recycling should cut pollution: ${regulated} vs ${unregulated}`);
-  console.log(`  Ground pollution under homes: ${unregulated.toFixed(2)} unregulated, ${regulated.toFixed(2)} with recycling`);
+  console.log(`  Ground pollution across the city: ${unregulated} unregulated, ${regulated} with recycling`);
 });
 test('additional entries persist and reach disconnected neighborhoods', () => {
   const city = demoCity(), net = Network.fromPlain(city.net), terrain = generateTerrain(city.seed);
+  // The demo is built right up to the map edge: clear a patch of farmland on the south edge first.
+  for (let z = 68; z < C.GRID; z++) for (let x = 5; x < 16; x++) { city.kind[z * C.GRID + x] = 0; city.level[z * C.GRID + x] = 0; }
   let planned;
-  for (const [x, z] of [[79, 10], [79, 65], [10, 79], [65, 1]]) {
+  for (const [x, z] of [[10, 79], [79, 10], [79, 65], [65, 1]]) {
     const result = entrancePlan(net, terrain, city.kind, x, z);
     if (typeof result !== 'string') { planned = result; break; }
   }
@@ -977,7 +983,7 @@ test('additional entries persist and reach disconnected neighborhoods', () => {
   const tile = Array.from(r.accSeg).findIndex((id, i) => served.has(id) && !r.cover[i] && !terrain.water[i] && !terrain.shore[i]);
   assert.ok(tile >= 0); city.kind[tile] = C.T_RES; city.level[tile] = 1; city.net = planned.toPlain();
   const restored = decode(encode(city)); load(restored);
-  assert.equal(latest().stats.entries, 4, 'The motorway counts one gate at each end, the crossing highway one, plus the new entrance');
+  assert.equal(latest().stats.entries, 2, 'The crossing highway counts one gate on the edge (the motorway never comes onto the map), plus the new entrance');
   assert.equal(latest().flags[tile] & C.F_NO_ROAD, 0);
 });
 test('offices provide clean jobs, obey unlocks and explain education requirements', () => {
@@ -1076,8 +1082,11 @@ test('expanded demo runs actual buses, transit ridership and flights; rail stays
 test('transport stops operating after utilities fail or a station is removed', () => {
   const city = demoCity(true); load(city); send({ type: 'warm', ticks: 150 });
   city.level.set(latest().level);
-  const station = city.kind.findIndex(k => k === C.T_STATION); city.kind[station] = 0; city.level[station] = 0;
-  load(city); assert.equal(latest().stats.transport.railLines, 0);
+  // Take away every station but one: a lone station makes no line.
+  const stations = Array.from(city.kind, (k, i) => k === C.T_STATION ? i : -1).filter(i => i >= 0);
+  const before = latest().stats.transport.railLines;
+  for (const station of stations.slice(1)) { city.kind[station] = 0; city.level[station] = 0; }
+  load(city); assert.ok(before > 0); assert.equal(latest().stats.transport.railLines, 0);
   for (let i = 0; i < C.N_TILES; i++) if (C.SERVICES[city.kind[i]]?.power) city.kind[i] = 0;
   load(city);
   assert.equal(latest().stats.transport.busLines, 0);
@@ -1102,21 +1111,46 @@ test('raised ground: hills pile up a storey at a time, block building and roads,
   assert.ok(patch.every(i => X.hillLevel(g.extras.terraform[i]) === X.HILL_MAX), 'Hills top out');
   assert.ok(patch.every(i => !g.buildable(i)), 'Nothing builds on raised ground');
   assert.ok(g.hillMask[patch[0]] === 1 && g.hillMask[free[20]] === 0);
-  assert.ok(!X.terraformAllowed(t, g.extras.terraform, patch[0], 'dig'), 'A hill has to come down before it can be dug');
+  assert.ok(X.elevation(t, g.extras.terraform, patch[0]) === X.HILL_MAX, 'A hill stands four storeys up');
+  // Digging goes a storey deeper each pass, up to three, and filling brings it back up.
+  const pit = free.slice(9, 13);
+  assert.equal(g.terraform(pit, 'lower').changed, 4);
+  assert.equal(g.terraform(pit, 'lower').changed, 4, 'A second pass digs deeper');
+  assert.ok(pit.every(i => X.digLevel(g.extras.terraform[i]) === 2));
+  g.terraform(pit, 'lower'); g.terraform(pit, 'lower');
+  assert.ok(pit.every(i => X.digLevel(g.extras.terraform[i]) === X.DIG_MAX), 'Pits bottom out');
+  assert.ok(X.digLevel(decode(encode(g.snapshot())).extras.terraform[pit[0]]) === X.DIG_MAX, 'Deep pits survive a save');
+  assert.ok(pit.every(i => g.terrain.water[i] === 1), 'Dug ground is water');
+  assert.equal(g.terraform(pit, 'raise').changed, 4);
+  assert.ok(pit.every(i => X.digLevel(g.extras.terraform[i]) === X.DIG_MAX - 1), 'Filling brings a pit up a storey');
+  const deep = new W.WaterSim(t, g.extras.terraform);
+  assert.ok(deep.ground[pit[0]] < -2 && deep.ground[free[20]] === 0, 'The water sees the pit as deep ground');
   const back = decode(encode(g.snapshot()));
   assert.equal(X.hillLevel(back.extras.terraform[patch[0]]), X.HILL_MAX, 'Hills survive a save');
   assert.equal(g.terraform(patch, 'lower').changed, 9);
   assert.equal(X.hillLevel(g.extras.terraform[patch[0]]), X.HILL_MAX - 1);
-  for (let k = 0; k < 5; k++) g.terraform(patch, 'lower');
+  for (let k = 0; k < 3; k++) g.terraform(patch, 'lower');
   assert.ok(patch.every(i => g.extras.terraform[i] === 0 && g.buildable(i)), 'Lowered all the way, the ground is level and buildable again');
+  g.terraform(patch, 'lower');
+  assert.ok(patch.every(i => X.digLevel(g.extras.terraform[i]) === 1), 'and one more pass digs in');
+  g.terraform(patch, 'raise'); g.terraform(patch, 'raise'); g.terraform(patch, 'raise');
+  assert.ok(patch.every(i => X.hillLevel(g.extras.terraform[i]) === 2), 'Raising fills the hole and then builds up');
+  assert.equal(g.terraform(patch, 'flat').changed, 9);
+  assert.ok(patch.every(i => g.extras.terraform[i] === 0), 'Flatten puts it all back to level');
+  assert.equal(g.terraform(patch, 'flat').changed, 0, 'and has nothing to do on level ground');
   assert.ok(g.stats.money < money, 'Moving earth costs money');
   const { HillLayer } = hillsModule;
   const layer = new HillLayer();
   g.terraform(patch, 'raise'); g.terraform(patch, 'raise');
-  layer.rebuild(g.extras.terraform);
+  layer.rebuild(new W.WaterSim(t, g.extras.terraform).ground);
   const cx = patch[4] % C.GRID + 0.5 - 40, cz = Math.floor(patch[4] / C.GRID) + 0.5 - 40;
   assert.ok(layer.heightAt(cx, cz) > 0.5, `The mound rises over the raised cells (${layer.heightAt(cx, cz).toFixed(2)})`);
-  assert.equal(layer.heightAt(cx + 12, cz + 12), 0, 'and is flat away from them');
+  // Flat where there is neither hill nor river: a dry tile with dry neighbours, well away from the mound.
+  const dry = free.find(i => Math.hypot(i % C.GRID - patch[4] % C.GRID, Math.floor(i / C.GRID) - Math.floor(patch[4] / C.GRID)) > 10 && [-2, -1, 0, 1, 2].every(dx => [-2, -1, 0, 1, 2].every(dz => !t.water[(Math.floor(i / C.GRID) + dz) * C.GRID + i % C.GRID + dx] && !t.shore[(Math.floor(i / C.GRID) + dz) * C.GRID + i % C.GRID + dx])));
+  assert.ok(Math.abs(layer.heightAt(dry % C.GRID + 0.5 - 40, Math.floor(dry / C.GRID) + 0.5 - 40)) < 0.05, 'and is flat away from them');
+  const flows = [...Array(C.N_TILES).keys()].filter(i => t.water[i]).map(i => t.flow[i]), midFlow = (Math.min(...flows) + Math.max(...flows)) / 2;
+  const riverTile = [...Array(C.N_TILES).keys()].find(i => t.water[i] && t.flow[i] > midFlow && i % C.GRID > 5 && i % C.GRID < 75 && i > 5 * C.GRID && i < 75 * C.GRID);
+  assert.ok(layer.heightAt(riverTile % C.GRID + 0.5 - 40, Math.floor(riverTile / C.GRID) + 0.5 - 40) < -0.5, 'The river runs in a channel cut into the relief');
 });
 
 test('transport placement enforces unlocks and clearing a site removes its whole reservation', () => {
@@ -1190,7 +1224,9 @@ test('hospitals heal and police headquarters patrol like the smaller buildings t
     for (const i of order) {
       const cells = footprint(i, k);
       if (!cells.length || r.accSeg[i] < 0) continue;
-      if (cells.some(t => city.kind[t] || r.cover[t] || terrain.water[t] || terrain.shore[t] || owners[t] >= 0)) continue;
+      // Zoned lots may be cleared for them; other buildings stay.
+      if (cells.some(t => (city.kind[t] && !C.isZone(city.kind[t])) || r.cover[t] || terrain.water[t] || terrain.shore[t] || owners[t] >= 0)) continue;
+      for (const t of cells) { city.kind[t] = 0; city.level[t] = 0; }
       city.kind[i] = k; city.level[i] = 1; return i;
     }
     return -1;
@@ -1253,7 +1289,6 @@ test('fishing docks employ people and sell a catch that sewage upstream spoils',
   const city = demoCity();
   const net = Network.fromPlain(city.net); ensureApproaches(net);
   const r = rasterize(net), terrain = generateTerrain(city.seed);
-  const outlet = city.kind.findIndex(k => k === C.T_OUTLET);
   // Bank tiles a dock or an outlet could stand on, from upstream to downstream.
   const banks = [];
   for (let i = 0; i < C.N_TILES; i++) {
@@ -1268,7 +1303,8 @@ test('fishing docks employ people and sell a catch that sewage upstream spoils',
   // The same dock, first with the city's outlet gone, then with an outlet just upstream of it.
   const run = (fouled) => {
     const withDock = { ...city, kind: Uint8Array.from(city.kind), level: Uint8Array.from(city.level) };
-    withDock.kind[outlet] = 0; withDock.level[outlet] = 0;
+    // The city's own outlets go, so only the one this test adds can foul the river.
+    for (let i = 0; i < C.N_TILES; i++) if (withDock.kind[i] === C.T_OUTLET || withDock.kind[i] === C.T_TREATMENT) { withDock.kind[i] = 0; withDock.level[i] = 0; }
     if (fouled) { withDock.kind[source.i] = C.T_OUTLET; withDock.level[source.i] = 1; }
     withDock.kind[dock.i] = C.T_DOCKS; withDock.level[dock.i] = 1;
     load(withDock);
@@ -1389,7 +1425,8 @@ test('cars park along built streets, clear of traffic lanes, junctions and round
     const hit = net.nearestSeg(p.x + 40, p.z + 40, 2);
     assert.ok(hit, 'A parked car sits beside a street');
     const lane = hit.seg.kind === KIND_AVENUE ? 0.64 : 0.18;
-    assert.ok(hit.dist - 0.075 >= lane + 0.085 - 1e-3, `Parked car ${hit.dist.toFixed(3)} from the centre of a ${ROAD_LABEL[hit.seg.kind]} blocks its lane`);
+    // A few thousandths of slack: on a curve the nearest point of the centre line sits a hair closer than the kerb offset.
+    assert.ok(hit.dist - 0.075 >= lane + 0.085 - 5e-3, `Parked car ${hit.dist.toFixed(3)} from the centre of a ${ROAD_LABEL[hit.seg.kind]} blocks its lane (at ${(p.x + 40).toFixed(1)}, ${(p.z + 40).toFixed(1)})`);
     assert.ok(Math.abs(hit.dist - (HALF_WIDTH[hit.seg.kind] + PARK_INSET)) < 0.03, 'Parked at the kerb of its own street');
     assert.ok(!net.nodes.get(hit.seg.a).ring && !net.nodes.get(hit.seg.b).ring, 'Nobody parks on a roundabout');
     for (const node of [hit.seg.a, hit.seg.b]) {
@@ -1468,7 +1505,7 @@ test('floods spare what a barrier protects, and tornadoes damage what they cross
   for (let t = 0; t < 5000; t++) d.step(ctx);
   assert.equal(d.active, null, 'Switched off, nothing new starts');
 });
-test('districts, per-zone taxes, terraforming and scenarios survive a save', () => {
+test('districts, per-zone taxes and terraforming survive a save', () => {
   const city = demoCity(true);
   city.extras = X.defaultExtras(10);
   city.extras.taxes = [8, 14, 11, 16];
@@ -1478,7 +1515,6 @@ test('districts, per-zone taxes, terraforming and scenarios survive a save', () 
   const t = generateTerrain(city.seed);
   const dry = [...Array(C.N_TILES).keys()].find(i => { const x = i % C.GRID, z = Math.floor(i / C.GRID); return x > 2 && z > 2 && !t.water[i] && !city.kind[i]; });
   city.extras.terraform[dry] = X.DUG;
-  city.extras.scenario = { id: 'rustbelt', startTick: 5 };
   const back = decode(encode(city));
   assert.deepEqual(back.extras.taxes, [8, 14, 11, 16]);
   assert.equal(back.extras.district[1200], 3);
@@ -1486,15 +1522,35 @@ test('districts, per-zone taxes, terraforming and scenarios survive a save', () 
   assert.equal(back.extras.districtPolicies[2], 0b101);
   assert.equal(back.extras.terraform[dry], X.DUG);
   assert.equal(X.shapeTerrain(t, back.extras.terraform).water[dry], 1, 'Dug ground is water');
-  assert.deepEqual(back.extras.scenario, { id: 'rustbelt', startTick: 5, done: undefined });
   // Any river tile can be filled or built up, dams included: the water then has to deal with it.
   const wet = [...Array(C.N_TILES).keys()].filter(i => t.water[i] && i % C.GRID > 0 && i % C.GRID < C.GRID - 1 && i >= C.GRID && i < C.N_TILES - C.GRID);
   const none = new Uint8Array(C.N_TILES);
-  assert.ok(wet.every(i => X.terraformAllowed(t, none, i, 'fill') && X.terraformAllowed(t, none, i, 'raise')), 'Any river tile may be filled or raised');
+  assert.ok(wet.every(i => X.terraformAllowed(t, none, i, 'raise') && X.terraformAllowed(t, none, i, 'flat') && X.terraformAllowed(t, none, i, 'lower')), 'Any river tile may be filled, flattened or deepened');
+  assert.equal(X.elevationValue(t, wet[0], 0), X.FILLED, 'Raising the river once makes land of it');
+  assert.equal(X.elevation(t, none, wet[0]), -1, 'The river bed is one storey down');
   const dam = none.slice();
   dam[wet[10]] = X.FILLED; dam[wet[11]] = X.HILL_BASE + 1;
   assert.equal(X.shapeTerrain(t, dam).water[wet[10]], 0, 'Filled river tiles are land');
   assert.equal(X.shapeTerrain(t, dam).water[wet[11]], 0, 'Raised river bed is land');
+});
+const landscapeForRiver = await import('../src/render/landscape.ts');
+test('beyond the map the river falls into a gorge and runs on in a channel as deep as where it leaves', () => {
+  const { landscapeHeight, riverSamples } = landscapeForRiver;
+  const t = generateTerrain(214), samples = riverSamples(t), water = new W.WaterSim(t);
+  const beyond = samples.filter(p => Math.max(Math.abs(p.x), Math.abs(p.z)) > C.GRID / 2 + 2);
+  assert.ok(beyond.length > 50, 'The river carries on past the map edge');
+  const floor = water.edgeGround().after;
+  for (const p of beyond) {
+    // Below the falls the whole channel sits the waterfall's height lower.
+    const bed = landscapeHeight(p.x, p.z, t.seed, samples);
+    assert.ok(Math.abs(bed - (floor + p.y)) < 0.3, `The channel beyond the map is as deep as the bed where the river leaves (${bed.toFixed(2)} vs ${(floor + p.y).toFixed(2)})`);
+  }
+  const pastEdge = samples.filter(p => Math.max(Math.abs(p.x), Math.abs(p.z)) > C.GRID / 2);
+  assert.ok(pastEdge.at(-1).y < -2.5 && pastEdge.some(p => p.y > -0.5), 'The river drops over a waterfall a little way past the edge');
+  // The water sits in it, above the channel floor, at the level it leaves the map.
+  for (let s = 0; s < W.WATER_HZ * 30; s++) water.step();
+  const exit = [...Array(C.N_TILES).keys()].filter(i => t.water[i]).sort((a, b) => t.flow[b] - t.flow[a])[0];
+  assert.ok(water.surface(exit) > floor + 0.5, 'and the river leaves the map well above that floor');
 });
 test('water flows down the river, gathers behind a dam until it spills, and drains when the dam goes', () => {
   const t = generateTerrain(214);
@@ -1521,9 +1577,11 @@ test('water flows down the river, gathers behind a dam until it spills, and drai
   for (let s = 0; s < W.WATER_HZ * 240; s++) water.step();
   assert.ok(mean(up) > after1, 'and it keeps rising');
   assert.ok(water.floodedCount > 10, `until it spills over the banks onto the land (${water.floodedCount} cells under water)`);
-  const visible = water.visible();
-  assert.ok(section.every(i => visible[i] !== visible[i]), 'The dam itself is dry');
-  assert.ok(up.some(i => visible[i] > 0), 'The lake shows above the river as drawn');
+  assert.ok(mean(down) < -0.15, `while the river below the dam drops, kept up only by what it gathers further down (${mean(down).toFixed(2)})`);
+  const frame = water.frame();
+  assert.ok(section.every(i => frame[i] !== frame[i]), 'The dam itself is dry');
+  assert.ok(up.some(i => frame[i] - water.normal[i] > 0), 'The lake stands above the river as drawn');
+  assert.ok(down.every(i => frame[i] - water.normal[i] < -0.05), 'and the drawn river below the dam sinks');
   water.reshape(new Uint8Array(C.N_TILES));
   for (let s = 0; s < W.WATER_HZ * 180; s++) water.step();
   assert.equal(water.floodedCount, 0, 'With the dam gone the floodwater drains away');
@@ -1535,6 +1593,29 @@ test('water flows down the river, gathers behind a dam until it spills, and drai
   water.surge = 1;
   for (let s = 0; s < W.WATER_HZ * 120; s++) water.step();
   assert.equal(water.floodedCount, 0, 'and the flood goes down when it passes');
+  // A basin dug away from the river fills from below into a lake.
+  const basin = [];
+  for (let z = 5; z < 9; z++) for (let x = 5; x < 9; x++) if (!t.water[z * C.GRID + x] && !t.shore[z * C.GRID + x]) basin.push(z * C.GRID + x);
+  const dugEdits = new Uint8Array(C.N_TILES);
+  for (const i of basin) dugEdits[i] = X.DUG;
+  water.reshape(dugEdits);
+  for (let s = 0; s < W.WATER_HZ * 90; s++) water.step();
+  assert.ok(basin.every(i => Math.abs(water.surface(i) - W.WATER_TABLE) < 0.05), 'Dug ground fills to the water table');
+  assert.ok(basin.every(i => water.frame()[i] === water.frame()[i]), 'and the lake is drawn');
+  // A channel dug round the dam carries the river past it: the old bed below the dam runs dry no longer.
+  const bypassEdits = new Uint8Array(C.N_TILES);
+  for (const i of section) bypassEdits[i] = X.HILL_BASE + 2;
+  const sideStep = across === 'x' ? 1 : C.GRID, alongStep = across === 'x' ? C.GRID : 1;
+  const outermost = Math.max(...section.map(i => across === 'x' ? i % C.GRID : Math.floor(i / C.GRID)));
+  const channel = [];
+  for (let k = -4; k <= 4; k++) for (let w = 1; w <= 3; w++) {
+    const i = section[0] + k * alongStep + (outermost - (across === 'x' ? section[0] % C.GRID : Math.floor(section[0] / C.GRID)) + w) * sideStep;
+    if (i >= 0 && i < C.N_TILES && !t.water[i]) { bypassEdits[i] = X.DUG; channel.push(i); }
+  }
+  water.reshape(bypassEdits);
+  for (let s = 0; s < W.WATER_HZ * 240; s++) water.step();
+  assert.ok(channel.some(i => water.depth[i] > 0.5), 'The river runs into the channel dug beside the dam');
+  assert.ok(mean(down) > -0.5, `and carries on below the dam through it (${mean(down).toFixed(2)})`);
   // A flood barrier lifts the ground it guards above the water.
   const kind = new Uint8Array(C.N_TILES);
   let guard = wet[Math.floor(wet.length / 2)];
@@ -1759,10 +1840,10 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
     // An avenue ring is wider than a road one, so judge each by its own circle.
     const ring = net.roundabouts()[0].r;
     [...net.nodes.values()].find(n => n.x === 8).entry = true;
-    const r = rasterize(net);
-    // Homes on two arms and jobs on the other two, so most commutes cross the ring.
+    const r = rasterize(net), ground = generateTerrain(city.seed);
+    // Homes on two arms and jobs on the other two, so most commutes cross the ring; nothing in the river.
     for (let i = 0; i < C.N_TILES; i++) {
-      if (r.cover[i] || r.accSeg[i] < 0) continue;
+      if (r.cover[i] || r.accSeg[i] < 0 || ground.water[i] || ground.shore[i]) continue;
       const x = i % C.GRID, z = (i / C.GRID) | 0;
       if (Math.hypot(x - cx, z - cz) < ring + 2.7) continue;
       city.kind[i] = x < cx - 3 || z < cz - 3 ? C.T_RES : (x + z) % 2 ? C.T_COM : C.T_IND; city.level[i] = 2;
@@ -1770,7 +1851,7 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
     city.net = net.toPlain();
     send({ type: 'load', ...city, serial: 1, cover: r.cover, accSeg: r.accSeg, accS: r.accS }); send({ type: 'speed', value: 1 });
     const still = new Map(), passed = new Set(), late = new Set();
-    let maxStill = 0, peak = 0, crashUntil = -1;
+    let maxStill = 0, peak = 0, crashUntil = -1, stuckAt = '';
     for (let tick = 0; tick < 240 * C.SIM_HZ; tick++) {
       simulateFrame();
       for (const m of messages) if (m.type === 'state' && m.stats.incidents.crashes > 0) crashUntil = tick + 2 * C.SIM_HZ;
@@ -1784,14 +1865,14 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
           if (near) { onRing++; passed.add(id); if (tick > 180 * C.SIM_HZ) late.add(id); }
           // A random collision legitimately blocks a lane for a while; only judge the junction outside those windows.
           if (!prev || tick < crashUntil || Math.hypot(prev.x - x, prev.z - z) > 0.01) still.set(id, { x, z, tick });
-          else if (Math.hypot(x - cx, z - cz) < ring + 3.7) maxStill = Math.max(maxStill, (tick - prev.tick) / C.SIM_HZ);
+          else if (Math.hypot(x - cx, z - cz) < ring + 3.7) { const wait = (tick - prev.tick) / C.SIM_HZ; if (wait > maxStill) { maxStill = wait; stuckAt = `${x.toFixed(1)},${z.toFixed(1)} type ${f.cars[n * 4 + 3]} from tick ${prev.tick}`; } }
         }
         peak = Math.max(peak, onRing);
       }
       messages.length = 0;
     }
     console.log(`  ${kind ? 'Avenue' : 'Road'} roundabout: ${passed.size} vehicles through, ${late.size} in the last minute, peak ${peak} on the ring, longest wait ${maxStill.toFixed(1)}s`);
-    assert.ok(maxStill < 15, `A vehicle sat still at the roundabout for ${maxStill.toFixed(1)}s`);
+    assert.ok(maxStill < 15, `A vehicle sat still at the roundabout for ${maxStill.toFixed(1)}s (at ${stuckAt})`);
     assert.ok(late.size >= 20, 'Traffic still flows through the ring at the end of the run');
     assert.ok(peak >= 8, 'The ring should actually be flooded');
   }

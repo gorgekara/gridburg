@@ -33,18 +33,20 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { GRID, MAX_CARS, RES_POP, SERVICES, isZone } from './constants';
+import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone } from './constants';
 import { HALF_WIDTH, Network } from './roads/network';
 import { roadHeight } from './roads/structures';
 import { serviceCoverage } from './coverage';
-import { entryGate } from './roads/entries';
+import { mapGates } from './roads/entries';
 import { footprintSize } from './sites';
 import { SERVICE_TOOL } from './input';
 import { TerraformLayer } from './render/terraform';
 import { HillLayer } from './render/hills';
-import { hillLevel } from './extras';
+import { hillLevel, digLevel } from './extras';
 import { DisasterLayer } from './render/disasters';
-import { FloodLayer } from './render/flood';
+import { WaterLayer } from './render/flood';
+import { WaterSim } from './sim/water';
+import { WaveField, waterUniforms } from './render/waves';
 import { DistrictLabels } from './render/districts';
 import { CyclistLayer } from './render/cyclists';
 import { CityPanels } from './ui/cityPanels';
@@ -52,7 +54,6 @@ import type { MapView } from './ui/cityPanels';
 import { CityAudio } from './audio';
 import { AchievementLog } from './achievements';
 import { TouchControls } from './ui/touch';
-import { scenarioById } from './scenarios';
 import { loadSlot } from './slots';
 import { DISTRICT_COLORS } from './extras';
 import { Disasters } from './sim/disasters';
@@ -89,14 +90,16 @@ const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
 landscape.hillHeight = (x, z) => hills.heightAt(x, z);
+landscape.setPits(hills.pitTexture);
 const disasterLayer = new DisasterLayer();
-const flood = new FloodLayer();
+const flood = new WaterLayer();
+const waves = new WaveField();
 const districtLabels = new DistrictLabels();
 const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.mesh, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -117,6 +120,7 @@ const hud = new Hud(uiRoot, {
   toggleDrive: () => { if (driver.active) driver.exit(); else startDriving(); },
   setElevation: (level) => input.setElevation(level),
   setBrush: (size) => { input.brushSize = size; },
+  setRingSize: (id) => { input.ringSize = id; },
   focusOn: (id) => {
     // Take the camera to whatever the message is about.
     const tileAt = (): { x: number; z: number } | null => {
@@ -192,7 +196,7 @@ const hud = new Hud(uiRoot, {
 
 input.onInspect = (tile) => game.inspect(tile);
 
-// ---- map views, statistics, districts, achievements, scenarios, saves ---------------------------
+// ---- map views, statistics, districts, achievements, saves ---------------------------------------
 const cityDay = (): number => Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1;
 const hex = (c: number): [number, number, number] => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
 /** Colour for a 0..255 map value on a red → yellow → green scale (or reversed for bad things). */
@@ -233,7 +237,6 @@ const panels = new CityPanels(uiRoot, hud.rightBar, hud.menuPopover, game, achie
   day: cityDay,
 }, d => { input.districtBrush = d; });
 panelsReady = true;
-panels.onScenarioDone = (result) => { audio.play(result === 'won' ? 'achievement' : 'error'); };
 input.onDistrict = () => { panels.refreshDistrict(); };
 function undo(): void {
   if (game.undo()) { audio.play('bulldoze'); hud.toast('Undone: the last change was taken back and refunded'); }
@@ -256,7 +259,7 @@ function afterState(): void {
   districts = seen.size;
   const counts = new Map<number, number>();
   for (const k of game.kind) counts.set(k, (counts.get(k) ?? 0) + 1);
-  const fresh = achievements.check({ stats: s, count: k => counts.get(k) ?? 0, districts, shaped, scenarioWon: game.extras.scenario?.done === 'won' });
+  const fresh = achievements.check({ stats: s, count: k => counts.get(k) ?? 0, districts, shaped });
   for (const a of fresh) { hud.toast(`Achievement: ${a.title} — ${a.text}`); audio.play('achievement'); }
   if (s.cityLevel > lastLevel && lastLevel >= 0) audio.play('chime');
   lastLevel = s.cityLevel;
@@ -403,7 +406,7 @@ const showTransitLines = (t: string): void => {
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
 };
 // Which entrances a railway can leave town through; recomputed with the network, not stored.
-const entryGates = (): { x: number; z: number }[] => [...game.net.nodes.values()].filter(n => n.entry).map(entryGate);
+const entryGates = (): { x: number; z: number }[] => mapGates(game.net);
 const showCoverage = (): void => {
   const k = SERVICE_TOOL[input.tool];
   overlay.setCoverage(k === undefined ? null : serviceCoverage(game.kind, k));
@@ -416,10 +419,17 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
-const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform, game.baseTerrain.water); hills.rebuild(game.extras.terraform); landscape.develop(game.kind, game.raster, game.net); };
+/** The ground and the river's normal level as the main thread knows them, for drawing the water at its simulated height. */
+let levels = new WaterSim(game.baseTerrain, game.extras.terraform, game.kind);
+flood.setTerrain(game.terrain);
+hills.setTerrain(game.terrain, levels.edgeGround());
+hills.rebuild(levels.ground);
+/** The ground as the water sees it, and the relief drawn from it: the river's channel, pits, hills and levees. */
+const refreshRelief = (): void => { levels = new WaterSim(game.baseTerrain, game.extras.terraform, game.kind); hills.rebuild(levels.ground); };
+const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform, game.baseTerrain.water); refreshRelief(); landscape.develop(game.kind, game.raster, game.net); };
 game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
 game.onUndo = () => { reshape(); };
-game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); river.rebuild(game.terrain); hud.resetProgress(); hud.update(game.stats); };
+game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); hills.setTerrain(game.terrain, levels.edgeGround()); hills.rebuild(levels.ground); river.rebuild(game.terrain, levels.edgeGround()); flood.setTerrain(game.terrain); flood.rebuild(null, levels); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   parkPaths.rebuild(game.parkPaths);
   showCoverage();
@@ -431,6 +441,7 @@ game.onEdit = () => {
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
+  refreshRelief();
   pedestrians.rebuild(game.net);
   furniture.rebuild(game.net, game.kind, game.raster);
   parked.rebuild(game.net, game.kind, game.level);
@@ -467,7 +478,33 @@ game.onFrame = () => {
   if (showTraffic) roads.tint(game.segOrder, game.segCong);
   roads.updateLights(game.simTime);
 };
-game.onWater = () => { flood.rebuild(game.waterSurface, game.baseTerrain.water); };
+/** Water tiles worth a random ripple: the river, and whatever it has spilled onto. */
+let wetTiles: number[] = [];
+let wetTilesFor = '';
+/** Drop ripples into the field: boats under way, the cascade, rain in a flood, and a light patter everywhere. */
+function stirWater(): void {
+  const half = GRID / 2;
+  const key = `${game.baseTerrain.seed}:${game.extras.terraform.reduce((n, v) => n + (digLevel(v) ? 1 : 0), 0)}`;
+  if (wetTilesFor !== key) {
+    wetTiles = []; wetTilesFor = key;
+    for (let i = 0; i < N_TILES; i++) if (game.baseTerrain.water[i] || digLevel(game.extras.terraform[i])) wetTiles.push(i);
+  }
+  waterUniforms.skyColor.value.copy(scene.background as THREE.Color);
+  boats.forEach((x, z, moving) => { if (moving) waves.drop(x + (Math.random() - 0.5) * 0.3, z + (Math.random() - 0.5) * 0.3, 0.7, 0.01); });
+  const foot = river.cascadeFoot;
+  if (foot.fall > 0.1) waves.drop(foot.x + (Math.random() - 0.5) * foot.w * 1.4 - half, foot.z + (Math.random() - 0.5) * 0.8 - half, 0.9, 0.02);
+  // The spring at the river's head bubbles.
+  const spring = game.baseTerrain.river[0];
+  if (spring && Math.random() < 0.5) waves.drop(spring.x + (Math.random() - 0.5) * 0.6 - half, spring.z + (Math.random() - 0.5) * 0.6 - half, 0.5, 0.012);
+  // A light patter on the river keeps it alive; in a flood it rains hard over everything.
+  const storm = game.disaster?.kind === 'flood';
+  for (let k = 0; k < (storm ? 10 : 2) && wetTiles.length; k++) {
+    const i = wetTiles[Math.floor(Math.random() * wetTiles.length)];
+    waves.drop(i % GRID + Math.random() - half, Math.floor(i / GRID) + Math.random() - half, storm ? 0.5 : 0.6, storm ? 0.02 : 0.006);
+  }
+  if (storm) for (let k = 0; k < 6; k++) waves.drop(Math.random() * GRID - half, Math.random() * GRID - half, 0.5, 0.02);
+}
+game.onWater = () => { flood.rebuild(game.waterSurface, levels, game.riverPollution); river.setLevels(game.waterSurface, game.baseTerrain.water); };
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
@@ -499,8 +536,7 @@ function applySettings(s: Settings): void {
 let quietEdits = false;
 function startCity(data: Parameters<typeof game.load>[0], message?: string): void {
   walker.exit(); driver.exit(); // a new map starts back on the overview
-  const scenario = data.extras?.scenario ? scenarioById(data.extras.scenario.id) : undefined;
-  game.disasterRate = scenario?.disasterRate ?? 1;
+  game.disasterRate = 1;
   quietEdits = true;
   game.load(data);
   quietEdits = false;
@@ -532,16 +568,6 @@ const menu: MainMenu = new MainMenu(uiRoot, {
   resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
   help: () => { menu.setOpen(false); hud.showWelcome(); },
   apply: (s) => applySettings(s),
-  startScenario: (id) => {
-    const sc = scenarioById(id);
-    if (!sc) return;
-    history.replaceState(null, '', location.pathname);
-    const data = sc.setup();
-    data.extras = { ...data.extras!, scenario: { id, startTick: data.tick } };
-    startCity(data, sc.brief);
-    if (id !== 'floodplain') { game.warm(110); focusCity(true); }
-    input.setTool('none');
-  },
   loadSlot: (name) => { const d = loadSlot(name); if (d) startCity(d, `Loaded “${name}”`); else hud.toast('That save could not be read'); },
 }, settings);
 
@@ -582,7 +608,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, frames: 0, layers: { hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 let last = performance.now();
@@ -616,11 +642,12 @@ renderer.setAnimationLoop((now: number) => {
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
   incidents.update(game.simTime);
   helicopters.update(now / 1000);
-  boats.update(now / 1000);
+  boats.update(now / 1000, (x, z) => { const s = game.waterSurface, tx = Math.floor(x + GRID / 2), tz = Math.floor(z + GRID / 2); if (!s || tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) return -0.25; const v = s[tz * GRID + tx]; return v === v ? v : -0.25; });
   pedestrians.update(dt, now / 1000);
   cyclists.update(dt);
   disasterLayer.update(now / 1000);
   flood.update(now / 1000);
+  stirWater();
   audio.update({
     traffic: game.stats.cars, height: camera.position.y, night: light.night,
     emergencies: game.stats.incidents.fireEngines + (game.stats.incidents.fires + game.stats.incidents.heists ? game.stats.incidents.patrols : 0),
@@ -632,5 +659,6 @@ renderer.setAnimationLoop((now: number) => {
   cars.update(game.carsPrev, game.carsNext, alpha, game.carIdsPrev, game.carIdsNext, game.carHeights, game.prevCarHeights, game.carPitch);
   buildings.update(now / 1000);
   overlay.update(now / 1000);
+  waves.step(renderer);
   renderer.render(scene, camera);
 });

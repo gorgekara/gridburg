@@ -23,7 +23,7 @@ import { emptyStats } from './sim/messages';
 import type { EditPayload, MainToWorker, Stats, WorkerToMain, TileReport } from './sim/messages';
 
 import type { SaveData } from './save';
-import { cloneExtras, defaultExtras, shapeTerrain, terraformAllowed, hillLevel, DUG, FILLED, HILL_BASE, COST_DIG, COST_FILL, COST_RAISE, COST_LOWER } from './extras';
+import { cloneExtras, defaultExtras, shapeTerrain, terraformStep, hillLevel, elevation } from './extras';
 import type { TerraformAction } from './extras';
 import type { CityExtras, Taxes } from './extras';
 import type { CityMaps } from './sim/messages';
@@ -46,7 +46,7 @@ export class Game {
   extras: CityExtras = defaultExtras();
   maps: CityMaps | null = null;
   disaster: DisasterView | null = null;
-  /** Scales how often disasters strike; scenarios set it. */
+  /** Scales how often disasters strike. */
   disasterRate = 1;
   private undoStack: UndoStep[] = [];
   private committed: SaveData | null = null;
@@ -311,7 +311,7 @@ export class Game {
     const restored: SaveData = {
       ...step.before, money: now.money + Math.max(0, step.spent), tick: now.tick, cityLevel: now.cityLevel,
       incidents: now.incidents, debt: now.debt, funding: now.funding, policies: now.policies,
-      extras: { ...cloneExtras(step.before.extras ?? this.extras), taxes: [...this.extras.taxes] as Taxes, districtPolicies: [...this.extras.districtPolicies], districtNames: [...this.extras.districtNames], scenario: this.extras.scenario, disasters: this.extras.disasters },
+      extras: { ...cloneExtras(step.before.extras ?? this.extras), taxes: [...this.extras.taxes] as Taxes, districtPolicies: [...this.extras.districtPolicies], districtNames: [...this.extras.districtNames], disasters: this.extras.disasters },
     };
     const stack = this.undoStack;
     this.load(restored, true);
@@ -422,19 +422,14 @@ export class Game {
   terraform(tiles: number[], action: TerraformAction): { changed: number; broke: boolean } {
     let changed = 0, broke = false;
     for (const t of tiles) {
-      if (!terraformAllowed(this.baseTerrain, this.extras.terraform, t, action)) continue;
-      if (this.raster.cover[t] || this.owners[t] >= 0 || (this.kind[t] && action !== 'fill')) continue;
-      const cost = action === 'dig' ? COST_DIG : action === 'fill' ? COST_FILL : action === 'raise' ? COST_RAISE : COST_LOWER;
-      if (!this.canAfford(cost)) { broke = true; break; }
-      const v = this.extras.terraform[t];
-      if (action === 'raise') this.extras.terraform[t] = HILL_BASE + hillLevel(v) + 1;
-      else if (action === 'lower') this.extras.terraform[t] = hillLevel(v) > 1 ? v - 1 : 0;
-      else {
-        // Filling a dug pond, or digging out old fill, just puts the ground back as it was.
-        const undoes = (action === 'fill' && v === DUG) || (action === 'dig' && v === FILLED);
-        this.extras.terraform[t] = undoes ? 0 : action === 'dig' ? DUG : FILLED;
-      }
-      this.pendingSpent += cost;
+      const step = terraformStep(this.baseTerrain, this.extras.terraform, t, action);
+      if (!step) continue;
+      // Nothing under a road or a building, except bringing the ground up to level beneath a bankside works.
+      const landing = elevation(this.baseTerrain, this.extras.terraform, t) < 0 && action !== 'lower';
+      if (this.raster.cover[t] || this.owners[t] >= 0 || (this.kind[t] && !landing)) continue;
+      if (!this.canAfford(step.cost)) { broke = true; break; }
+      this.extras.terraform[t] = step.value;
+      this.pendingSpent += step.cost;
       changed++;
     }
     if (changed) {
@@ -505,7 +500,7 @@ export function highwayLayout(terrain: Terrain): HighwayLayout {
     ? { x: e.x + e.dx * inward, z: along }
     : { x: along, z: e.z + e.dz * inward };
   const front = e.dx ? e.z : e.x;
-  // The cloverleaf's arcs reach 13.5 cells each way along the motorway; keep them well inside the map.
+  // Where the crossing highway comes onto the map: well away from the map's corners.
   const cross = [30, 26, 22].flatMap(gap => [front + gap, front - gap]).find(at => at > 15.5 && at < GRID - 15.5);
   // Drive on the right: the inner carriageway runs the way that puts the city on its right-hand side.
   const alongX = e.dx === 0, ax = alongX ? 1 : 0, az = alongX ? 0 : 1;
@@ -517,11 +512,11 @@ export function highwayLayout(terrain: Terrain): HighwayLayout {
 }
 
 /**
- * A fresh map: a seeded river, a motorway running right across it just inside the roomier edge (one
- * carriageway each way), and a two-lane highway coming in from that edge under the motorway at a
- * cloverleaf, whose carriageways stop a little way past it. Traffic from outside arrives on the
- * motorway from either end and on the highway. The city grows from the streets the player joins to
- * the highway's two ends.
+ * A fresh map: a seeded river, a motorway passing the city by just outside its roomier edge (one
+ * carriageway each way), and a two-lane highway that leaves the motorway at a cloverleaf, also
+ * outside the map, and comes onto it a little way, where its carriageways stop. Only those two
+ * stubs take up buildable ground. Traffic from outside arrives on the motorway from either end and
+ * on the highway. The city grows from the streets the player joins to the highway's two ends.
  */
 export function newCity(seed: number): SaveData {
   const terrain = generateTerrain(seed);
@@ -533,16 +528,13 @@ export function newCity(seed: number): SaveData {
     const stops = second === undefined ? [from, to] : from < to
       ? [from, second - CLOVER_SPAN, second + CLOVER_SPAN, to] : [from, second + CLOVER_SPAN, second - CLOVER_SPAN, to];
     const ids: number[] = [];
-    for (let k = 0; k + 1 < stops.length; k++) ids.push(...net.insertPath([pos(stops[k], inward), pos(stops[k + 1], inward)], KIND_MOTORWAY, true, k === 1 ? 1 : 0));
+    for (let k = 0; k + 1 < stops.length; k++) ids.push(...net.insertPath([pos(stops[k], inward), pos(stops[k + 1], inward)], KIND_MOTORWAY, true, k === 1 ? 1 : 0, false));
     for (const id of ids) net.segs.get(id)!.fixed = true;
-    // Only the carriageway ends are entrances; nothing else this close to the edge is.
-    for (const id of [ids[0], ids[ids.length - 1]]) for (const n of [net.segs.get(id)!.a, net.segs.get(id)!.b]) {
-      const node = net.nodes.get(n)!;
-      if (node.x < 1 || node.z < 1 || node.x > GRID - 1 || node.z > GRID - 1) node.entry = true;
-    }
+    // The carriageway's two ends, far beyond the map's corners, are where its traffic comes and goes.
+    for (const along of [from, to]) { const end = net.nearestNode(pos(along, inward).x, pos(along, inward).z, 0.3); if (end) end.entry = true; }
   };
-  if (d > 0) { carriageway(0.5, GRID - 0.5, INNER); carriageway(GRID - 0.5, 0.5, OUTER); }
-  else { carriageway(GRID - 0.5, 0.5, INNER); carriageway(0.5, GRID - 0.5, OUTER); }
+  if (d > 0) { carriageway(-MOTORWAY_REACH, GRID + MOTORWAY_REACH, INNER); carriageway(GRID + MOTORWAY_REACH, -MOTORWAY_REACH, OUTER); }
+  else { carriageway(GRID + MOTORWAY_REACH, -MOTORWAY_REACH, INNER); carriageway(-MOTORWAY_REACH, GRID + MOTORWAY_REACH, OUTER); }
   if (second !== undefined) cloverleaf(net, pos, second, d, e);
   for (const n of net.nodes.values()) n.fixed = true;
   ensureApproaches(net);
@@ -552,13 +544,17 @@ export function newCity(seed: number): SaveData {
   };
 }
 
-/** Where the two carriageways run, measured in from the map edge. */
-export const OUTER = 10.5;
-export const INNER = 12.5;
-/** How far in from the map edge the city's first streets begin, clear of the motorway. */
-export const DOOR = 16.5;
-/** Where the crossing highway's two carriageways stop, side by side, on the city side: the city starts here. */
-export const HIGHWAY_END = 25.5;
+/** Where the two carriageways run, measured in from the map edge: outside it, so they take no buildable ground. */
+export const OUTER = -13.5;
+export const INNER = -11.5;
+/** How far past the map's corners the motorway runs before its traffic appears and vanishes. */
+const MOTORWAY_REACH = 18;
+/** How far in from the map edge the city's first streets begin, just past the highway's ends. */
+export const DOOR = 8.5;
+/** Where the crossing highway's two carriageways stop, side by side, a little way onto the map: the city starts here. */
+export const HIGHWAY_END = 5.5;
+/** Where the crossing highway comes from, beyond the cloverleaf's far arcs. */
+const HIGHWAY_FAR = -30;
 
 /**
  * The cloverleaf's loops: long along the motorway, short across it, because the outside quadrants
@@ -573,9 +569,10 @@ const CLOVER_DIRECT_ALONG = 12.5;
 const CLOVER_DIRECT_ACROSS = 8.5;
 
 /**
- * A full cloverleaf where a two-lane highway crosses under the motorway. The crossing highway comes
- * in from the map edge, passes the motorway, and ends a little way into the city side with its two
- * carriageways joined: the city is built out from that end. Every turn is served by a ramp: right
+ * A full cloverleaf where a two-lane highway crosses under the motorway, outside the map. The
+ * crossing highway comes from beyond it, passes the motorway, crosses the map edge and ends a
+ * little way in with its two carriageways side by side: the city is built out from those ends.
+ * Every turn is served by a ramp: right
  * turns take a direct slip road, a wide arc about the crossing that leaves before it and rejoins
  * after; left turns take a loop that leaves after the crossing and turns through 270° to join the
  * other road before it.
@@ -589,11 +586,11 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
   // Drive on the right: the carriageway heading into the map sits to the right of the one heading out.
   const s = dot(right(inDir), alongDir) > 0 ? 1 : -1;
   const x1 = along + s, x2 = along - s;
-  // The crossing highway: straight in from the edge, and each carriageway simply stops on the city
-  // side, side by side, for the player to carry on from.
-  fix(net.insertPath([pos(x1, 0.5), pos(x1, HIGHWAY_END)], KIND_HIGHWAY2, true));
-  fix(net.insertPath([pos(x2, HIGHWAY_END), pos(x2, 0.5)], KIND_HIGHWAY2, true));
-  for (const at of [x1, x2]) { const n = net.nearestNode(pos(at, 0.5).x, pos(at, 0.5).z, 0.3); if (n) n.entry = true; }
+  // The crossing highway: straight in from far outside, over the map edge, and each carriageway
+  // simply stops a little way in, side by side, for the player to carry on from.
+  fix(net.insertPath([pos(x1, HIGHWAY_FAR), pos(x1, HIGHWAY_END)], KIND_HIGHWAY2, true, 0, false));
+  fix(net.insertPath([pos(x2, HIGHWAY_END), pos(x2, HIGHWAY_FAR)], KIND_HIGHWAY2, true, 0, false));
+  for (const at of [x1, x2]) { const n = net.nearestNode(pos(at, HIGHWAY_FAR).x, pos(at, HIGHWAY_FAR).z, 0.3); if (n) n.entry = true; }
   // Every carriageway with its direction, and the crossing point with each carriageway of the other road.
   type Way = { at: number; u: { x: number; z: number }; main: boolean };
   const mains: Way[] = [{ at: INNER, u: { x: alongDir.x * d, z: alongDir.z * d }, main: true }, { at: OUTER, u: { x: -alongDir.x * d, z: -alongDir.z * d }, main: true }];
@@ -613,7 +610,7 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
         pts.push(world(world(P, A.u, -La * k * Math.cos(theta)), B.u, Lb * k * Math.sin(theta)));
       }
       pts.push(world(P, B.u, Lb));
-      fix(net.insertPath(pts, KIND_RAMP, true));
+      fix(net.insertPath(pts, KIND_RAMP, true, 0, false));
     } else {
       // Left turn: a loop leaving after the crossing, turning right through 270° to join B before it.
       const start = world(P, A.u, reachA), centre = world(start, rA, reachB), end = world(P, B.u, -reachB);
@@ -623,7 +620,7 @@ function cloverleaf(net: Network, pos: (along: number, inward: number) => { x: n
         pts.push({ x: centre.x - rA.x * reachB * k * Math.cos(theta) + A.u.x * reachA * k * Math.sin(theta), z: centre.z - rA.z * reachB * k * Math.cos(theta) + A.u.z * reachA * k * Math.sin(theta) });
       }
       pts.push(end);
-      fix(net.insertPath(pts, KIND_RAMP, true));
+      fix(net.insertPath(pts, KIND_RAMP, true, 0, false));
     }
   };
   for (const M of mains) for (const X of crossers) {

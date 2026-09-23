@@ -7,7 +7,6 @@ export interface AchievementContext {
   count(kind: number): number;
   districts: number;
   shaped: number;
-  scenarioWon: boolean;
 }
 
 export interface Achievement { id: string; title: string; text: string; check(c: AchievementContext): boolean }
@@ -36,7 +35,6 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'survivor', title: 'Weathered the storm', text: 'Come through a flood or a tornado', check: c => c.stats.disasters.floods + c.stats.disasters.tornadoes > 0 && !c.stats.disasters.active },
   { id: 'districts', title: 'Planner', text: 'Paint three districts', check: c => c.districts >= 3 },
   { id: 'terraform', title: 'Moving earth', text: 'Dig or fill twenty cells', check: c => c.shaped >= 20 },
-  { id: 'scenario', title: 'Mission accomplished', text: 'Win a scenario', check: c => c.scenarioWon },
 ];
 
 const KEY = 'gridburg.achievements.v1';

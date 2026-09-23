@@ -25,6 +25,7 @@ const I: Record<string, string> = {
   ramp: '<path d="M5 22V2M19 22c0-7-5-9-10-11M12 7l-3 4 4 1"/>',
   raise: '<path d="M3 20h18M5 20l5-9 3 5 2-3 4 7"/><path d="M13 6l2-3 2 3"/>',
   lower: '<path d="M3 20h18M6 20l4-6 3 3 2-2 3 5"/><path d="M13 4v5m-2-2 2 2 2-2"/>',
+  flat: '<path d="M3 20h18M3 15h18"/><path d="M12 4v7m-2-2 2 2 2-2"/>',
   brush1: '<circle cx="12" cy="12" r="2.5"/>',
   brush2: '<circle cx="12" cy="12" r="5.5"/>',
   brush3: '<circle cx="12" cy="12" r="9"/>',

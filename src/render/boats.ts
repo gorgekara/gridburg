@@ -13,6 +13,7 @@ interface Boat {
   phase: number;
   /** Seconds for one full trip out, fishing, and home again. */
   period: number;
+  moving?: boolean;
 }
 
 const LIVERY = [0xc8382f, 0x2f6fb7, 0xe0a021, 0x2e8b6a, 0xe8e4d8];
@@ -41,6 +42,11 @@ export class BoatLayer {
   readonly group = new THREE.Group();
   private boats: Boat[] = [];
   private signature = '';
+
+  /** Every boat's position and whether it is under way, for the ripples it leaves. */
+  forEach(visit: (x: number, z: number, moving: boolean) => void): void {
+    for (const boat of this.boats) visit(boat.mesh.position.x, boat.mesh.position.z, !!boat.moving);
+  }
 
   rebuild(kind: Uint8Array, terrain: Terrain): void {
     const docks: number[] = [];
@@ -84,7 +90,8 @@ export class BoatLayer {
     });
   }
 
-  update(time: number): void {
+  /** `levelAt` is the water surface at a world position, so boats ride at the river's actual level. */
+  update(time: number, levelAt?: (x: number, z: number) => number): void {
     const pos = new THREE.Vector2(), next = new THREE.Vector2();
     for (const boat of this.boats) {
       // A trip in six legs, as fractions of the period: leave the jetty, cross to the channel, run to
@@ -115,8 +122,9 @@ export class BoatLayer {
         }
         start = end;
       }
+      boat.moving = Math.hypot(next.x - pos.x, next.y - pos.y) > 0.005;
       const heading = Math.atan2(next.x - pos.x, next.y - pos.y);
-      boat.mesh.position.set(pos.x, 0.03 + Math.sin(time * 1.7 + boat.phase) * 0.012, pos.y);
+      boat.mesh.position.set(pos.x, (levelAt?.(pos.x, pos.y) ?? 0) + 0.03 + Math.sin(time * 1.7 + boat.phase) * 0.012, pos.y);
       if (Number.isFinite(heading) && (next.x !== pos.x || next.y !== pos.y)) boat.mesh.rotation.y = heading;
       boat.mesh.rotation.z = Math.sin(time * 1.3 + boat.phase) * 0.04;
     }
