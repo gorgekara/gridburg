@@ -13,6 +13,29 @@ export const OFFICE_LIT = 0xf4f6ff;
 const GLASS = 0x7fb6d6;
 
 /** Accumulates colored parts and merges them into one vertex-colored geometry. */
+/** A mass's underside is never seen (it stands on the ground or on the floor below): leave it out. */
+function dropUnderside(src: THREE.BufferGeometry, base: number): THREE.BufferGeometry {
+  const g = src.index ? src.toNonIndexed() : src;
+  const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
+  const keep: number[] = [];
+  for (let t = 0; t < p.count; t += 3) {
+    const under = n.getY(t) < -0.9 && Math.abs(p.getY(t) - base) < 1e-4 && Math.abs(p.getY(t + 1) - base) < 1e-4 && Math.abs(p.getY(t + 2) - base) < 1e-4;
+    if (!under) keep.push(t, t + 1, t + 2);
+  }
+  const out = new THREE.BufferGeometry();
+  const copy = (attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, size: number): THREE.BufferAttribute => {
+    const arr = new Float32Array(keep.length * size);
+    keep.forEach((i, k) => { for (let c = 0; c < size; c++) arr[k * size + c] = attr.getComponent(i, c); });
+    return new THREE.BufferAttribute(arr, size);
+  };
+  out.setAttribute('position', copy(p, 3));
+  out.setAttribute('normal', copy(n, 3));
+  if (uv) out.setAttribute('uv', copy(uv, 2));
+  if (g !== src) g.dispose();
+  src.dispose();
+  return out;
+}
+
 export class Builder {
   private parts: THREE.BufferGeometry[] = [];
   rnd: () => number;
@@ -111,6 +134,26 @@ export class Builder {
     g.rotateY(-Math.PI / 2);
     g.translate(x + depth / 2, 0, 0);
     this.paint(g, color);
+  }
+
+  /**
+   * A building's mass: a block whose upright corners are rounded off by `r` (0 keeps them square; half
+   * the width makes a drum), base at y, centred on (x, z). At the lowest detail it is a plain box.
+   */
+  mass(w: number, h: number, d: number, x: number, y: number, z: number, color: number, r = 0.04, segments?: number): void {
+    const rr = Math.min(r, w / 2, d / 2);
+    if (this.detail === 0 || rr < 0.004) { this.box(w, h, d, x, y, z, color); return; }
+    const s = new THREE.Shape(), hw = w / 2, hd = d / 2;
+    s.moveTo(-hw + rr, -hd);
+    s.lineTo(hw - rr, -hd); s.absarc(hw - rr, -hd + rr, rr, -Math.PI / 2, 0, false);
+    s.lineTo(hw, hd - rr); s.absarc(hw - rr, hd - rr, rr, 0, Math.PI / 2, false);
+    s.lineTo(-hw + rr, hd); s.absarc(-hw + rr, hd - rr, rr, Math.PI / 2, Math.PI, false);
+    s.lineTo(-hw, -hd + rr); s.absarc(-hw + rr, -hd + rr, rr, Math.PI, Math.PI * 1.5, false);
+    // Few segments to a corner: the town is low-poly, and a thin band needs fewer still.
+    const g = new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false, curveSegments: segments ?? (rr > 0.12 ? 6 : 3) });
+    g.rotateX(-Math.PI / 2);
+    g.translate(x, y, z);
+    this.paint(dropUnderside(g, y), color);
   }
 
   /** A box with rounded edges and corners, base at y, centred on (x, z). */
@@ -246,10 +289,12 @@ export class Builder {
   }
 
   /** Continuous glass bands per floor on all four sides. */
-  bands(w: number, h: number, d: number, y0: number, floors: number, color: number, thickness = 0.1): void {
+  bands(w: number, h: number, d: number, y0: number, floors: number, color: number, thickness = 0.1, r?: number): void {
     const fh = (h - y0) / floors;
     for (let f = 0; f < floors; f++) {
       const y = y0 + f * fh + fh * 0.3;
+      // Round a band with the building's own corners when it has them.
+      if (r !== undefined && this.detail > 0) { this.mass(w + 0.02, thickness, d + 0.02, 0, y, 0, color, r + 0.01, 2); continue; }
       this.box(w * 0.9, thickness, d + 0.02, 0, y, 0, color);
       this.box(w + 0.02, thickness, d * 0.9, 0, y, 0, color);
     }
@@ -585,9 +630,12 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     } else if (level === 2) {
       const floors = [3, 4, 5, 4, 2, 6][v];
       const w = [0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
-      b.box(w, h, d, 0, 0, 0, APT_WALLS[v]);
-      b.box(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x8c8578);
-      b.box(w + 0.04, 0.05, d + 0.04, 0, h, 0, 0x6f6a62);
+      // Rounded corners, a plinth, a moulded cornice in two steps.
+      const r = [0.05, 0.02, 0.09, 0.035, 0.07, 0.1][v];
+      b.mass(w, h, d, 0, 0, 0, APT_WALLS[v], r);
+      b.mass(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x8c8578, r + 0.02);
+      b.mass(w + 0.02, 0.03, d + 0.02, 0, h - 0.03, 0, new THREE.Color(APT_WALLS[v]).multiplyScalar(0.82).getHex(), r + 0.01);
+      b.mass(w + 0.04, 0.05, d + 0.04, 0, h, 0, 0x6f6a62, r + 0.02);
       b.windows(w, h, d, 0.22, floors, v === 2 ? 2 : 3, 0.15);
       if (v === 1 || v === 3) for (let f = 1; f < floors; f++) {
         b.box(0.25, 0.035, 0.12, -0.18, 0.22 + f * 0.31, d / 2 + 0.045, 0x8f8a80);
@@ -601,9 +649,20 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     } else {
       const floors = [7, 9, 6, 11, 5, 8][v];
       const w = [0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
-      b.box(w, h, d, 0, 0, 0, TOWER_WALLS[v]);
-      b.box(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469);
-      b.box(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53);
+      const r = [0.08, 0.1, 0.04, 0.1, 0.06, 0.1][v];
+      b.mass(w, h, d, 0, 0, 0, TOWER_WALLS[v], r);
+      b.mass(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469, r + 0.025);
+      b.mass(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53, r + 0.015);
+      // A crown: a stepped penthouse, a drum, or a slim spire.
+      if (b.detail > 0) {
+        if (v === 1 || v === 5) {
+          b.mass(w * 0.72, 0.28, d * 0.72, 0, h + 0.05, 0, TOWER_WALLS[v], r * 0.7);
+          b.mass(w * 0.76, 0.04, d * 0.76, 0, h + 0.33, 0, 0x5f5a53, r * 0.7 + 0.01);
+        } else if (v === 3) {
+          b.mass(0.3, 0.2, 0.3, 0, h + 0.05, 0, TOWER_WALLS[v], 0.15);
+          b.taper(0.004, 0.06, 0.4, 0, h + 0.25, 0, 0xb9c7d1, 8);
+        }
+      }
       b.windows(w, h, d, 0.28, floors, 3, 0.25, 0.12);
       balconies(b, w, d, 0.28, floors, 0.34);
       terrace(b, w, d, h + 0.05, v);
@@ -613,7 +672,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   } else if (kind === T_COM) {
     if (level === 1) {
       const w = [0.82, 0.78, 0.84, 0.7, 0.86, 0.66][v], h = [0.55, 0.7, 0.48, 0.85, 0.42, 0.95][v], d = [0.7, 0.62, 0.76, 0.66, 0.8, 0.58][v];
-      b.box(w, h, d, 0, 0, 0, SHOP_WALLS[v]);
+      b.mass(w, h, d, 0, 0, 0, SHOP_WALLS[v], [0.03, 0.05, 0.02, 0.04, 0.03, 0.06][v]);
       b.box(w * 0.6, 0.28, 0.03, -w * 0.12, 0.12, d / 2 + 0.005, GLASS);
       b.box(0.14, 0.38, 0.03, w * 0.36, 0, d / 2 + 0.005, 0x3d2c22);
       if (v !== 3 && v !== 5) {
@@ -637,12 +696,13 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       // Two, three or six storeys, and a parapet or a setback top floor rather than one flat slab.
       const floors = [3, 5, 2, 6, 4, 3][v];
       const w = [0.8, 0.72, 0.84, 0.68, 0.76, 0.82][v], h = 0.3 + floors * 0.31, d = [0.76, 0.7, 0.8, 0.66, 0.78, 0.72][v];
-      b.box(w, h, d, 0, 0, 0, BLOCK_WALLS[v]);
-      b.box(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257);
-      b.bands(w, h, d, 0.3, floors, v % 2 ? 0x3d6a85 : 0x4a4139, 0.1);
+      const r = [0.06, 0.03, 0.08, 0.1, 0.02, 0.05][v];
+      b.mass(w, h, d, 0, 0, 0, BLOCK_WALLS[v], r);
+      b.mass(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257, r + 0.02);
+      b.bands(w, h, d, 0.3, floors, v % 2 ? 0x3d6a85 : 0x4a4139, 0.1, r);
       b.litPanes(w, h, d, 0.3, floors, 4, 0.42);
-      if (v === 1 || v === 4) b.box(w * 0.7, 0.34, d * 0.7, 0, h, 0, BLOCK_WALLS[v]); // setback top floor
-      b.box(w + 0.03, 0.05, d + 0.03, 0, h + (v === 1 || v === 4 ? 0.34 : 0), 0, 0x46525c);
+      if (v === 1 || v === 4) b.mass(w * 0.7, 0.34, d * 0.7, 0, h, 0, BLOCK_WALLS[v], r); // setback top floor
+      b.mass(w + 0.03, 0.05, d + 0.03, 0, h + (v === 1 || v === 4 ? 0.34 : 0), 0, 0x46525c, r + 0.015);
       banners(b, w, h, d, v, 27);
       roofDetail(b, h + (v === 1 || v === 4 ? 0.39 : 0.05), v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
@@ -650,27 +710,44 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     } else {
       const floors = [12, 9, 15, 11, 6, 8][v];
       const w = [0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
-      b.box(w, h, d, 0, 0, 0, GLASS_TOWERS[v]);
-      b.box(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a);
+      const r = [0.1, 0.06, 0.1, 0.08, 0.04, 0.1][v];
+      b.mass(w, h, d, 0, 0, 0, GLASS_TOWERS[v], r);
+      b.mass(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a, r + 0.025);
       for (let f = 1; f < floors; f++) {
-        b.box(w + 0.02, 0.035, d + 0.02, 0, (h / floors) * f, 0, 0x2a3a4a);
+        b.mass(w + 0.02, 0.035, d + 0.02, 0, (h / floors) * f, 0, 0x2a3a4a, r + 0.01, 2);
       }
       b.litPanes(w, h, d, 0, floors, 5, 0.38, 0.35);
       logo(b, w, h, d, v + 2);
-      b.box(0.55, 0.5, 0.55, 0, h, 0, GLASS_TOWERS[v]);
-      b.box(0.58, 0.04, 0.58, 0, h + 0.5, 0, 0x2a3a4a);
-      roofDetail(b, h + 0.54, v);
+      // The top: stepped back in stages, a rounded drum, or a crown and a spire.
+      let top = h + 0.54;
+      if (v === 0 || v === 3) {
+        b.mass(w * 0.8, 0.35, d * 0.8, 0, h, 0, GLASS_TOWERS[v], r * 0.8);
+        b.mass(w * 0.82, 0.03, d * 0.82, 0, h + 0.35, 0, 0x2a3a4a, r * 0.8 + 0.01);
+        b.mass(w * 0.58, 0.3, d * 0.58, 0, h + 0.38, 0, GLASS_TOWERS[v], r * 0.6);
+        b.mass(w * 0.6, 0.03, d * 0.6, 0, h + 0.68, 0, 0x2a3a4a, r * 0.6 + 0.01);
+        top = h + 0.71;
+      } else if (v === 2 || v === 5) {
+        b.mass(0.5, 0.45, 0.5, 0, h, 0, GLASS_TOWERS[v], 0.25);
+        b.mass(0.54, 0.04, 0.54, 0, h + 0.45, 0, 0x2a3a4a, 0.27);
+        if (b.detail > 0) b.taper(0.004, 0.05, 0.6, 0, h + 0.49, 0, 0xc8d4dc, 8);
+        top = h + 0.49;
+      } else {
+        b.mass(0.55, 0.5, 0.55, 0, h, 0, GLASS_TOWERS[v], r);
+        b.mass(0.58, 0.04, 0.58, 0, h + 0.5, 0, 0x2a3a4a, r + 0.01);
+      }
+      roofDetail(b, top, v);
       b.box(0.5, 0.3, 0.03, 0, 0, d / 2 + 0.005, 0xbfe3f5);
     }
   } else if (kind === T_OFFICE) {
     const floors = level === 1 ? [2, 3, 2, 4, 1, 3][v] : level === 2 ? [5, 7, 6, 8, 3, 4][v] : [11, 14, 12, 16, 7, 9][v];
     const w = [0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v], d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
-    b.box(w, h, d, 0, 0, 0, OFFICE_WALLS[v]);
-    b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16);
+    const r = [0.05, 0.1, 0.03, 0.08, 0.02, 0.06][v];
+    b.mass(w, h, d, 0, 0, 0, OFFICE_WALLS[v], r);
+    b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16, r);
     b.litPanes(w, h, d, 0.18, floors, 4, 0.48, 0.28);
     logo(b, w, h, d, v + level);
     for (const x of [-w * 0.3, w * 0.3]) b.box(0.035, h, d + 0.035, x, 0, 0, 0xc9d2d9);
-    b.box(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270);
+    b.mass(w + 0.04, 0.08, d + 0.04, 0, h, 0, 0x536270, r + 0.02);
     b.box(0.3, 0.23, 0.03, 0, 0, d / 2 + 0.02, GLASS);
     roofDetail(b, h + 0.08, v);
     terrace(b, w, d, h + 0.08, v);
@@ -682,8 +759,16 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     if (v === 0) { // sawtooth workshop, roof lights and loading bays
       b.box(0.86, h, 0.8, 0, 0.025, 0, wall);
       for (const z of [-0.27, 0, 0.27]) {
-        b.box(0.88, 0.12, 0.2, 0, h, z, 0x717873);
-        b.box(0.64, 0.035, 0.12, 0, h + 0.12, z, 0xabc8d0);
+        if (b.detail > 0) {
+          // A true sawtooth: a sloping roof rising to a glazed north light.
+          const tooth = new THREE.Shape();
+          tooth.moveTo(z - 0.13, h); tooth.lineTo(z + 0.1, h); tooth.lineTo(z + 0.1, h + 0.14); tooth.closePath();
+          b.profile(tooth, 0.88, 0, 0x717873, 0.006, 1);
+          b.box(0.8, 0.1, 0.006, 0, h + 0.02, z + 0.104, 0xabc8d0);
+        } else {
+          b.box(0.88, 0.12, 0.2, 0, h, z, 0x717873);
+          b.box(0.64, 0.035, 0.12, 0, h + 0.12, z, 0xabc8d0);
+        }
       }
       for (const x of [-0.24, 0.24]) b.box(0.24, 0.3, 0.03, x, 0.025, 0.41, 0x475058);
     } else if (v === 1) { // brick plant with twin striped stacks
@@ -704,9 +789,15 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       b.box(0.3, 0.26, 0.03, -0.22, 0.025, 0.435, 0x465058);
     } else { // distribution warehouse with solar and container yard
       b.box(0.88, h * 0.72, 0.58, 0, 0.025, -0.13, wall);
-      b.box(0.92, 0.05, 0.62, 0, h * 0.72 + 0.025, -0.13, 0x626e76);
+      const eave = h * 0.72 + 0.025;
+      if (b.detail > 0) {
+        // A barrel-vaulted roof.
+        const vault = new THREE.Shape();
+        vault.moveTo(-0.44, eave); vault.lineTo(0.18, eave); vault.quadraticCurveTo(-0.13, eave + 0.2, -0.44, eave);
+        b.profile(vault, 0.92, 0, 0x626e76, 0.01, 12);
+      } else b.box(0.92, 0.05, 0.62, 0, eave, -0.13, 0x626e76);
       for (const x of [-0.25, 0, 0.25]) {
-        b.box(0.19, 0.045, 0.35, x, h * 0.72 + 0.08, -0.13, 0x305a7a);
+        b.box(0.19, 0.045, 0.35, x, eave + (b.detail > 0 ? 0.075 : 0.055), -0.13, 0x305a7a);
         b.box(0.2, 0.17, 0.25, x, 0.025, 0.32, x === 0 ? 0xc58f49 : 0x577c83);
         for (let n = 0; n < 4; n++) b.box(0.01, 0.16, 0.255, x - 0.075 + n * 0.05, 0.025, 0.32, 0x8eaaa7);
       }

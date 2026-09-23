@@ -141,6 +141,11 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   broadleaf and conifer trees with a bench, round flower beds in stone kerbs, a statue on a paved
   circle with benches and lamps, a fountain, or a lawn with a big tree and a picnic table, all kept
   off the roads, the pavements and the lots next door. Build on the cell and the garden goes.
+- **Buildings with some shape.** Flats, towers, shops, office blocks and glass towers have rounded
+  corners, with plinths, cornices and window bands that follow them; towers end in stepped
+  penthouses, drums or slim spires, glass towers step back in stages or rise to a crowned drum;
+  workshops have true sawtooth roofs with glazed north lights, and warehouses barrel-vaulted roofs.
+  The lowest graphics detail keeps the plain blocks.
 - **Cars with some shape.** Cars, taxis, police cars, vans and the player's cars are built from a side
   profile: a nose that rounds down to the bumper, a raked windscreen, a roof and a sloping rear
   screen, arches cut round the wheels and every edge rounded, with glass, pillars, lamps, grilles,
