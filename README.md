@@ -155,7 +155,9 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   darker underneath. Neighbourhood parks have a rounded lawn, a winding path, trees of all three
   kinds, a flower bed and a bench; the city park an irregular pond with a stone rim and a path round
   it; ponds and flower beds are organic shapes rather than discs and boxes. Street trees, bushes and
-  rocks are rounder too.
+  rocks are rounder too, and so are the woods: broadleaves with billowing crowns of lumpy blobs,
+  conifers of four drooping, ragged tiers, and far-off trees drawn as a rounded flame rather than a
+  five-sided cone.
 - **Cars with some shape.** Cars, taxis, police cars, vans and the player's cars are built from a side
   profile: a nose that rounds down to the bumper, a raked windscreen, a roof and a sloping rear
   screen, arches cut round the wheels and every edge rounded, with glass, pillars, lamps, grilles,

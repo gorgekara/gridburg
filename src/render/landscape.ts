@@ -109,35 +109,69 @@ export function canopyGeometry(leafy: boolean, detail: VisualDetail = 1): THREE.
     return g;
   }
   const parts: THREE.BufferGeometry[] = [];
-  for (let layer = 0; layer < 3; layer++) {
-    const source = leafy
-      ? new THREE.IcosahedronGeometry([0.57, 0.55, 0.5][layer], detail === 2 && layer === 2 ? 1 : 0)
-      : new THREE.ConeGeometry([0.62, 0.48, 0.34][layer], [1.05, 0.95, 0.9][layer], detail === 2 ? 9 : 7, 1, true);
-    const g = source.index ? source.toNonIndexed() : source;
-    if (g !== source) source.dispose();
-    if (leafy) {
-      g.scale(1, 1.12, 1);
-      g.translate([-0.24, 0.23, 0][layer], [-0.16, -0.07, 0.3][layer], [0.02, 0.08, -0.14][layer]);
-    } else {
-      g.rotateY(layer * 0.4);
-      g.translate(0, [-0.42, 0.12, 0.6][layer], 0);
-    }
+  // Shade each part: lighter on top and in the sun, darker beneath and inside, varying part to part.
+  const shade = (g: THREE.BufferGeometry, base: number): void => {
     g.computeVertexNormals();
-    const normals = g.getAttribute('normal');
-    const colors = new Float32Array(normals.count * 3);
-    for (let i = 0; i < normals.count; i++) {
-      const shade = 0.78 + layer * 0.055 + Math.max(0, normals.getY(i)) * 0.11;
-      colors[i * 3] = shade * 0.96;
-      colors[i * 3 + 1] = shade;
-      colors[i * 3 + 2] = shade * 0.9;
+    const n = g.getAttribute('normal'), p = g.getAttribute('position');
+    const colors = new Float32Array(n.count * 3);
+    for (let i = 0; i < n.count; i++) {
+      const v = base + Math.max(0, n.getY(i)) * 0.12 + Math.min(0.08, Math.max(-0.1, p.getY(i) * 0.06));
+      colors[i * 3] = v * 0.95; colors[i * 3 + 1] = v; colors[i * 3 + 2] = v * 0.88;
     }
     g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     parts.push(g);
+  };
+  const flat = (src: THREE.BufferGeometry): THREE.BufferGeometry => { const g = src.index ? src.toNonIndexed() : src; if (g !== src) src.dispose(); return g; };
+  if (leafy) {
+    // A broadleaf crown: a cluster of lumpy blobs round a middle, one on top, so the outline is
+    // billowing rather than a single ball.
+    const blobs: [number, number, number, number][] = [
+      [-0.26, -0.14, 0.04, 0.5], [0.25, -0.08, 0.1, 0.48], [0.02, -0.12, -0.28, 0.46],
+      [-0.05, 0.26, -0.08, 0.5], [0.12, 0.1, 0.26, 0.42], [0.0, 0.52, 0.02, 0.36],
+    ];
+    blobs.forEach(([x, y, z, r], k) => {
+      const g = flat(new THREE.IcosahedronGeometry(r, detail === 2 ? 1 : 0));
+      const p = g.getAttribute('position');
+      for (let i = 0; i < p.count; i++) {
+        // Push the corners in and out a little: foliage, not a gem.
+        const w = 1 + Math.sin(p.getX(i) * 13 + k * 2.1) * 0.08 + Math.cos(p.getZ(i) * 11 + k) * 0.07;
+        p.setXYZ(i, p.getX(i) * w, p.getY(i) * w * 1.08, p.getZ(i) * w);
+      }
+      g.translate(x, y, z);
+      shade(g, 0.76 + (k % 3) * 0.05);
+    });
+  } else {
+    // A conifer: four tiers, each rim drooping and ragged, turned against the one below.
+    const segments = detail === 2 ? 12 : 9;
+    [[0.66, 0.8, -0.55], [0.54, 0.75, -0.1], [0.42, 0.7, 0.33], [0.28, 0.62, 0.72]].forEach(([r, h, y], tier) => {
+      const g = flat(new THREE.ConeGeometry(r, h, segments, 1, true));
+      const p = g.getAttribute('position');
+      for (let i = 0; i < p.count; i++) {
+        if (p.getY(i) >= 0) continue;
+        const a = Math.atan2(p.getZ(i), p.getX(i));
+        p.setY(i, p.getY(i) - (Math.sin(a * 3 + tier * 1.3) * 0.5 + 0.5) * h * 0.14);
+        const k = 1 + Math.sin(a * 5 + tier) * 0.06;
+        p.setX(i, p.getX(i) * k); p.setZ(i, p.getZ(i) * k);
+      }
+      g.rotateY(tier * 0.55);
+      g.translate(0, y, 0);
+      shade(g, 0.74 + tier * 0.05);
+    });
   }
   const geometry = mergeGeometries(parts, false)!;
   for (const part of parts) part.dispose();
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+/**
+ * A far tree, drawn once for thousands: a rounded flame of a silhouette (full low down, swelling and
+ * narrowing to a soft point) turned on a lathe, rather than a five-sided cone.
+ */
+function distantTree(): THREE.BufferGeometry {
+  const profile = [[0, -1.1], [0.5, -0.95], [0.66, -0.55], [0.6, -0.05], [0.46, 0.45], [0.26, 0.85], [0.06, 1.08], [0, 1.1]]
+    .map(([r, y]) => new THREE.Vector2(r, y));
+  return new THREE.LatheGeometry(profile, 7);
 }
 
 export class LandscapeLayer {
@@ -153,12 +187,12 @@ export class LandscapeLayer {
   hillHeight: (x: number, z: number) => number = () => 0;
   private ground = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
   private pits = { value: null as THREE.Texture | null };
-  private trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.8, 5, 1, true), new THREE.MeshStandardMaterial({ color: 0x69523a }), 15000);
+  private trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.12, 0.8, 7, 1, true), new THREE.MeshStandardMaterial({ color: 0x69523a }), 15000);
   private crowns = new THREE.InstancedMesh(canopyGeometry(false), new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1 }), 15000);
   private leaves = new THREE.InstancedMesh(canopyGeometry(true), new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1 }), 15000);
   private rocks = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0x899084, roughness: 1 }), 1200);
   /** Distant stand-in: one open cone for the whole tree, no shadow. */
-  private distant = new THREE.InstancedMesh(new THREE.ConeGeometry(0.66, 2.2, 5, 1, true), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), 15000);
+  private distant = new THREE.InstancedMesh(distantTree(), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), 15000);
   // Tree sites, split into detail levels around the camera every time it moves far enough.
   private treeCount = 0;
   private treeX = new Float32Array(TREE_LIMIT);
