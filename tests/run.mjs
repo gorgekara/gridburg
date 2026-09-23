@@ -14,7 +14,7 @@ const { loadSettings, saveSettings } = await import('../src/ui/menu.ts');
 const { advanceCity, levelForPopulation, MILESTONES } = await import('../src/progression.ts');
 const { civicCoverage } = await import('../src/sim/civic.ts');
 const { encode, decode } = await import('../src/save.ts');
-const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS } = await import('../src/render/buildingGeo.ts');
+const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS, WINDOW_DARK, WINDOW_LIT } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const X = await import('../src/extras.ts');
 /** Bytes the v13 extras block takes for a city that has changed none of them. */
@@ -1589,6 +1589,27 @@ test('street races are planned on the city streets, with barriers on the side st
   assert.ok(tuned.top > stock.top && tuned.grip > stock.grip, 'Upgrades improve the car');
   assert.ok(partCost('super', 0) > partCost('hatch', 0), 'Parts cost more on dearer cars');
   assert.ok(MODELS.super.top > MODELS.coupe.top && MODELS.coupe.top > MODELS.hatch.top, 'Dearer cars are faster');
+});
+test('every window sits on a wall: none hangs in the air beside a building', () => {
+  const colors = [WINDOW_DARK, WINDOW_LIT].map(h => new THREE.Color(h));
+  const kinds = [C.T_RES, C.T_COM, C.T_OFFICE, C.T_IND, C.T_LEISURE, ...Object.keys(C.SERVICES).map(Number).filter(k => !C.SERVICES[k].decoration)];
+  const bad = [];
+  for (const k of kinds) for (const l of (C.isZone(k) ? [1, 2, 3] : [1])) for (let v = 0; v < (C.isZone(k) ? 6 : 1); v++) {
+    const g = buildingGeometry(k, l, v, 2), body = bodyOfGeometry(g);
+    if (!body) continue;
+    const p = g.attributes.position, col = g.attributes.color;
+    // How far any window strays outside the walls, in either direction across the lot.
+    let worst = 0;
+    for (let i = 0; i < p.count; i++) {
+      if (!colors.some(c => Math.abs(col.getX(i) - c.r) < 1e-3 && Math.abs(col.getY(i) - c.g) < 1e-3 && Math.abs(col.getZ(i) - c.b) < 1e-3)) continue;
+      const x = p.getX(i), z = p.getZ(i);
+      worst = Math.max(worst, body.x0 - x, x - body.x1, body.z0 - z, z - body.z1);
+    }
+    // A house's wing and bay window are lower than its main walls, so their windows sit a little beyond them.
+    if (worst > (k === C.T_RES && l === 1 ? 0.14 : 0.06)) bad.push(`${k}/${l}/${v}: ${worst.toFixed(2)}`);
+    g.dispose();
+  }
+  assert.deepEqual(bad, [], 'Windows stray off their walls');
 });
 const { VergeLayer, gardenTiles } = await import('../src/render/verges.ts');
 test('empty cells between the houses and the roads are planted, and nothing is planted on a road', () => {

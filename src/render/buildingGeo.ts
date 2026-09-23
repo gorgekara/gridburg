@@ -6,8 +6,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, mulberry32 } from '../constants';
 
-const WINDOW_DARK = 0x1f2a3a;
-const WINDOW_LIT = 0xffe1a0;
+export const WINDOW_DARK = 0x1f2a3a;
+export const WINDOW_LIT = 0xffe1a0;
 /** Office lighting: a cool white pane. By day it reads as bright glass; after dark the shader lights it. */
 export const OFFICE_LIT = 0xf4f6ff;
 const GLASS = 0x7fb6d6;
@@ -112,6 +112,14 @@ export class Builder {
     g.rotateX(Math.PI / 2);
     g.translate(x, y, z);
     this.paint(g, color);
+  }
+
+  /** Draw something about another centre: facade windows on a block that is not in the lot's middle. */
+  at(x: number, z: number, draw: () => void): void {
+    const saved = { ...this.shift };
+    this.shift = { x: saved.x + x, z: saved.z + z };
+    draw();
+    this.shift = saved;
   }
 
   /** Any geometry, painted one colour: for shapes the box and cylinder helpers cannot make. */
@@ -612,7 +620,8 @@ function leisure(b: Builder, level: number, v: number): void {
     const floors = [4, 5, 3, 5, 4, 6][v], w = 0.74, d = 0.6, h = 0.25 + floors * 0.28;
     b.box(w, h, d, 0, 0, -0.08, wall);
     b.box(w + 0.04, 0.05, d + 0.04, 0, h, -0.08, 0x5f5a53);
-    b.windows(w, h, d, 0.25, floors, 3, 0.45);
+    // The hotel stands back from the lot's middle; its windows go on its own walls, not the lot's.
+    b.at(0, -0.08, () => b.windows(w, h, d, 0.25, floors, 3, 0.45));
     for (let f = 1; f < floors; f++) b.box(w * 0.9, 0.025, 0.08, 0, 0.25 + f * 0.28 - 0.03, -0.08 + d / 2 + 0.04, 0xd9d4c8); // balconies
     b.box(0.3, 0.2, 0.03, 0, 0, -0.08 + d / 2 + 0.005, GLASS);
     b.box(0.4, 0.025, 0.2, 0, 0.22, -0.08 + d / 2 + 0.1, stripe); // entrance canopy
@@ -629,7 +638,9 @@ function leisure(b: Builder, level: number, v: number): void {
     for (const x of [0.22, 0.32]) b.box(0.05, 0.02, 0.12, x, 0.24, 0.24, 0xf1ece0); // loungers
     parasol(b, 0.27, 0.36, stripe);
     b.box(w, h, d, 0, 0.22, -0.2, wall);
-    b.windows(w, h, d, 0.1, floors, 3, 0.5, 0.11);
+    // The tower stands on the podium, set back towards the rear: its windows go on its own walls.
+    // The top floor carries the name board, so the rooms' windows stop a floor short.
+    b.at(0, -0.2, () => b.windows(w, 0.22 + h - h / floors, d, 0.32, floors - 1, 3, 0.5, 0.11));
     for (let f = 1; f < floors; f++) b.box(w + 0.03, 0.02, d + 0.03, 0, 0.22 + f * (h / floors), -0.2, 0xbfb8aa);
     b.box(w + 0.04, 0.06, d + 0.04, 0, 0.22 + h, -0.2, 0x4d5860);
     b.box(0.34, 0.12, 0.02, 0, 0.22 + h - 0.2, -0.2 + d / 2 + 0.02, stripe); // name across the top
@@ -880,7 +891,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
         b.cyl(0.065, 0.5 + level * 0.18, 0.34, 0.025, z, 0x686960, 10);
         b.cyl(0.07, 0.07, 0.34, 0.38 + level * 0.18, z, 0xc65343, 10);
       }
-      b.windows(0.7, h, 0.76, 0.15, level, 3, 0.05);
+      b.at(-0.06, 0, () => b.windows(0.7, h, 0.76, 0.15, level, 3, 0.05));
       b.box(0.3, 0.1, 0.34, -0.13, h + 0.025, 0, 0x738791);
     } else if (v === 2) { // tank farm and a low processing hall
       b.box(0.42, h * 0.7, 0.86, -0.22, 0.025, 0, wall);
@@ -914,7 +925,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.92, 0.04, 0.92, 0, 0, 0, 0x6f6a62);
     b.box(0.5, 0.45, 0.55, -0.15, 0.04, 0.1, 0x8d8f94);
     b.box(0.52, 0.06, 0.57, -0.15, 0.49, 0.1, 0x55585e);
-    b.windows(0.5, 0.45, 0.55, 0.12, 1, 3, 0.4, 0.1);
+    b.at(-0.15, 0.1, () => b.windows(0.5, 0.45, 0.55, 0.12, 1, 3, 0.4, 0.1));
     b.taper(0.13, 0.2, 0.75, 0.25, 0.04, -0.2, 0xcfcac0);
     b.cyl(0.055, 1.25, 0.28, 0.04, 0.28, 0x5a5650, 10);
     b.cyl(0.062, 0.07, 0.28, 1.2, 0.28, 0xb8433a, 10);
@@ -926,7 +937,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.92, 0.04, 0.92, 0, 0, 0, 0x777a7c);
     b.box(0.56, 0.36, 0.42, -0.14, 0.04, 0.14, 0xc9ccce);
     b.box(0.58, 0.05, 0.44, -0.14, 0.4, 0.14, 0x3f6f9e);
-    b.windows(0.56, 0.36, 0.42, 0.1, 1, 3, 0.3, 0.09);
+    b.at(-0.14, 0.14, () => b.windows(0.56, 0.36, 0.42, 0.1, 1, 3, 0.3, 0.09));
     for (const x of [0.22, 0.34]) { b.cyl(0.04, 0.95, x, 0.04, 0.22, 0xb9bcbe, 10); b.cyl(0.045, 0.05, x, 0.96, 0.22, 0x3f6f9e, 10); }
     for (const x of [-0.3, -0.05, 0.2]) b.cyl(0.1, 0.24, x, 0.04, -0.28, 0xe9e9e4, 14);
     b.box(0.7, 0.03, 0.03, -0.05, 0.2, -0.28, 0x8c9092);
@@ -938,7 +949,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     for (const x of [-0.3, 0, 0.3]) b.box(0.16, 0.34, 0.03, x, 0.12, -0.47, 0x2d4d63); // sluice gates
     b.box(0.6, 0.3, 0.34, 0.05, 0.05, 0.14, 0xd4d1c7);
     b.box(0.64, 0.05, 0.38, 0.05, 0.35, 0.14, 0x3a6b8c);
-    b.windows(0.6, 0.3, 0.34, 0.1, 1, 3, 0.35, 0.08);
+    b.at(0.05, 0.14, () => b.windows(0.6, 0.3, 0.34, 0.1, 1, 3, 0.35, 0.08));
     for (const x of [-0.34, 0.36]) { b.box(0.04, 0.5, 0.04, x, 0.05, 0.3, 0x7c8084); b.box(0.22, 0.03, 0.03, x, 0.52, 0.3, 0x7c8084); }
   } else if (kind === T_CEMETERY) {
     // Lawns in rows of headstones, a gravel path, yew trees and a small chapel, on a 2 x 2 site.
@@ -960,7 +971,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.92, 0.03, 0.92, 0, 0, 0, 0xb8b4aa);
     b.box(0.62, 0.34, 0.5, -0.06, 0.03, 0.05, 0xd6d0c4);
     b.box(0.66, 0.05, 0.54, -0.06, 0.37, 0.05, 0x55595e);
-    b.windows(0.62, 0.34, 0.5, 0.12, 1, 3, 0.2, 0.08);
+    b.at(-0.06, 0.05, () => b.windows(0.62, 0.34, 0.5, 0.12, 1, 3, 0.2, 0.08));
     b.cyl(0.05, 0.75, 0.3, 0.03, -0.25, 0x8f8a80, 10); // chimney
     b.box(0.3, 0.2, 0.03, -0.06, 0.03, 0.31, 0x3a2e28);
     for (const x of [-0.38, 0.38]) b.taper(0.01, 0.08, 0.28, x, 0.03, 0.38, 0x2f5a37, 8);
@@ -968,7 +979,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.92, 0.03, 0.92, 0, 0, 0, 0xb4b2aa);
     b.box(0.74, 0.46, 0.56, 0, 0.03, -0.05, 0xe9e3d6);
     b.box(0.78, 0.06, 0.6, 0, 0.49, -0.05, 0xd9503f);
-    b.windows(0.74, 0.46, 0.56, 0.1, 1, 3, 0.35, 0.1);
+    b.at(0, -0.05, () => b.windows(0.74, 0.46, 0.56, 0.1, 1, 3, 0.35, 0.1));
     b.box(0.5, 0.06, 0.03, 0, 0.36, 0.24, 0xd9503f); // sign band
     b.box(0.2, 0.26, 0.03, 0, 0.03, 0.24, 0x3a4a5a);
     for (const x of [-0.28, 0.28]) { b.box(0.14, 0.08, 0.2, x, 0.03, 0.36, 0xe0a021); b.box(0.12, 0.08, 0.02, x, 0.07, 0.46, 0x2a2f36); } // parked vans
@@ -1007,7 +1018,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.taper(0.42, 0.05, 0.35, -0.4, 0.75, 0.75, 0xcfccc3, 18); // dome
     b.box(1.0, 0.55, 0.6, 0.65, 0.05, 0.7, 0xbfc3c6); // turbine hall
     b.box(1.04, 0.05, 0.64, 0.65, 0.6, 0.7, 0x4d6a82);
-    b.windows(1.0, 0.55, 0.6, 0.15, 2, 5, 0.35, 0.08);
+    b.at(0.65, 0.7, () => b.windows(1.0, 0.55, 0.6, 0.15, 2, 5, 0.35, 0.08));
     b.box(0.08, 0.9, 0.08, 1.25, 0.05, 1.25, 0xb8433a); // stack
     b.box(0.14, 0.06, 0.14, 1.25, 0.95, 1.25, 0xd8d6cf);
     b.shift = { x: 0, z: 0 };
@@ -1102,7 +1113,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(w + 0.18, 0.05, d + 0.3, 0, 0, 0.05, 0xb9bcb6); // forecourt
     const low = 1.0;
     b.box(w, low, d * 0.88, 0, 0.05, -0.05, 0xeef0ec);
-    b.windows(w, low + 0.05, d * 0.88, 0.2, 3, big ? 7 : 5, 0.35, 0.11);
+    b.at(0, -0.05, () => b.windows(w, low + 0.05, d * 0.88, 0.2, 3, big ? 7 : 5, 0.35, 0.11));
     const towerW = big ? 1.1 : 0.85, towerH = big ? 2.6 : 1.85, tx = big ? -0.6 : 0;
     b.shift = { x: b.shift.x + tx, z: b.shift.z - 0.2 };
     b.box(towerW, towerH, 0.85, 0, 0.05, 0, 0xf6f7f4);
@@ -1179,7 +1190,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.96, 0.04, 0.96, 0, 0, 0, 0xa3aaad);
     b.box(0.82, height, 0.68, 0, 0.04, -0.05, kind === T_SCHOOL ? 0xd7b996 : 0xdce0df);
     b.box(0.86, 0.07, 0.72, 0, height + 0.04, -0.05, accent);
-    b.windows(0.82, height, 0.68, 0.22, kind === T_UNIVERSITY ? 3 : 1, 3, 0.13, 0.14);
+    b.at(0, -0.05, () => b.windows(0.82, height, 0.68, 0.22, kind === T_UNIVERSITY ? 3 : 1, 3, 0.13, 0.14));
     b.box(0.26, 0.3, 0.035, 0, 0.04, 0.3, 0x345166);
     if (kind === T_CLINIC) {
       b.box(0.3, 0.08, 0.03, 0, height - 0.05, 0.315, accent);
