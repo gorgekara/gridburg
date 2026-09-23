@@ -1,5 +1,5 @@
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN } from '../constants';
-import type { Builder } from './buildingGeo';
+import { Builder } from './buildingGeo';
 
 /** Shared, static tile pieces; paths join their neighbours using a four-bit connection mask. */
 export function parkGeometry(b: Builder, kind: number, connections: number): void {
@@ -11,6 +11,15 @@ export function parkGeometry(b: Builder, kind: number, connections: number): voi
       const dx = [0, 1, 0, -1][side], dz = [-1, 0, 1, 0][side];
       b.box(dx ? 0.5 : 0.13, 0.012, dz ? 0.5 : 0.13, dx * 0.25, 0.014, dz * 0.25, 0xd0be98);
     }
+  } else if (kind === T_POND && b.detail > 0) {
+    // An irregular pond with a stone rim, lily pads and reeds.
+    b.flat(Builder.blobOutline(0, 0, 0.44, 0.4, 0.09, 2), 0.032, 0.02, 0xb5b08d);
+    b.flat(Builder.blobOutline(0, 0, 0.39, 0.35, 0.09, 2), 0.036, 0.006, 0x5199a5);
+    for (const [x, z] of [[-0.18, 0.1], [0.12, 0.22], [0.2, -0.12]]) {
+      b.cyl(0.045, 0.005, x, 0.04, z, 0x6a975d, 8);
+      b.cyl(0.012, 0.014, x, 0.045, z, 0xdbb1b3, 6);
+    }
+    for (const x of [-0.24, -0.16, -0.08]) b.taper(0.002, 0.008, 0.15, x, 0.035, -0.3, 0x687d42, 5);
   } else if (kind === T_POND) {
     b.cyl(0.44, 0.018, 0, 0.014, 0, 0xb5b08d, 16);
     b.cyl(0.39, 0.006, 0, 0.033, 0, 0x5199a5, 16);
@@ -28,12 +37,30 @@ export function parkGeometry(b: Builder, kind: number, connections: number): voi
     b.box(0.33, 0.028, 0.22, 0, 0.32, 0.19, 0xd1ae63);
     for (const x of [-0.12, 0, 0.12]) b.box(0.05, 0.004, 0.22, x, 0.348, 0.19, 0xe9dfc3);
     b.pane(0.21, 0.035, 0, 0.365, 0.187, 0, 0xeee1bc);
+  } else if (kind === T_TREE && b.detail > 0) {
+    // A broadleaf and a conifer, shaped and lumpy rather than a pair of cones.
+    b.tree(-0.19, 0.012, -0.12, 0.7, 'broad', 0x4c7b49, 11);
+    b.tree(0.2, 0.012, 0.16, 0.85, 'conifer', 0x3f7a4c, 12);
+    b.flat(Builder.blobOutline(-0.19, -0.12, 0.09, 0.08, 0.1, 1), 0.016, 0.004, 0x5b4a3a);
   } else if (kind === T_TREE) {
     for (const [x, z, h] of [[-0.19, -0.12, 0.65], [0.2, 0.16, 0.82]]) {
       b.cyl(0.035, h * 0.48, x, 0.015, z, 0x786047, 6);
       b.taper(0.015, 0.23, h * 0.7, x, h * 0.3, z, 0x4c7b49, 7);
       b.taper(0.01, 0.17, h * 0.55, x, h * 0.58, z, 0x638b4e, 7);
     }
+  } else if (kind === T_FLOWERS && b.detail > 0) {
+    // An oval bed in a stone kerb, planted in rings of colour.
+    b.flat(Builder.blobOutline(0, 0, 0.36, 0.28, 0.04, 4, 24), 0.05, 0.04, 0xa8a398);
+    b.flat(Builder.blobOutline(0, 0, 0.33, 0.25, 0.04, 4, 24), 0.055, 0.03, 0x6a5238);
+    const ringColors = [0x507d45, 0xc7667d, 0xe3be6f, 0xb28dbf];
+    ringColors.forEach((color, ring) => {
+      const rx = 0.28 - ring * 0.07, rz = 0.2 - ring * 0.05, n = Math.max(4, Math.round((rx + rz) * 22));
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        b.cyl(ring === 0 ? 0.028 : 0.02, 0.03 + (k % 3) * 0.006, Math.cos(a) * rx, 0.055, Math.sin(a) * rz, color, 6);
+      }
+    });
+    b.cyl(0.03, 0.05, 0, 0.055, 0, 0xe06a6a, 7);
   } else if (kind === T_FLOWERS) {
     b.box(0.66, 0.03, 0.5, 0, 0.02, 0, 0x8e7452);
     b.box(0.61, 0.03, 0.45, 0, 0.05, 0, 0x507d45);

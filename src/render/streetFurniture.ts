@@ -30,9 +30,7 @@ function pieces(): THREE.BufferGeometry[] {
     }),
     make(4, b => { // tree in a pit
       b.box(0.05, 0.004, 0.05, 0, 0, 0, 0x5b4a3a);
-      b.cyl(0.006, 0.12, 0, 0, 0, 0x6b4f36, 6);
-      b.cyl(0.045, 0.07, 0, 0.1, 0, 0x4f7f3d, 8);
-      b.cyl(0.032, 0.04, 0, 0.17, 0, 0x5f8f45, 8);
+      b.tree(0, 0.004, 0, 0.23, 'broad', 0x4f7f3d, 5);
     }),
     make(5, b => { // bike rack with a bike
       for (const x of [-0.03, 0, 0.03]) b.box(0.004, 0.028, 0.03, x, 0, 0, 0x9aa3a8);

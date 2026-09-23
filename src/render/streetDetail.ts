@@ -89,6 +89,9 @@ function rgb(hex: number): [number, number, number] {
  * A fast mesh writer for small props: flat-shaded triangles with vertex colours, placed in a local
  * frame (`at`) that is moved and turned about y. Local +z is the frame's front.
  */
+/** The twenty faces of an icosahedron, by corner. */
+const LUMP_FACES = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+
 export class Kit {
   private pos: number[] = [];
   private col: number[] = [];
@@ -167,15 +170,15 @@ export class Kit {
   /** A rough lump: a squashed octahedron with its corners pushed about, for rocks, bushes and crowns. */
   lump(x: number, y: number, z: number, r: number, color: number, squash = 0.8, rnd: () => number = Math.random): void {
     this.paint(color);
-    const k = (): number => 0.8 + rnd() * 0.4;
-    const top = [x, y + r * squash * 2 * k(), z], bottom = [x, y, z];
-    const mid = y + r * squash * k();
-    const ring = [0, 1, 2, 3, 4, 5].map(i => { const a = i / 6 * Math.PI * 2 + rnd() * 0.4; const rr = r * k(); return [x + Math.cos(a) * rr, mid, z + Math.sin(a) * rr]; });
-    for (let i = 0; i < 6; i++) {
-      const a = ring[i], b = ring[(i + 1) % 6];
-      this.tri(a, top, b);
-      this.tri(a, b, bottom);
-    }
+    // A squashed icosahedron with its corners pushed about: round enough to read as foliage or stone.
+    const t = (1 + Math.sqrt(5)) / 2;
+    const base = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]];
+    const len = Math.hypot(1, t);
+    const v = base.map(([a, bb, c]) => {
+      const k = r * (0.82 + rnd() * 0.36) / len;
+      return [x + a * k, y + r * squash + bb * k * squash, z + c * k];
+    });
+    for (const [a, bb, c] of LUMP_FACES) this.tri(v[a], v[bb], v[c]);
   }
 
   /** A thin square beam from one local point to another: wires, rails, handles, branches. */

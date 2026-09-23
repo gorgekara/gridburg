@@ -114,6 +114,92 @@ export class Builder {
     this.paint(g, color);
   }
 
+  /**
+   * A tree standing at (x, y, z), `h` tall: a tapering trunk, and a crown of clustered, lumpy
+   * low-poly blobs (a broadleaf), a stack of drooping tiers (a conifer), or a tall column (a poplar),
+   * each shaded darker underneath. `seed` varies the shape so no two are alike.
+   */
+  tree(x: number, y: number, z: number, h: number, kind: 'broad' | 'conifer' | 'poplar', leaf: number, seed = 1): void {
+    const rnd = mulberry32(seed * 7919 + 13);
+    const bark = 0x6f5640, dark = new THREE.Color(leaf).multiplyScalar(0.78).getHex(), light = new THREE.Color(leaf).lerp(new THREE.Color(0xd8e8a0), 0.14).getHex();
+    const blob = (bx: number, by: number, bz: number, r: number, color: number, squash = 0.85): void => {
+      const g = new THREE.IcosahedronGeometry(r, this.detail === 2 ? 1 : 0);
+      const p = g.attributes.position;
+      // Push the corners about a little so the crown is lumpy rather than a perfect ball.
+      for (let i = 0; i < p.count; i++) {
+        const k = 1 + (Math.sin(p.getX(i) * 91 + seed) + Math.cos(p.getZ(i) * 77 + seed * 3)) * 0.07;
+        p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * squash, p.getZ(i) * k);
+      }
+      g.computeVertexNormals();
+      g.translate(bx, by, bz);
+      this.paint(g, color);
+    };
+    if (kind === 'conifer') {
+      this.taper(h * 0.025, h * 0.04, h * 0.3, x, y, z, bark, 6);
+      const tiers = 4;
+      for (let t = 0; t < tiers; t++) {
+        const f = t / tiers, r = h * (0.24 - f * 0.16), th = h * 0.3;
+        const cone = new THREE.ConeGeometry(r, th, this.detail === 2 ? 10 : 8, 1, true);
+        // Tips of each tier droop, so the silhouette is ragged rather than a clean cone.
+        const p = cone.attributes.position;
+        for (let i = 0; i < p.count; i++) if (p.getY(i) < 0) p.setY(i, p.getY(i) - (Math.sin(i * 1.7 + seed + t) * 0.5 + 0.5) * th * 0.12);
+        cone.computeVertexNormals();
+        cone.rotateY(rnd() * Math.PI);
+        cone.translate(x + (rnd() - 0.5) * h * 0.02, y + h * (0.22 + f * 0.2) + th / 2, z + (rnd() - 0.5) * h * 0.02);
+        this.paint(cone, t % 2 ? leaf : dark);
+      }
+      return;
+    }
+    if (kind === 'poplar') {
+      this.taper(h * 0.02, h * 0.035, h * 0.3, x, y, z, bark, 6);
+      for (let t = 0; t < 4; t++) blob(x + (rnd() - 0.5) * h * 0.04, y + h * (0.32 + t * 0.15), z + (rnd() - 0.5) * h * 0.04, h * (0.12 - t * 0.012), t % 2 ? leaf : light, 1.4);
+      return;
+    }
+    // A broadleaf: a trunk that forks into two limbs, and a crown of five or so blobs.
+    const trunkH = h * 0.42;
+    this.taper(h * 0.022, h * 0.04, trunkH, x, y, z, bark, 6);
+    for (const [dx, dz] of [[1, 0.4], [-0.7, -0.8]]) this.beam(x, y + trunkH * 0.85, z, x + dx * h * 0.1, y + trunkH + h * 0.12, z + dz * h * 0.1, h * 0.022, bark);
+    const crown = y + trunkH + h * 0.18;
+    blob(x, crown, z, h * 0.26, leaf);
+    for (let k = 0; k < 4; k++) {
+      const a = k * 1.7 + rnd(), d = h * (0.14 + rnd() * 0.06);
+      blob(x + Math.cos(a) * d, crown - h * 0.05 + rnd() * h * 0.12, z + Math.sin(a) * d, h * (0.15 + rnd() * 0.05), k % 2 ? dark : light);
+    }
+    blob(x, crown + h * 0.14, z, h * 0.16, light);
+  }
+
+  /** A flat slab of any outline, given as (x, z) points round it, `t` thick with its top at y: paths, ponds, beds. */
+  flat(points: [number, number][], y: number, t: number, color: number): void {
+    const s = new THREE.Shape();
+    points.forEach(([px, pz], k) => (k ? s.lineTo(px, -pz) : s.moveTo(px, -pz)));
+    s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth: t, bevelEnabled: false, curveSegments: 4 });
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, y - t, 0);
+    this.paint(dropUnderside(g, y - t), color);
+  }
+
+  /** A band of width `w` along a smooth path through (x, z) points: a garden path, a stream. */
+  band(points: [number, number][], w: number, y: number, color: number, steps = 24): void {
+    const curve = new THREE.CatmullRomCurve3(points.map(([px, pz]) => new THREE.Vector3(px, 0, pz)));
+    const left: [number, number][] = [], right: [number, number][] = [];
+    for (let k = 0; k <= steps; k++) {
+      const p = curve.getPoint(k / steps), t = curve.getTangent(k / steps);
+      left.push([p.x - t.z * w / 2, p.z + t.x * w / 2]); right.push([p.x + t.z * w / 2, p.z - t.x * w / 2]);
+    }
+    this.flat([...left, ...right.reverse()], y, 0.012, color);
+  }
+
+  /** A blob of an outline: `r` round (x, z), wobbling by `wobble`, for ponds and beds that are not circles. */
+  static blobOutline(x: number, z: number, rx: number, rz: number, wobble: number, seed: number, n = 18): [number, number][] {
+    const out: [number, number][] = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2, f = 1 + Math.sin(a * 3 + seed) * wobble + Math.cos(a * 2 + seed * 1.7) * wobble * 0.6;
+      out.push([x + Math.cos(a) * rx * f, z + Math.sin(a) * rz * f]);
+    }
+    return out;
+  }
+
   /** Draw something about another centre: facade windows on a block that is not in the lot's middle. */
   at(x: number, z: number, draw: () => void): void {
     const saved = { ...this.shift };
@@ -1049,13 +1135,27 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.14, 0.2, 0.02, 0.1, 0.04, 0.255, 0x2f2a22);
   }
   if (kind === T_PARK) {
-    b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x72a765);
-    b.box(0.17, 0.02, 0.96, 0, 0.04, 0, 0xdcc9a0);
-    for (const x of [-0.3, 0.3]) for (const z of [-0.28, 0.28]) {
-      b.cyl(0.035, 0.25, x, 0.04, z, 0x7d6245, 6);
-      b.taper(0.04, 0.2, 0.45, x, 0.22, z, 0x43815b, 8);
+    if (b.detail > 0) {
+      // A rounded lawn, a path winding through it, trees of three kinds, a flower bed and a bench.
+      b.mass(0.96, 0.04, 0.96, 0, 0, 0, 0x72a765, 0.12);
+      b.band([[-0.1, 0.44], [0.12, 0.2], [-0.08, -0.1], [0.1, -0.44]], 0.14, 0.052, 0xdcc9a0);
+      b.tree(-0.28, 0.04, -0.26, 0.62, 'broad', 0x4f8a4c, 1);
+      b.tree(0.3, 0.04, 0.28, 0.55, 'broad', 0x5f9a48, 2);
+      b.tree(0.3, 0.04, -0.3, 0.7, 'conifer', 0x3f7a4c, 3);
+      b.tree(-0.32, 0.04, 0.3, 0.6, 'poplar', 0x5a8f42, 4);
+      b.flat(Builder.blobOutline(-0.26, 0.04, 0.12, 0.09, 0.08, 5), 0.056, 0.016, 0x8e7452);
+      for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2; b.box(0.03, 0.02, 0.03, -0.26 + Math.cos(a) * 0.07, 0.056, 0.04 + Math.sin(a) * 0.05, [0xc7667d, 0xe3be6f, 0xb28dbf][k % 3]); }
+      b.box(0.14, 0.03, 0.05, 0.2, 0.06, 0.02, 0xa78058);
+      b.box(0.14, 0.05, 0.012, 0.2, 0.09, -0.004, 0xa78058);
+    } else {
+      b.box(0.96, 0.04, 0.96, 0, 0, 0, 0x72a765);
+      b.box(0.17, 0.02, 0.96, 0, 0.04, 0, 0xdcc9a0);
+      for (const x of [-0.3, 0.3]) for (const z of [-0.28, 0.28]) {
+        b.cyl(0.035, 0.25, x, 0.04, z, 0x7d6245, 6);
+        b.taper(0.04, 0.2, 0.45, x, 0.22, z, 0x43815b, 8);
+      }
+      b.box(0.26, 0.08, 0.1, 0.25, 0.08, 0, 0xa78058);
     }
-    b.box(0.26, 0.08, 0.1, 0.25, 0.08, 0, 0xa78058);
   } else if (kind === T_PLAYGROUND) {
     // Sand, a swing frame, a slide and a sandpit: a corner of the block given over to children.
     b.box(0.96, 0.04, 0.96, 0, 0, 0, 0xd9c9a2);
@@ -1067,8 +1167,11 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.taper(0.18, 0.02, 0.02, 0.22, 0.31, 0.24, 0xe0b23c, 4);
     b.box(0.16, 0.05, 0.38, 0.06, 0.12, 0.34, 0x4f8fd0);
     b.cyl(0.19, 0.06, -0.26, 0.04, 0.26, 0xc4a87a, 10);
-    b.cyl(0.03, 0.22, -0.34, 0.04, -0.3, 0x7d6245, 6);
-    b.taper(0.035, 0.16, 0.4, -0.34, 0.2, -0.3, 0x43815b, 8);
+    if (b.detail > 0) b.tree(-0.34, 0.04, -0.3, 0.55, 'broad', 0x4f8a4c, 7);
+    else {
+      b.cyl(0.03, 0.22, -0.34, 0.04, -0.3, 0x7d6245, 6);
+      b.taper(0.035, 0.16, 0.4, -0.34, 0.2, -0.3, 0x43815b, 8);
+    }
   } else if (kind === T_SPORTS) {
     // Two cells square: a marked pitch with goals, a little stand and a path along one edge.
     b.box(1.96, 0.04, 1.96, 0.5, 0, 0.5, 0x5f9755);
@@ -1091,12 +1194,24 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(2.7, 0.02, 2.7, 1, 0.04, 1, 0x72ad66);
     b.box(2.7, 0.02, 0.3, 1, 0.06, 1, 0xd8c9a4);
     b.box(0.3, 0.02, 2.7, 1, 0.06, 1, 0xd8c9a4);
-    b.cyl(0.58, 0.03, 1.6, 0.05, 1.75, 0x4e88b4, 18);
-    b.cyl(0.46, 0.02, 1.6, 0.07, 1.75, 0x5fa1cb, 18);
-    for (const [x, z] of [[0.1, 0.1], [1.9, 0.15], [0.15, 1.95], [2.05, 2.05], [0.5, 2.2], [2.2, 0.9]]) {
-      const h = 0.5 + rnd() * 0.35;
-      b.cyl(0.05, 0.3, x, 0.05, z, 0x7d6245, 7);
-      b.taper(0.06, 0.26, h, x, 0.3, z, rnd() < 0.5 ? 0x3d7a54 : 0x4c8a54, 9);
+    if (b.detail > 0) {
+      // An irregular pond with a stone edge, a winding path round it, and trees of every kind.
+      b.flat(Builder.blobOutline(1.6, 1.75, 0.62, 0.5, 0.1, 3), 0.075, 0.03, 0xb5b08d);
+      b.flat(Builder.blobOutline(1.6, 1.75, 0.54, 0.43, 0.1, 3), 0.08, 0.01, 0x5fa1cb);
+      b.band([[0.3, 2.35], [0.9, 2.25], [1.2, 2.42], [2.1, 2.35], [2.38, 1.9]], 0.16, 0.078, 0xd8c9a4);
+      const kinds = ['broad', 'conifer', 'broad', 'poplar', 'broad', 'conifer'] as const;
+      [[0.1, 0.1], [1.9, 0.15], [0.15, 1.95], [1.95, 1.95], [0.5, 2.1], [2.1, 0.9]].forEach(([x, z], k) => {
+        b.tree(x, 0.05, z, 0.75 + rnd() * 0.3, kinds[k], rnd() < 0.5 ? 0x3d7a54 : 0x4c8a54, 20 + k);
+      });
+      for (const [x, z] of [[0.6, 0.6], [1.4, 0.55], [0.55, 1.45]]) b.flat(Builder.blobOutline(x, z, 0.12, 0.09, 0.12, x * 9), 0.08, 0.02, 0x8e7452);
+    } else {
+      b.cyl(0.58, 0.03, 1.6, 0.05, 1.75, 0x4e88b4, 18);
+      b.cyl(0.46, 0.02, 1.6, 0.07, 1.75, 0x5fa1cb, 18);
+      for (const [x, z] of [[0.1, 0.1], [1.9, 0.15], [0.15, 1.95], [2.05, 2.05], [0.5, 2.2], [2.2, 0.9]]) {
+        const h = 0.5 + rnd() * 0.35;
+        b.cyl(0.05, 0.3, x, 0.05, z, 0x7d6245, 7);
+        b.taper(0.06, 0.26, h, x, 0.3, z, rnd() < 0.5 ? 0x3d7a54 : 0x4c8a54, 9);
+      }
     }
     for (const [x, z, w, d] of [[1, 0.28, 0.32, 0.12], [1, 1.72, 0.32, 0.12], [0.28, 1, 0.12, 0.32], [1.72, 1, 0.12, 0.32]]) {
       b.box(w, 0.07, d, x, 0.06, z, 0xa78058);
