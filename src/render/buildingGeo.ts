@@ -13,6 +13,15 @@ export const OFFICE_LIT = 0xf4f6ff;
 const GLASS = 0x7fb6d6;
 
 /** Accumulates colored parts and merges them into one vertex-colored geometry. */
+/**
+ * The most a mass's corners may be rounded before its windows (`perSide` of them across each facade,
+ * `span` of the facade's width, `half` the half-width of each) hang off the curve into the air.
+ */
+function fitR(r: number, w: number, d: number, perSide: number, span: number, half: number): number {
+  const reach = (dim: number): number => dim / 2 - (span * dim * (perSide - 1) / (2 * perSide) + half + 0.012);
+  return Math.max(0, Math.min(r, reach(w), reach(d)));
+}
+
 /** A mass's underside is never seen (it stands on the ground or on the floor below): leave it out. */
 function dropUnderside(src: THREE.BufferGeometry, base: number): THREE.BufferGeometry {
   const g = src.index ? src.toNonIndexed() : src;
@@ -154,6 +163,36 @@ export class Builder {
     g.rotateX(-Math.PI / 2);
     g.translate(x, y, z);
     this.paint(dropUnderside(g, y), color);
+  }
+
+  /**
+   * A hipped roof over a body `w` wide and `d` deep at height y: four slopes rising to a short ridge
+   * along the longer side, overhanging the walls by `o`.
+   */
+  hip(w: number, d: number, y: number, rise: number, color: number, o = 0.04, x = 0, z = 0): void {
+    const along = d >= w, a = (along ? d : w) / 2 + o, c = (along ? w : d) / 2 + o, ridge = Math.max(0, a - c);
+    // In the frame where the ridge runs along u: corners (±c, ±a), ridge ends (0, ±ridge).
+    const P = (v: number, u: number, h: number): number[] => along ? [x + v, y + h, z + u] : [x + u, y + h, z + v];
+    const tris: number[][] = [];
+    const quad = (p: number[], q: number[], r: number[], t: number[]): void => { tris.push(p, q, r, p, r, t); };
+    const c00 = P(-c, -a, 0), c01 = P(-c, a, 0), c10 = P(c, -a, 0), c11 = P(c, a, 0), r0 = P(0, -ridge, rise), r1 = P(0, ridge, rise);
+    // The long slopes, then the hipped ends; wound so each faces outwards.
+    const out = along;
+    if (out) { quad(c10, c11, r1, r0); quad(c01, c00, r0, r1); tris.push(c11, c01, r1, c00, c10, r0); }
+    else { quad(c11, c10, r0, r1); quad(c00, c01, r1, r0); tris.push(c01, c11, r1, c10, c00, r0); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(tris.flat(), 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(new Array((tris.length) * 2).fill(0), 2));
+    g.computeVertexNormals();
+    // Make sure every face points up and out, whichever way round the corners came.
+    const p = g.attributes.position, n = g.attributes.normal;
+    for (let t = 0; t < p.count; t += 3) {
+      if (n.getY(t) >= 0) continue;
+      const bx = p.getX(t + 1), by = p.getY(t + 1), bz = p.getZ(t + 1);
+      p.setXYZ(t + 1, p.getX(t + 2), p.getY(t + 2), p.getZ(t + 2)); p.setXYZ(t + 2, bx, by, bz);
+    }
+    g.computeVertexNormals();
+    this.paint(g, color);
   }
 
   /** A box with rounded edges and corners, base at y, centred on (x, z). */
@@ -337,7 +376,7 @@ export const BANNER_COLORS = [0xc4463a, 0x2f6f9e, 0xd8a13c, 0x3f8a63, 0x8c5aa8, 
  * facade. Only some buildings carry one, and which sides they use comes from the tile's own variant,
  * so a street gets a mix rather than a uniform row of billboards.
  */
-function banners(b: Builder, w: number, h: number, d: number, v: number, seed: number): void {
+function banners(b: Builder, w: number, h: number, d: number, v: number, seed: number, r = 0): void {
   const rnd = mulberry32(seed * 2654435761 + v);
   if (rnd() < 0.35) return; // plenty of plain frontages
   const height = Math.min(0.42, h * 0.3);
@@ -345,13 +384,14 @@ function banners(b: Builder, w: number, h: number, d: number, v: number, seed: n
   const color = BANNER_COLORS[Math.floor(rnd() * BANNER_COLORS.length)];
   const front = rnd() < 0.8, side = rnd() < 0.55 ? (rnd() < 0.5 ? -1 : 1) : 0;
   if (front) {
-    const width = w * (0.45 + rnd() * 0.4);
-    b.box(width, height, 0.03, (rnd() - 0.5) * (w - width) * 0.6, top, d / 2 + 0.02, color);
+    // Kept to the flat of the facade, clear of rounded corners.
+    const flat = w - 2 * r - 0.02, width = Math.min(flat, w * (0.45 + rnd() * 0.4));
+    b.box(width, height, 0.03, (rnd() - 0.5) * Math.max(0, flat - width) * 0.9, top, d / 2 + 0.02, color);
     b.box(width * 0.7, height * 0.22, 0.012, (rnd() - 0.5) * 0.05, top + height * 0.38, d / 2 + 0.035, 0xf4efe2);
   }
   if (side) {
-    const depth = d * (0.4 + rnd() * 0.4);
-    b.box(0.03, height, depth, side * (w / 2 + 0.02), top, (rnd() - 0.5) * (d - depth) * 0.6, color);
+    const flat = d - 2 * r - 0.02, depth = Math.min(flat, d * (0.4 + rnd() * 0.4));
+    b.box(0.03, height, depth, side * (w / 2 + 0.02), top, (rnd() - 0.5) * Math.max(0, flat - depth) * 0.9, color);
     b.box(0.012, height * 0.22, depth * 0.7, side * (w / 2 + 0.035), top + height * 0.38, 0, 0xf4efe2);
   }
 }
@@ -606,11 +646,73 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   } else if (kind === T_RES) {
     if (level === 1) {
       const w = [0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v], h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
-      b.box(w, h, d, 0, 0, 0, RES_WALLS[v]);
+      const shaped = b.detail > 0;
       if (v === 2) {
-        b.box(w + 0.06, 0.05, d + 0.06, 0, h, 0, RES_ROOFS[v]);
-        roofDetail(b, h + 0.05, v);
-      } else b.gable(w, d, h, v === 1 ? 0.28 : 0.2, RES_WALLS[v], RES_ROOFS[v]);
+        // A modern house: rounded walls, a thin overhanging roof, and a glass corner.
+        b.mass(w, h, d, 0, 0, 0, RES_WALLS[v], shaped ? 0.05 : 0);
+        b.mass(w + 0.08, 0.04, d + 0.08, 0, h, 0, RES_ROOFS[v], shaped ? 0.08 : 0);
+        if (shaped) {
+          b.box(0.16, 0.26, 0.012, w / 2 - 0.14, 0.1, d / 2 + 0.004, 0x9fc4d8);
+          b.box(0.012, 0.26, 0.16, w / 2 + 0.004, 0.1, d / 2 - 0.14, 0x9fc4d8);
+        }
+        roofDetail(b, h + 0.04, v);
+      } else {
+        b.box(w, h, d, 0, 0, 0, RES_WALLS[v]);
+        if (v === 3 && shaped) {
+          // A hipped roof instead of a gable.
+          b.hip(w, d, h, 0.2, RES_ROOFS[v], 0.05);
+        } else b.gable(w, d, h, v === 1 ? 0.28 : 0.2, RES_WALLS[v], RES_ROOFS[v]);
+      }
+      if (shaped) {
+        // A stone plinth round the foot of the walls.
+        b.box(w + 0.02, 0.05, d + 0.02, 0, 0, 0, 0x9a9282);
+        const roof = RES_ROOFS[v], wall = RES_WALLS[v];
+        if (v === 0) {
+          // A lower side wing with its own gable, running across.
+          const ww = 0.2, wd = 0.34, wh = 0.3, wx = -w / 2 - ww / 2 + 0.01, wz = -0.06;
+          b.box(ww, wh, wd, wx, 0, wz, wall);
+          const wing = new THREE.Shape();
+          wing.moveTo(wz - wd / 2 - 0.03, wh); wing.lineTo(wz + wd / 2 + 0.03, wh); wing.lineTo(wz, wh + 0.14); wing.closePath();
+          b.profile(wing, ww + 0.05, wx - 0.01, roof, 0.008, 1);
+          b.box(0.09, 0.09, 0.012, wx, 0.12, wz + wd / 2 + 0.002, WINDOW_DARK);
+        }
+        if (v === 1 || v === 5) {
+          // A dormer on the side slope, with its own little gable and window.
+          const dx = w * 0.22, dy = h + 0.06, dz = v === 1 ? -0.05 : 0.08;
+          b.box(0.1, 0.12, 0.14, dx, dy, dz, wall);
+          const dormer = new THREE.Shape();
+          dormer.moveTo(dz - 0.085, dy + 0.12); dormer.lineTo(dz + 0.085, dy + 0.12); dormer.lineTo(dz, dy + 0.19); dormer.closePath();
+          b.profile(dormer, 0.12, dx, roof, 0.006, 1);
+          b.box(0.012, 0.07, 0.08, dx + 0.052, dy + 0.025, dz, WINDOW_DARK);
+        }
+        if (v === 1 || v === 4) {
+          // A bay window on the front, with a little roof of its own.
+          const bx = -w * 0.22, bz = d / 2 + 0.035;
+          b.mass(0.2, 0.22, 0.07, bx, 0.05, bz, wall, 0.02);
+          for (const o of [-0.05, 0.05]) b.box(0.07, 0.13, 0.004, bx + o, 0.1, bz + 0.036, WINDOW_DARK);
+          b.hip(0.22, 0.09, 0.27, 0.05, roof, 0.01, bx, bz);
+        }
+        if (v === 4) {
+          // A veranda along the front: a deck, posts and a sloping roof.
+          b.box(w + 0.04, 0.03, 0.12, 0, 0.02, d / 2 + 0.07, 0x9a7650);
+          for (const px of [-w / 2 + 0.01, -w / 6, w / 6, w / 2 - 0.01]) b.box(0.016, 0.2, 0.016, px, 0.05, d / 2 + 0.12, 0xefebe0);
+          const lean = new THREE.Shape();
+          lean.moveTo(d / 2, 0.29); lean.lineTo(d / 2 + 0.15, 0.24); lean.lineTo(d / 2 + 0.15, 0.25); lean.lineTo(d / 2, 0.3); lean.closePath();
+          b.profile(lean, w + 0.06, 0, roof, 0.004, 1);
+        }
+        if (v === 3) {
+          // A front porch on two columns under a small gable.
+          for (const px of [-0.07, 0.07]) b.cyl(0.014, 0.22, 0.1 + px, 0.03, d / 2 + 0.1, 0xefebe0, 8);
+          const porch = new THREE.Shape();
+          porch.moveTo(d / 2 - 0.01, 0.25); porch.lineTo(d / 2 + 0.13, 0.25); porch.lineTo(d / 2 + 0.13, 0.26); porch.lineTo(d / 2 - 0.01, 0.3); porch.closePath();
+          b.profile(porch, 0.22, 0.1, roof, 0.004, 1);
+        }
+        if (v === 5) {
+          // A chimney breast up the side wall.
+          b.box(0.08, h + 0.3, 0.12, w / 2 + 0.03, 0, -0.12, 0x9a5a44);
+          b.box(0.1, 0.03, 0.14, w / 2 + 0.03, h + 0.3, -0.12, 0x6b6560);
+        }
+      }
       if (v === 1 || v === 3) b.windows(w, h, d, 0.34, 1, 2, 0.1);
       b.box(0.12, 0.2, 0.02, 0.1, 0, d / 2 + 0.005, 0x5a3b2a);
       b.box(0.1, 0.1, 0.02, -0.13, 0.18, d / 2 + 0.005, WINDOW_DARK);
@@ -631,7 +733,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       const floors = [3, 4, 5, 4, 2, 6][v];
       const w = [0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
       // Rounded corners, a plinth, a moulded cornice in two steps.
-      const r = [0.05, 0.02, 0.09, 0.035, 0.07, 0.1][v];
+      const r = Math.min(fitR([0.05, 0.02, 0.09, 0.035, 0.07, 0.1][v], w, d, v === 2 ? 2 : 3, 0.85, 0.15 * 0.4), w / 2 - (0.26 * w + 0.105));
       b.mass(w, h, d, 0, 0, 0, APT_WALLS[v], r);
       b.mass(w + 0.04, 0.06, d + 0.04, 0, 0, 0, 0x8c8578, r + 0.02);
       b.mass(w + 0.02, 0.03, d + 0.02, 0, h - 0.03, 0, new THREE.Color(APT_WALLS[v]).multiplyScalar(0.82).getHex(), r + 0.01);
@@ -649,7 +751,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     } else {
       const floors = [7, 9, 6, 11, 5, 8][v];
       const w = [0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
-      const r = [0.08, 0.1, 0.04, 0.1, 0.06, 0.1][v];
+      const r = Math.min(fitR([0.08, 0.1, 0.04, 0.1, 0.06, 0.1][v], w, d, 3, 0.85, 0.12 * 0.4), w / 2 - (0.26 * w + 0.105));
       b.mass(w, h, d, 0, 0, 0, TOWER_WALLS[v], r);
       b.mass(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469, r + 0.025);
       b.mass(w + 0.03, 0.05, d + 0.03, 0, h, 0, 0x5f5a53, r + 0.015);
@@ -672,7 +774,8 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   } else if (kind === T_COM) {
     if (level === 1) {
       const w = [0.82, 0.78, 0.84, 0.7, 0.86, 0.66][v], h = [0.55, 0.7, 0.48, 0.85, 0.42, 0.95][v], d = [0.7, 0.62, 0.76, 0.66, 0.8, 0.58][v];
-      b.mass(w, h, d, 0, 0, 0, SHOP_WALLS[v], [0.03, 0.05, 0.02, 0.04, 0.03, 0.06][v]);
+      const r = [0.03, 0.05, 0.02, 0.04, 0.03, 0.06][v];
+      b.mass(w, h, d, 0, 0, 0, SHOP_WALLS[v], r);
       b.box(w * 0.6, 0.28, 0.03, -w * 0.12, 0.12, d / 2 + 0.005, GLASS);
       b.box(0.14, 0.38, 0.03, w * 0.36, 0, d / 2 + 0.005, 0x3d2c22);
       if (v !== 3 && v !== 5) {
@@ -688,7 +791,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       for (const side of [-1, 0, 1]) b.pane(0.012, 0.28, -w * 0.12 + side * w * 0.27, 0.12, d / 2 + 0.022, 0, 0xb8c1bc);
       b.pane(0.008, 0.07, w * 0.36 - 0.035, 0.14, d / 2 + 0.022, 0, 0xd2c6a6);
       b.box(w * 0.6, 0.12, 0.05, -w * 0.12, h, d / 2 - 0.03, 0xfff4dc);
-      banners(b, w, h, d, v, 11);
+      banners(b, w, h, d, v, 11, r);
       shopDisplay(b, w, h, d, v);
       roofDetail(b, h + 0.12, v);
       b.box(0.02, 0.18, 0.3, w / 2 + 0.005, 0.15, 0, WINDOW_DARK);
@@ -696,21 +799,21 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       // Two, three or six storeys, and a parapet or a setback top floor rather than one flat slab.
       const floors = [3, 5, 2, 6, 4, 3][v];
       const w = [0.8, 0.72, 0.84, 0.68, 0.76, 0.82][v], h = 0.3 + floors * 0.31, d = [0.76, 0.7, 0.8, 0.66, 0.78, 0.72][v];
-      const r = [0.06, 0.03, 0.08, 0.1, 0.02, 0.05][v];
+      const r = fitR([0.06, 0.03, 0.08, 0.1, 0.02, 0.05][v], w, d, 4, 0.82, Math.min(0.12, (w * 0.8) / 4 - 0.03) / 2);
       b.mass(w, h, d, 0, 0, 0, BLOCK_WALLS[v], r);
       b.mass(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257, r + 0.02);
       b.bands(w, h, d, 0.3, floors, v % 2 ? 0x3d6a85 : 0x4a4139, 0.1, r);
       b.litPanes(w, h, d, 0.3, floors, 4, 0.42);
       if (v === 1 || v === 4) b.mass(w * 0.7, 0.34, d * 0.7, 0, h, 0, BLOCK_WALLS[v], r); // setback top floor
       b.mass(w + 0.03, 0.05, d + 0.03, 0, h + (v === 1 || v === 4 ? 0.34 : 0), 0, 0x46525c, r + 0.015);
-      banners(b, w, h, d, v, 27);
+      banners(b, w, h, d, v, 27, r);
       roofDetail(b, h + (v === 1 || v === 4 ? 0.39 : 0.05), v);
       b.box(0.4, 0.26, 0.03, 0, 0, d / 2 + 0.005, GLASS);
       entrance(b, d, 0, false);
     } else {
       const floors = [12, 9, 15, 11, 6, 8][v];
       const w = [0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
-      const r = [0.1, 0.06, 0.1, 0.08, 0.04, 0.1][v];
+      const r = fitR([0.1, 0.06, 0.1, 0.08, 0.04, 0.1][v], w, d, 5, 0.82, Math.min(0.12, (w * 0.8) / 5 - 0.03) / 2);
       b.mass(w, h, d, 0, 0, 0, GLASS_TOWERS[v], r);
       b.mass(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a, r + 0.025);
       for (let f = 1; f < floors; f++) {
@@ -741,7 +844,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   } else if (kind === T_OFFICE) {
     const floors = level === 1 ? [2, 3, 2, 4, 1, 3][v] : level === 2 ? [5, 7, 6, 8, 3, 4][v] : [11, 14, 12, 16, 7, 9][v];
     const w = [0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v], d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
-    const r = [0.05, 0.1, 0.03, 0.08, 0.02, 0.06][v];
+    const r = Math.min(fitR([0.05, 0.1, 0.03, 0.08, 0.02, 0.06][v], w, d, 4, 0.82, Math.min(0.12, (w * 0.8) / 4 - 0.03) / 2), w / 2 - (0.3 * w + 0.02));
     b.mass(w, h, d, 0, 0, 0, OFFICE_WALLS[v], r);
     b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16, r);
     b.litPanes(w, h, d, 0.18, floors, 4, 0.48, 0.28);

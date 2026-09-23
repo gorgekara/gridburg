@@ -69,7 +69,9 @@ export interface DetailSource {
 export interface Body {
   x0: number; x1: number; z0: number; z1: number; h: number;
   /** The flat roof on top, if it has one: its height and extent. Gabled houses have none. */
-  roof: { y: number; x0: number; x1: number; z0: number; z1: number } | null;
+  roof: { y: number; x0: number; x1: number; z0: number; z1: number; r: number; step: number; cols: number; blocked: Uint8Array } | null;
+  /** How far the building's upright corners are rounded off: nothing fixed to a wall goes round them. */
+  r: number;
 }
 
 // ---- geometry --------------------------------------------------------------------------------------
@@ -991,32 +993,57 @@ class ChunkBuilder {
     const y = r.y, w = r.x1 - r.x0, d = r.z1 - r.z0;
     if (w < 0.15 || d < 0.15) return;
     kit.jitter = 0;
-    // Slots on a grid, so things do not pile into each other.
+    const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2, hw = w / 2, hd = d / 2, round = r.r;
+    /** Whether a spot, with room `m` round it, is on the roof: inside its rounded outline and clear of what stands there. */
+    const onRoof = (x: number, z: number, m: number): boolean => {
+      const ax = Math.abs(x - cx), az = Math.abs(z - cz);
+      if (ax > hw - m || az > hd - m) return false;
+      const kx = ax - (hw - round), kz = az - (hd - round);
+      if (kx > 0 && kz > 0 && Math.hypot(kx, kz) > round - m) return false;
+      for (let c = Math.floor((x - m - r.x0) / r.step); c <= Math.floor((x + m - r.x0) / r.step); c++)
+        for (let q = Math.floor((z - m - r.z0) / r.step); q <= Math.floor((z + m - r.z0) / r.step); q++)
+          if (c >= 0 && q >= 0 && c < r.cols && r.blocked[q * r.cols + c]) return false;
+      return true;
+    };
+    // Slots on a grid, so things do not pile into each other, and only where there is roof to stand on.
     const cols = Math.max(1, Math.floor(w / 0.14)), rows = Math.max(1, Math.floor(d / 0.14));
     const taken = new Set<number>();
-    const slot = (): [number, number] | null => {
-      for (let tries = 0; tries < 8; tries++) {
+    const slot = (m = 0.06): [number, number] | null => {
+      for (let tries = 0; tries < 12; tries++) {
         const c = Math.floor(rnd() * cols), rr = Math.floor(rnd() * rows);
         if (taken.has(rr * cols + c)) continue;
+        const x = r.x0 + (c + 0.5) * w / cols, z = r.z0 + (rr + 0.5) * d / rows;
+        if (!onRoof(x, z, m)) continue;
         taken.add(rr * cols + c);
-        return [r.x0 + (c + 0.5) * w / cols, r.z0 + (rr + 0.5) * d / rows];
+        return [x, z];
+      }
+      return null;
+    };
+    /** A random free spot on the roof, or null. */
+    const spot = (m: number): [number, number] | null => {
+      for (let tries = 0; tries < 10; tries++) {
+        const x = r.x0 + m + rnd() * Math.max(0.001, w - 2 * m), z = r.z0 + m + rnd() * Math.max(0.001, d - 2 * m);
+        if (onRoof(x, z, m)) return [x, z];
       }
       return null;
     };
     const tall = y > 1.4;
     // A railing round the edge of the taller roofs.
     if (tall) {
-      const inset = 0.012;
-      for (const [ax, az, bx, bz] of [[r.x0, r.z0, r.x1, r.z0], [r.x1, r.z0, r.x1, r.z1], [r.x1, r.z1, r.x0, r.z1], [r.x0, r.z1, r.x0, r.z0]]) {
-        const len = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.round(len / 0.08));
-        for (let t = 0; t <= n; t++) {
-          const px = ax + (bx - ax) * t / n + (ax === bx ? (ax > (r.x0 + r.x1) / 2 ? -inset : inset) : 0);
-          const pz = az + (bz - az) * t / n + (az === bz ? (az > (r.z0 + r.z1) / 2 ? -inset : inset) : 0);
-          kit.box(px, y, pz, 0.004, 0.04, 0.004, 0x8a8e92);
-        }
-        const ox = ax === bx ? (ax > (r.x0 + r.x1) / 2 ? -inset : inset) : 0, oz = az === bz ? (az > (r.z0 + r.z1) / 2 ? -inset : inset) : 0;
-        kit.beam(ax + ox, y + 0.04, az + oz, bx + ox, y + 0.04, bz + oz, 0.004, 0x8a8e92);
+      // Round the edge, following the roof's own rounded corners.
+      const inset = 0.014, ri = Math.max(0, round - inset), ex = hw - inset, ez = hd - inset;
+      const outline: [number, number][] = [];
+      for (const [qx, qz, a0] of [[1, 1, 0], [-1, 1, Math.PI / 2], [-1, -1, Math.PI], [1, -1, Math.PI * 1.5]] as [number, number, number][]) {
+        const ccx = cx + qx * (ex - ri), ccz = cz + qz * (ez - ri);
+        for (let k = 0; k <= 3; k++) { const a = a0 + (k / 3) * Math.PI / 2; outline.push([ccx + Math.cos(a) * ri, ccz + Math.sin(a) * ri]); }
       }
+      outline.forEach(([ax, az], k) => {
+        const [bx, bz] = outline[(k + 1) % outline.length], len = Math.hypot(bx - ax, bz - az);
+        if (len < 1e-4) return;
+        kit.beam(ax, y + 0.04, az, bx, y + 0.04, bz, 0.004, 0x8a8e92);
+        const n = Math.max(1, Math.round(len / 0.08));
+        for (let t = 0; t < n; t++) kit.box(ax + (bx - ax) * t / n, y, az + (bz - az) * t / n, 0.004, 0.04, 0.004, 0x8a8e92);
+      });
       // A stair housing with its door.
       const s0 = slot();
       if (s0) { kit.box(s0[0], y, s0[1], 0.12, 0.09, 0.1, 0xb9b5a8); kit.box(s0[0], y + 0.09, s0[1], 0.13, 0.008, 0.11, 0x6f6a62); kit.box(s0[0], y, s0[1] + 0.051, 0.035, 0.06, 0.002, 0x3a3f45); }
@@ -1032,13 +1059,20 @@ class ChunkBuilder {
       kit.prism(x - (turn ? 0 : 0.022), y + 0.05, z - (turn ? 0.022 : 0), 0.014, 0.004, 0x3a3f45, 10);
     }
     // Vent pipes and an extract fan or two.
+    // A straight run across the roof, clear of its corners and of anything standing on it.
+    const clearRun = (ax: number, az: number, bx: number, bz: number): boolean => {
+      for (let t = 0; t <= 8; t++) if (!onRoof(ax + (bx - ax) * t / 8, az + (bz - az) * t / 8, 0.012)) return false;
+      return true;
+    };
+    const flatZ = (): number => cz + (rnd() * 2 - 1) * Math.max(0, hd - round - 0.05);
     for (let n = 0; n < 2 + Math.floor(rnd() * 4); n++) {
-      const x = r.x0 + 0.03 + rnd() * (w - 0.06), z = r.z0 + 0.03 + rnd() * (d - 0.06);
+      const at = spot(0.03); if (!at) continue;
+      const [x, z] = at;
       if (rnd() < 0.6) { kit.prism(x, y, z, 0.006, 0.04 + rnd() * 0.03, 0x8a8e92, 6); kit.prism(x, y + 0.07, z, 0.01, 0.006, 0x6a6e72, 6); }
       else { kit.prism(x, y, z, 0.02, 0.02, 0x9aa0a6, 8, 0.016); kit.prism(x, y + 0.02, z, 0.024, 0.006, 0x6a6e72, 8, 0.004); }
     }
     // A run of conduit across the roof.
-    if (rnd() < 0.6) { const z = r.z0 + 0.04 + rnd() * (d - 0.08); kit.beam(r.x0 + 0.03, y + 0.008, z, r.x1 - 0.03, y + 0.008, z, 0.008, 0x6a6e72); }
+    if (rnd() < 0.6) { const z = flatZ(); if (clearRun(r.x0 + 0.03, z, r.x1 - 0.03, z)) kit.beam(r.x0 + 0.03, y + 0.008, z, r.x1 - 0.03, y + 0.008, z, 0.008, 0x6a6e72); }
     if (k === T_RES) {
       // Flats: a water tank on stilts, dishes and aerials, sometimes a garden or washing.
       if (rnd() < 0.65) {
@@ -1052,7 +1086,8 @@ class ChunkBuilder {
         }
       }
       for (let n = 0; n < 1 + Math.floor(rnd() * 3); n++) {
-        const x = r.x0 + 0.03 + rnd() * (w - 0.06), z = r.z0 + 0.03 + rnd() * (d - 0.06);
+        const at = spot(0.03); if (!at) continue;
+        const [x, z] = at;
         if (rnd() < 0.5) { kit.box(x, y, z, 0.003, 0.03, 0.003, METAL); kit.prism(x, y + 0.02, z + 0.004, 0.018, 0.005, 0xe8e8e2, 8, 0.022); }
         else { kit.box(x, y, z, 0.003, 0.09, 0.003, METAL); for (const yy of [0.06, 0.075, 0.09]) kit.box(x, y + yy, z, 0.05, 0.002, 0.002, METAL, rnd()); }
       }
@@ -1066,10 +1101,12 @@ class ChunkBuilder {
           kit.box(x + 0.06, y, z + 0.05, 0.003, 0.05, 0.003, METAL); kit.prism(x + 0.06, y + 0.05, z + 0.05, 0.035, 0.012, pick(rnd, AWNING), 8, 0.004);
         }
       } else if (rnd() < 0.3) {
-        const z = r.z0 + 0.04 + rnd() * (d - 0.08);
-        for (const x of [r.x0 + 0.04, r.x1 - 0.04]) kit.box(x, y, z, 0.004, 0.05, 0.004, METAL);
-        kit.beam(r.x0 + 0.04, y + 0.05, z, r.x1 - 0.04, y + 0.05, z, 0.0015, 0xe8e8e2);
-        for (let x = r.x0 + 0.07; x < r.x1 - 0.07; x += 0.04) if (rnd() < 0.7) kit.box(x, y + 0.02, z, 0.025, 0.028, 0.002, pick(rnd, CLOTH));
+        const z = flatZ();
+        if (clearRun(r.x0 + 0.04, z, r.x1 - 0.04, z)) {
+          for (const x of [r.x0 + 0.04, r.x1 - 0.04]) kit.box(x, y, z, 0.004, 0.05, 0.004, METAL);
+          kit.beam(r.x0 + 0.04, y + 0.05, z, r.x1 - 0.04, y + 0.05, z, 0.0015, 0xe8e8e2);
+          for (let x = r.x0 + 0.07; x < r.x1 - 0.07; x += 0.04) if (rnd() < 0.7) kit.box(x, y + 0.02, z, 0.025, 0.028, 0.002, pick(rnd, CLOTH));
+        }
       }
     }
     if (k === T_OFFICE || (k === T_COM && l === 3)) {
@@ -1078,14 +1115,14 @@ class ChunkBuilder {
         const rowsN = Math.min(4, Math.floor(d / 0.09));
         for (let q = 0; q < rowsN; q++) {
           const z = r.z0 + 0.06 + q * 0.09, x = (r.x0 + r.x1) / 2;
+          if (!clearRun(x - w * 0.29, z - 0.03, x + w * 0.29, z - 0.03) || !clearRun(x - w * 0.29, z + 0.03, x + w * 0.29, z + 0.03)) continue;
           kit.box(x, y, z, w * 0.55, 0.012, 0.004, METAL);
           kit.beam(x - w * 0.27, y + 0.012, z - 0.025, x - w * 0.27, y + 0.03, z + 0.02, 0.003, METAL);
           kit.box(x, y + 0.015, z, w * 0.55, 0.004, 0.05, 0x1f3a5f);
           for (let cx = x - w * 0.25; cx < x + w * 0.27; cx += 0.035) kit.box(cx, y + 0.0195, z, 0.001, 0.0005, 0.05, 0x9aa9b8);
         }
       }
-      if (y > 3 && tileHash(i * 71) < 0.5) {
-        const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
+      if (y > 3 && tileHash(i * 71) < 0.5 && onRoof(cx, cz, Math.min(w, d) * 0.36)) {
         kit.prism(cx, y, cz, Math.min(w, d) * 0.36, 0.006, 0x3a3f45, 16);
         kit.disc(cx, y + 0.0065, cz, Math.min(w, d) * 0.3, 0xe0e0e0, 16);
         kit.disc(cx, y + 0.007, cz, Math.min(w, d) * 0.27, 0x3a3f45, 16);
@@ -1094,17 +1131,21 @@ class ChunkBuilder {
         kit.box(cx + hs * 0.6, y + 0.0072, cz, hs * 0.22, 0.001, hs * 1.6, 0xf2d94a);
         kit.box(cx, y + 0.0072, cz, hs * 1.2, 0.001, hs * 0.22, 0xf2d94a);
       } else if (y > 2) {
-        const [x, z] = slot() ?? [(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2];
-        for (let yy = 0; yy < 0.4; yy += 0.05) {
-          kit.beam(x - 0.015, y + yy, z, x + 0.015, y + yy + 0.05, z, 0.003, 0xd8453b);
-          kit.beam(x + 0.015, y + yy, z, x - 0.015, y + yy + 0.05, z, 0.003, 0xf2f2ee);
+        const mast = slot(0.03);
+        if (mast) {
+          const [x, z] = mast;
+          for (let yy = 0; yy < 0.4; yy += 0.05) {
+            kit.beam(x - 0.015, y + yy, z, x + 0.015, y + yy + 0.05, z, 0.003, 0xd8453b);
+            kit.beam(x + 0.015, y + yy, z, x - 0.015, y + yy + 0.05, z, 0.003, 0xf2f2ee);
+          }
+          kit.box(x, y + 0.4, z, 0.012, 0.012, 0.012, 0xff3030);
         }
-        kit.box(x, y + 0.4, z, 0.012, 0.012, 0.012, 0xff3030);
       }
     }
-    if (k === T_COM && l < 3 && rnd() < 0.4 && w > 0.3) {
+    const bw = Math.min(0.45, w * 0.8, 2 * (hw - round) - 0.04);
+    if (k === T_COM && l < 3 && rnd() < 0.4 && w > 0.3 && bw > 0.15 && clearRun(cx - bw / 2, r.z1 - 0.06, cx + bw / 2, r.z1 - 0.06)) {
       // A billboard on legs, facing the street.
-      const z = r.z1 - 0.06, x = (r.x0 + r.x1) / 2, bw = Math.min(0.45, w * 0.8);
+      const z = r.z1 - 0.06, x = cx;
       for (const o of [-bw * 0.35, bw * 0.35]) kit.box(x + o, y, z, 0.01, 0.12, 0.01, 0x3a3f45);
       kit.box(x, y + 0.12, z, bw, 0.16, 0.012, 0x2a2f36);
       const hue = pick(rnd, [0xd8453b, 0x2f6fd8, 0xf2b31f, 0x3fae5f, 0x8a3fd8]);
@@ -1116,6 +1157,7 @@ class ChunkBuilder {
     if (k === T_IND || (k === T_COM && rnd() < 0.5)) {
       // Rows of skylights.
       for (let x = r.x0 + 0.08; x < r.x1 - 0.05; x += 0.14) {
+        if (!clearRun(x, cz - d * 0.3, x, cz + d * 0.3)) continue;
         kit.box(x, y, (r.z0 + r.z1) / 2, 0.06, 0.015, d * 0.6, 0x8a9296);
         kit.box(x, y + 0.015, (r.z0 + r.z1) / 2, 0.05, 0.004, d * 0.58, 0x5a7a90);
       }
@@ -1160,17 +1202,20 @@ class ChunkBuilder {
     const kit = this.kit;
     if (b.x1 - b.x0 < 0.1 || b.h < 0.2) return;
     const eave = Math.min(b.h, 1.4);
+    // Where a wall is flat: rounded corners take `r` off each end of it.
+    const r = b.r, fz0 = b.z0 + r, fz1 = b.z1 - r, fx0 = b.x0 + r, fx1 = b.x1 - r;
     kit.jitter = 0;
     // Drainpipes down the back corners and down the front ones of lower buildings.
-    for (const [x, z] of [[b.x0 + 0.012, b.z0 - 0.006], [b.x1 - 0.012, b.z0 - 0.006]]) kit.box(x, 0, z, 0.01, eave, 0.01, 0x6b7879);
-    if (b.h < 0.9) for (const x of [b.x0 - 0.006, b.x1 + 0.006]) kit.box(x, 0, b.z1 - 0.02, 0.01, eave, 0.01, 0x6b7879);
+    for (const [x, z] of [[fx0 + 0.012, b.z0 - 0.006], [fx1 - 0.012, b.z0 - 0.006]]) kit.box(x, 0, z, 0.01, eave, 0.01, 0x6b7879);
+    if (b.h < 0.9) for (const x of [b.x0 - 0.006, b.x1 + 0.006]) kit.box(x, 0, fz1 - 0.02, 0.01, eave, 0.01, 0x6b7879);
     // Air conditioners on the side walls, one per floor or so.
     const floors = Math.max(1, Math.min(12, Math.floor((b.h - 0.1) / 0.31)));
     for (const side of [-1, 1]) {
       const wx = side < 0 ? b.x0 : b.x1;
       for (let f = 0; f < floors; f++) {
         if (rnd() < (l === 1 ? 0.5 : 0.55)) continue;
-        const y = 0.12 + f * 0.31 + rnd() * 0.05, z = b.z0 + 0.06 + rnd() * Math.max(0.01, b.z1 - b.z0 - 0.12);
+        const y = 0.12 + f * 0.31 + rnd() * 0.05, z = fz0 + 0.04 + rnd() * Math.max(0.01, fz1 - fz0 - 0.08);
+        if (fz1 - fz0 < 0.1) continue;
         if (y > b.h - 0.1) continue;
         kit.box(wx + side * 0.016, y, z, 0.032, 0.03, 0.05, 0xd8d8d2);
         kit.box(wx + side * 0.0325, y + 0.006, z, 0.001, 0.018, 0.036, 0x6a6e72);
@@ -1179,25 +1224,17 @@ class ChunkBuilder {
     }
     // Gas and electricity meters by the base of a side wall.
     const mx = rnd() < 0.5 ? b.x0 - 0.008 : b.x1 + 0.008;
-    kit.box(mx, 0.02, b.z1 - 0.08, 0.016, 0.04, 0.03, 0xe8e4d8);
-    kit.box(mx, 0.03, b.z1 - 0.12, 0.012, 0.028, 0.024, 0x9a9e94);
+    kit.box(mx, 0.02, fz1 - 0.05, 0.016, 0.04, 0.03, 0xe8e4d8);
+    kit.box(mx, 0.03, fz1 - 0.09, 0.012, 0.028, 0.024, 0x9a9e94);
     // A satellite dish high on a side or back wall.
     if (rnd() < (k === T_RES ? 0.45 : 0.2)) {
       const sx = rnd() < 0.5 ? b.x0 - 0.02 : b.x1 + 0.02, y = Math.min(eave - 0.06, 0.2 + rnd() * (eave - 0.25));
-      kit.box(sx, y, b.z0 + 0.1, 0.02, 0.004, 0.004, METAL);
-      kit.prism(sx, y - 0.018, b.z0 + 0.1, 0.02, 0.006, 0xe8e8e2, 8, 0.024);
-      kit.box(sx, y - 0.012, b.z0 + 0.1, 0.003, 0.02, 0.003, METAL);
+      kit.box(sx, y, fz0 + 0.06, 0.02, 0.004, 0.004, METAL);
+      kit.prism(sx, y - 0.018, fz0 + 0.06, 0.02, 0.006, 0xe8e8e2, 8, 0.024);
+      kit.box(sx, y - 0.012, fz0 + 0.06, 0.003, 0.02, 0.003, METAL);
     }
     // A vent grille or two at the foot of the back wall of the bigger buildings.
-    if (l > 1 || k !== T_RES) for (let n = 0; n < 2; n++) kit.box(b.x0 + 0.1 + rnd() * Math.max(0.01, b.x1 - b.x0 - 0.2), 0.02, b.z0 - 0.002, 0.05, 0.03, 0.004, 0x5a5e62);
-    // Rooftop clutter on the low buildings you can see the top of from the street.
-    if (b.h < 1.1 && k !== T_RES) {
-      for (let n = 0; n < 3; n++) {
-        const x = b.x0 + 0.08 + rnd() * Math.max(0.01, b.x1 - b.x0 - 0.16), z = b.z0 + 0.08 + rnd() * Math.max(0.01, b.z1 - b.z0 - 0.16);
-        if (rnd() < 0.5) { kit.box(x, b.h, z, 0.06, 0.04, 0.05, 0xb8b8b2); kit.prism(x, b.h + 0.04, z, 0.016, 0.004, 0x5a5e62, 8); }
-        else kit.prism(x, b.h, z, 0.008, 0.05, METAL, 6);
-      }
-    }
+    if (l > 1 || k !== T_RES) for (let n = 0; n < 2; n++) kit.box(fx0 + 0.05 + rnd() * Math.max(0.01, fx1 - fx0 - 0.1), 0.02, b.z0 - 0.002, 0.05, 0.03, 0.004, 0x5a5e62);
   }
 
   /** A house: mailbox, bins, a path to the door, flower beds, and a back garden full of life. */
@@ -1781,12 +1818,38 @@ export function bodyOfGeometry(geometry: THREE.BufferGeometry): Body | null {
     levels.set(key, l);
   }
   const footprint = Number.isFinite(x0) ? (x1 - x0) * (z1 - z0) : 0;
-  let roof: Body['roof'] = null;
+  let roof: Body['roof'] = null, slab: { x0: number; x1: number; z0: number; z1: number } | null = null;
   for (const [key, l] of levels) {
     if (footprint <= 0 || l.area < footprint * 0.45) continue;
-    if (!roof || key / 200 > roof.y) roof = { y: key / 200, x0: Math.max(l.x0, x0), x1: Math.min(l.x1, x1), z0: Math.max(l.z0, z0), z1: Math.min(l.z1, z1) };
+    if (!roof || key / 200 > roof.y) { roof = { y: key / 200, x0: Math.max(l.x0, x0), x1: Math.min(l.x1, x1), z0: Math.max(l.z0, z0), z1: Math.min(l.z1, z1), r: 0, step: 1, cols: 1, blocked: new Uint8Array(1) }; slab = l; }
+  }
+  // How rounded the corners are: on a rounded roof slab no vertex reaches the corner of its bounding
+  // box; the nearest sits (√2 - 1) of the radius away from it.
+  let r = 0;
+  if (roof && slab) {
+    let nearest = Infinity;
+    for (let t = 0; t < p.count; t++) {
+      if (Math.abs(p.getY(t) - roof.y) > 1e-3) continue;
+      const x = p.getX(t), z = p.getZ(t);
+      for (const [cx, cz] of [[slab.x0, slab.z0], [slab.x1, slab.z0], [slab.x0, slab.z1], [slab.x1, slab.z1]]) nearest = Math.min(nearest, Math.hypot(x - cx, z - cz));
+    }
+    if (Number.isFinite(nearest)) r = Math.max(0, nearest / (Math.SQRT2 - 1) - Math.max(slab.x1 - roof.x1, roof.x0 - slab.x0, 0));
+    // What already stands on the roof (a plant room, a crown, a tank): a coarse grid of taken ground.
+    const step = 0.04, cols = Math.max(1, Math.ceil((roof.x1 - roof.x0) / step)), rows = Math.max(1, Math.ceil((roof.z1 - roof.z0) / step));
+    const blocked = new Uint8Array(cols * rows);
+    for (let t = 0; t + 2 < p.count; t += 3) {
+      let ymin = Infinity, ymax = -Infinity, xmin = Infinity, xmax = -Infinity, zmin = Infinity, zmax = -Infinity;
+      for (let k = 0; k < 3; k++) {
+        const x = p.getX(t + k), y = p.getY(t + k), z = p.getZ(t + k);
+        ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); zmin = Math.min(zmin, z); zmax = Math.max(zmax, z);
+      }
+      if (ymax < roof.y + 0.012 || ymin < roof.y - 0.012) continue;
+      for (let c = Math.max(0, Math.floor((xmin - roof.x0) / step)); c <= Math.min(cols - 1, Math.floor((xmax - roof.x0) / step)); c++)
+        for (let q = Math.max(0, Math.floor((zmin - roof.z0) / step)); q <= Math.min(rows - 1, Math.floor((zmax - roof.z0) / step)); q++) blocked[q * cols + c] = 1;
+    }
+    roof.r = r; roof.step = step; roof.cols = cols; roof.blocked = blocked;
   }
   if (g !== geometry) g.dispose();
-  return Number.isFinite(x0) ? { x0, x1, z0, z1, h, roof } : null;
+  return Number.isFinite(x0) ? { x0, x1, z0, z1, h, roof, r } : null;
 }
 
