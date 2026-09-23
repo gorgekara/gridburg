@@ -3,6 +3,8 @@ import { VEHICLE_SCALE } from '../sim/trafficSpace';
 import * as THREE from 'three';
 import { MAX_CARS } from '../constants';
 import { Builder } from './buildingGeo';
+import { carShell, SEDAN, COUPE, VAN } from './carShell';
+import type { CarSpec } from './carShell';
 
 /** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer, 8 trolleybus, 9 taxi, 10 garbage truck. */
 export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.BufferGeometry {
@@ -12,18 +14,52 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   // Cars and vans are painted white and tinted per vehicle, so the palette lives in CarLayer.
   const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434, 0x2a2f36, 0x38b49b, 0xf7c62f, 0x3f8a4a][type];
-  b.box(0.25, 0.11, length, 0, 0.1, 0, body);
+  // Cars and vans are shaped from a side profile: rounded, raked and arched rather than boxed.
+  if (detail > 0 && (model === 1 || model === 2)) {
+    const spec = shellSpec(type)!;
+    carShell(b, spec, { paint: body, glass: 0x243a4b, trim: 0x2a2f36, rim: type === 7 ? 0x2a2f36 : 0xc4ccd0, lamp: 0xfff1c8, tail: 0xc8282a });
+    const roof = spec.cabin.roof, mid = (spec.cabin.front - spec.cabin.rake + spec.cabin.back + spec.cabin.rearRake) / 2;
+    if (type === 9) {
+      // A taxi: the roof sign and a chequered band along the doors.
+      b.roundBox(0.1, 0.035, 0.05, 0, roof + 0.004, mid, 0xffe7a0, 0.01);
+      for (const side of [-1, 1]) for (let z = -0.14; z <= 0.14; z += 0.035) b.box(0.004, 0.016, 0.017, side * (spec.width / 2 + 0.002), spec.sill + 0.045, z, (Math.round(z * 57) & 1) ? 0x252b30 : 0xf7c62f);
+    }
+    if (type === 5) {
+      // A patrol car: a light bar and a blue band along the sides.
+      b.roundBox(0.16, 0.022, 0.045, 0, roof + 0.004, mid, 0x263947, 0.008);
+      b.roundBox(0.07, 0.024, 0.04, -0.045, roof + 0.012, mid, 0x428dff, 0.008);
+      b.roundBox(0.07, 0.024, 0.04, 0.045, roof + 0.012, mid, 0xff5343, 0.008);
+      for (const side of [-1, 1]) b.box(0.004, 0.024, spec.length * 0.8, side * (spec.width / 2 + 0.002), spec.sill + 0.03, 0, 0x315b89);
+    }
+    if (type === 7) {
+      // A racer: a stripe over the top and a wing on the back.
+      for (const x of [-0.022, 0.022]) b.box(0.016, 0.003, spec.length * 0.9, x, spec.belt - 0.004, 0, 0xe06a2e);
+      b.roundBox(spec.width - 0.02, 0.008, 0.04, 0, spec.deck + 0.04, -spec.length / 2 + 0.025, 0x1f2226, 0.004);
+      for (const x of [-0.08, 0.08]) b.box(0.008, 0.04, 0.012, x, spec.deck, -spec.length / 2 + 0.025, 0x1f2226);
+    }
+    if (type === 2 && detail === 2) {
+      // Roof bars on a van.
+      for (const x of [-0.09, 0.09]) b.box(0.01, 0.01, spec.length * 0.6, x, spec.cabin.roof + 0.004, -0.05, 0x3a4046);
+    }
+    // Tyres on the asphalt, which stands a little proud of the ground the cars are placed on.
+    const geometry = b.build(); geometry.translate(0, 0.066, 0); geometry.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE); return geometry;
+  }
+  // Lorries and buses keep their boxy shape, but with rounded edges and corners.
+  const slab = (w: number, h: number, d: number, x: number, y: number, z: number, color: number, r: number): void => {
+    if (detail > 0) b.roundBox(w, h, d, x, y, z, color, r); else b.box(w, h, d, x, y, z, color);
+  };
+  slab(0.25, 0.11, length, 0, 0.1, 0, body, 0.02);
   if (model === 1) {
     b.box(0.22, 0.1, 0.25, 0, 0.21, -0.01, body);
     b.box(0.19, 0.075, 0.015, 0, 0.23, 0.12, 0x283d50);
     b.box(0.19, 0.06, 0.015, 0, 0.23, -0.14, 0x283d50);
   } else if (model === 3) {
-    b.box(0.25, 0.18, 0.22, 0, 0.2, 0.25, body);
-    b.box(0.27, 0.26, 0.48, 0, 0.16, -0.12, type === 6 ? 0xcc4434 : type === 10 ? 0x3f8a4a : 0xe1e0d7);
+    slab(0.25, 0.18, 0.22, 0, 0.2, 0.25, body, 0.035);
+    slab(0.27, 0.26, 0.48, 0, 0.16, -0.12, type === 6 ? 0xcc4434 : type === 10 ? 0x3f8a4a : 0xe1e0d7, 0.02);
     for (let z = -0.3; z < 0.1; z += 0.08) b.box(0.275, 0.23, 0.012, 0, 0.18, z, 0xb7c1bf);
     b.box(0.22, 0.08, 0.012, 0, 0.28, 0.365, 0x294354);
   } else {
-    b.box(0.24, model === 4 ? 0.24 : 0.19, length - 0.04, 0, 0.18, 0, body);
+    slab(0.24, model === 4 ? 0.24 : 0.19, length - 0.04, 0, 0.18, 0, body, 0.04);
     b.box(0.21, 0.1, 0.015, 0, 0.26, length / 2 - 0.013, 0x294354);
     if (model === 4) {
       for (let z = -0.27; z < 0.32; z += 0.12) b.box(0.25, 0.1, 0.085, 0, 0.27, z, 0x294354);
@@ -130,6 +166,14 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
   }
   const geometry = b.build(); geometry.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE); return geometry;
 }
+/** The profile a car or van is built from, if it is one. */
+export function shellSpec(type: number): CarSpec | null {
+  if (type === 2) return VAN;
+  if (type === 7) return COUPE;
+  if (type === 1 || type === 5 || type === 9) return SEDAN;
+  return null;
+}
+
 /** Head and tail lamps, drawn additively after dark. The lamps light up; the road stays dark. */
 function lightGeometry(type: number): THREE.BufferGeometry {
   const model = type === 5 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
@@ -140,10 +184,20 @@ function lightGeometry(type: number): THREE.BufferGeometry {
     for (let i = 0; i < p.count; i++) { pos.push(p.getX(i) + x, p.getY(i) + y, p.getZ(i) + z); col.push(...c); }
     g.dispose();
   };
-  const front = length / 2, warm = [1, 0.93, 0.72], red = [1, 0.12, 0.08];
-  for (const x of [-0.085, 0.085]) {
-    lamp(x, 0.158, front + 0.012, 0.055, 0.04, warm);
-    lamp(x, 0.158, -front - 0.012, 0.05, 0.04, red);
+  const warm = [1, 0.93, 0.72], red = [1, 0.12, 0.08];
+  const spec = shellSpec(type);
+  if (spec) {
+    // Over the shaped car's own lamps.
+    for (const side of [-1, 1]) {
+      lamp(side * spec.width * 0.32, spec.nose - 0.018 + 0.066, spec.length / 2 + 0.006, 0.058, 0.024, warm);
+      lamp(side * spec.width * 0.33, spec.deck - 0.021 + 0.066, -spec.length / 2 - 0.004, 0.052, 0.022, red);
+    }
+  } else {
+    const front = length / 2;
+    for (const x of [-0.085, 0.085]) {
+      lamp(x, 0.158, front + 0.012, 0.055, 0.04, warm);
+      lamp(x, 0.158, -front - 0.012, 0.05, 0.04, red);
+    }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));

@@ -18,6 +18,7 @@ import { Driver } from './render/driver';
 import type { TrafficCar } from './render/driver';
 import { vehicleLength } from './sim/trafficSpace';
 import { StreetDetailLayer } from './render/streetDetail';
+import { VergeLayer } from './render/verges';
 import { RaceWorld } from './racing/race';
 import type { RaceRoute } from './racing/routes';
 import { loadGarage, saveGarage, driveStats } from './racing/garage';
@@ -97,6 +98,7 @@ const incidents = new IncidentLayer();
 const pedestrians = new PedestrianLayer();
 const furniture = new StreetFurnitureLayer();
 const streetDetail = new StreetDetailLayer();
+const verges = new VergeLayer();
 const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
@@ -110,7 +112,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -346,6 +348,7 @@ function detailSource(): DetailSource {
     get net() { return game.net; },
     get terrain() { return game.terrain; },
     get terraform() { return game.extras.terraform; },
+    get rot() { return game.rot; },
     relief: (x, z) => hills.heightAt(x, z),
     surface: (tile) => game.waterSurface ? game.waterSurface[tile] : NaN,
     body: (k, l, v) => buildings.body(k, l, v),
@@ -547,6 +550,7 @@ game.onEdit = () => {
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
@@ -557,6 +561,7 @@ game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
@@ -707,7 +712,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { streetDetail, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 /** How far the nearest fire engine or police car is from the camera: what the siren fades with. */
@@ -722,6 +727,8 @@ function nearestSiren(): number {
   return best;
 }
 
+/** How close the orbit camera has to come before street detail appears from above. */
+const OVERVIEW_CLOSE = 26;
 let last = performance.now();
 renderer.setAnimationLoop((now: number) => {
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -751,7 +758,16 @@ renderer.setAnimationLoop((now: number) => {
   }
   updateScene(dt, game.cityTime);
   landscape.update(camera.position);
-  streetDetail.update(camera.position);
+  if (walker.active || driver.active) streetDetail.update(camera.position);
+  else {
+    // Zoomed in over the town, the same detail streams in round the point you are looking at: the
+    // rooftops, the kerbs, the yards and gardens.
+    const close = camera.position.distanceTo(controls.target);
+    if (playing && close < OVERVIEW_CLOSE) {
+      streetDetail.setOverview(true, detailSource());
+      streetDetail.update(controls.target, false, Math.max(6, Math.min(16, close * 0.6)));
+    } else if (streetDetail.overview) streetDetail.setOverview(false);
+  }
   const light = daylight(game.cityTime);
   buildings.setNight(light.night);
   streetlights.update(light.night);

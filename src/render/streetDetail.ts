@@ -11,6 +11,8 @@ import type { Terrain } from '../terrain';
 import { buildingRotation } from '../placement';
 import { VARIANTS } from './buildingGeo';
 import type { VisualDetail } from './detail';
+import { isGardenTile } from './verges';
+import { siteOwners } from '../sites';
 
 /**
  * Street-level detail, streamed in around the camera while walking or driving: the things nobody sees
@@ -53,6 +55,8 @@ export interface DetailSource {
   raster: Raster;
   net: Network;
   terrain: Terrain;
+  /** Which way each placed building was turned, for the cells a big one covers. */
+  rot?: Uint8Array;
   /** Terraform edits: tiles raised or dug get no lot detail, only what grows on the slopes. */
   terraform: Uint8Array;
   /** Relief height at scene coordinates (x, z), as the hill layer draws it. */
@@ -62,7 +66,11 @@ export interface DetailSource {
   /** A building's walls, in its own frame (+z towards its street), or null where it has none. */
   body(kind: number, level: number, variant: number): Body | null;
 }
-export interface Body { x0: number; x1: number; z0: number; z1: number; h: number }
+export interface Body {
+  x0: number; x1: number; z0: number; z1: number; h: number;
+  /** The flat roof on top, if it has one: its height and extent. Gabled houses have none. */
+  roof: { y: number; x0: number; x1: number; z0: number; z1: number } | null;
+}
 
 // ---- geometry --------------------------------------------------------------------------------------
 
@@ -79,7 +87,7 @@ function rgb(hex: number): [number, number, number] {
  * A fast mesh writer for small props: flat-shaded triangles with vertex colours, placed in a local
  * frame (`at`) that is moved and turned about y. Local +z is the frame's front.
  */
-class Kit {
+export class Kit {
   private pos: number[] = [];
   private col: number[] = [];
   private ox = 0; private oy = 0; private oz = 0; private c = 1; private s = 0;
@@ -217,7 +225,7 @@ class Kit {
 }
 
 /** A small seeded random stream. */
-function stream(seed: number): () => number {
+export function stream(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -227,14 +235,14 @@ function stream(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const pick = <T>(rnd: () => number, list: readonly T[]): T => list[Math.floor(rnd() * list.length) % list.length];
+export const pick = <T>(rnd: () => number, list: readonly T[]): T => list[Math.floor(rnd() * list.length) % list.length];
 
 // ---- palettes --------------------------------------------------------------------------------------
 
 const GRASS = [0x5f8a45, 0x6b9950, 0x78a257, 0x557d3d, 0x87ab5f];
-const FLOWERS = [0xe8e2d0, 0xf2c94c, 0xd8453b, 0xb784d6, 0xf09ac0, 0x6fa8dc, 0xf5a14a];
+export const FLOWERS = [0xe8e2d0, 0xf2c94c, 0xd8453b, 0xb784d6, 0xf09ac0, 0x6fa8dc, 0xf5a14a];
 const ROCK = [0x8d8a80, 0x9a968c, 0x7b786f, 0xa8a398];
-const BUSH = [0x4f7a3c, 0x5d8a45, 0x466f36, 0x5a8040];
+export const BUSH = [0x4f7a3c, 0x5d8a45, 0x466f36, 0x5a8040];
 const BIN = [0x3f6b4a, 0x4a5a6a, 0x3a4a7a, 0x6a4a3a, 0x505050];
 const CLOTH = [0xe8e2d0, 0xd8453b, 0x6fa8dc, 0xf2c94c, 0x9ac27f, 0xf09ac0];
 const AWNING = [0xc8382f, 0x2f6f4f, 0x2f5f9f, 0xd98a2b, 0x7a3f7a, 0x3f7f8f];
@@ -268,9 +276,18 @@ export class StreetDetailLayer {
   /** Street view on or off: off throws every chunk away. */
   setActive(on: boolean, source: DetailSource | null = null): void {
     this.active = on;
+    this.overview = false;
     this.source = source;
     this.group.visible = on;
     if (!on) this.clear();
+  }
+
+  /** Seen from above, close in: the coarser detail and the rooftops round the point looked at. */
+  overview = false;
+  setOverview(on: boolean, source: DetailSource | null = null): void {
+    if (on === this.overview && on === this.active) return;
+    this.setActive(on, source);
+    this.overview = on;
   }
 
   clear(): void {
@@ -290,11 +307,14 @@ export class StreetDetailLayer {
    * Stream chunks in and out around the camera. `urgent` builds everything in reach at once (on
    * stepping into the street) instead of a few chunks per frame.
    */
-  update(camera: THREE.Vector3, urgent = false): void {
+  update(camera: { x: number; z: number }, urgent = false, reach?: number): void {
     const src = this.source;
     if (!this.active || !src) return;
     this.frame++;
-    const cx = camera.x + HALF, cz = camera.z + HALF, { far, fine } = this.reach;
+    const cx = camera.x + HALF, cz = camera.z + HALF;
+    // From above nothing is built at the finest level (the grass and the litter are too small to see),
+    // and how far the detail reaches follows how close the camera is.
+    const far = this.overview ? Math.min(this.reach.far + 4, reach ?? this.reach.far) : this.reach.far, fine = this.overview ? 0 : this.reach.fine;
     const n = Math.ceil(GRID / CHUNK);
     // Chunks that have fallen behind go first.
     for (const [key, c] of this.chunks) {
@@ -380,7 +400,9 @@ class ChunkBuilder {
   constructor(kit: Kit, src: DetailSource, x0: number, z0: number, fine: boolean) {
     this.kit = kit; this.src = src; this.x0 = x0; this.z0 = z0; this.fine = fine;
     this.rnd = stream(x0 * 7919 + z0 * 104729 + (fine ? 1 : 0));
+    this.owners = siteOwners(src.kind, src.rot);
   }
+  private readonly owners: Int32Array;
 
   private inside(x: number, z: number): boolean {
     return x >= this.x0 && x < this.x0 + CHUNK && z >= this.z0 && z < this.z0 + CHUNK;
@@ -543,6 +565,18 @@ class ChunkBuilder {
       }
     }
 
+    // Kiosks along the shopping streets: a newsstand, a food cart under its umbrella, a phone box, an
+    // ice-cream bike.
+    for (let s = Math.max(gapA, 0.6) + segHash * 1.5; s < gapB - 0.3; s += 2.3 + rnd() * 1.4) {
+      const p = at(s);
+      if (!this.inside(p.x, p.z)) continue;
+      const side = rnd() < 0.5 ? -1 : 1;
+      if (frontage(p, side) !== T_COM) continue;
+      const k = kerbAt(p, side, hw + KERB + 0.07);
+      if (this.src.net.onRoad(k.x + HALF, k.z + HALF, seg.id, 0.04)) continue;
+      this.kiosk(k.x, k.z, k.face, rnd);
+    }
+
     // Wooden utility poles carrying wires along the house streets.
     if (seg.kind === KIND_LANE || seg.kind === KIND_ROAD) {
       const side = segHash < 0.5 ? -1 : 1;
@@ -597,6 +631,41 @@ class ChunkBuilder {
         for (const bx of [-0.06, 0.06]) kit.box(bx, 0, -0.11, 0.004, 0.04, 0.004, DARK);
         kit.box(0.05, 0, 0.05, 0.03, 0.02, 0.03, 0x6b6560);
       }
+    }
+  }
+
+  private kiosk(x: number, z: number, face: number, rnd: () => number): void {
+    const kit = this.kit, what = rnd();
+    kit.jitter = 0;
+    kit.at(x, PAVE, z, face);
+    if (what < 0.3) {
+      // A newsstand: a green hut with magazines racked on its front and a striped canopy.
+      kit.box(0, 0, 0, 0.1, 0.1, 0.07, 0x2f6f4f);
+      kit.box(0, 0.1, 0.012, 0.11, 0.008, 0.1, 0x2a4a3a);
+      for (let r = 0; r < 3; r++) for (let c = -2; c <= 2; c++) kit.box(c * 0.018, 0.03 + r * 0.018, 0.036, 0.014, 0.014, 0.002, pick(rnd, [0xd8453b, 0xf2f2ee, 0x2f6fd8, 0xf2c94c, 0xe07fb0]));
+    } else if (what < 0.65) {
+      // A food cart: a steel box on wheels, a hatch, a stack of cups and a big umbrella.
+      kit.box(0, 0.012, 0, 0.1, 0.05, 0.05, 0xc8ccce);
+      kit.box(0, 0.035, 0.026, 0.07, 0.022, 0.002, 0x3a3f45);
+      for (const o of [-0.035, 0.035]) kit.log(o, 0, -0.018, 0.012, 0.006, 0x2a2f36, Math.PI / 2, 8);
+      kit.box(0.03, 0.062, 0, 0.012, 0.02, 0.012, 0xf2f2ee);
+      kit.box(0, 0.062, 0, 0.003, 0.1, 0.003, METAL);
+      const color = pick(rnd, AWNING);
+      kit.prism(0, 0.16, 0, 0.08, 0.02, color, 8, 0.006);
+      kit.prism(0, 0.155, 0, 0.081, 0.005, 0xf2f2ee, 8);
+    } else if (what < 0.85) {
+      // A red phone box.
+      kit.box(0, 0, 0, 0.05, 0.14, 0.05, 0xc8282a);
+      kit.box(0, 0.14, 0, 0.055, 0.012, 0.055, 0xa82426);
+      for (const [fx, fz, t] of [[0, 0.026, 0], [0, -0.026, 0], [0.026, 0, Math.PI / 2], [-0.026, 0, Math.PI / 2]] as [number, number, number][]) kit.box(fx, 0.03, fz, 0.034, 0.09, 0.002, 0x9fc4d8, t);
+      kit.box(0, 0.126, 0.026, 0.04, 0.008, 0.002, 0x1f2226);
+    } else {
+      // An ice-cream bike with its cool box and parasol.
+      kit.box(0, 0.02, 0.015, 0.06, 0.04, 0.045, 0xf2f2ee);
+      kit.box(0, 0.032, 0.038, 0.05, 0.015, 0.002, 0xe07fb0);
+      for (const o of [-0.02, 0.03]) kit.log(0, 0, o, 0.013, 0.004, 0x2a2f36, 0, 8);
+      kit.box(0, 0.06, 0.015, 0.003, 0.08, 0.003, METAL);
+      kit.prism(0, 0.14, 0.015, 0.05, 0.015, 0x7fd0ff, 8, 0.004);
     }
   }
 
@@ -677,6 +746,10 @@ class ChunkBuilder {
     const k = kind[i];
     const shaped = terraform[i] !== 0;
     if (terrain.shore[i]) this.shore(i, x, z);
+    // The cells of a big building are its own, even where no wall stands.
+    if (!k && this.owners[i] >= 0) return;
+    // The planted cells in town have their own gardens: only a little grass here.
+    if (!k && !shaped && isGardenTile(i, kind, level, raster, terrain, terraform, this.owners)) { this.wild(i, x, z, 0.35, true); return; }
     if (shaped || !k) { this.wild(i, x, z, shaped ? 0.6 : 1); return; }
     if (isZone(k)) {
       if (!level[i]) { this.emptyLot(i, x, z); return; }
@@ -687,7 +760,7 @@ class ChunkBuilder {
   }
 
   /** Open ground: grass, wildflowers, rocks, bushes, now and then a sapling, a log or mushrooms. */
-  private wild(i: number, x: number, z: number, density: number): void {
+  private wild(i: number, x: number, z: number, density: number, tended = false): void {
     const kit = this.kit, rnd = this.rnd, fine = this.fine;
     const ground = (px: number, pz: number): number => this.src.relief(px - HALF, pz - HALF);
     const tufts = Math.round((fine ? 22 : 5) * density);
@@ -709,6 +782,8 @@ class ChunkBuilder {
         kit.box(0, h, 0, 0.006, 0.004, 0.006, color, rnd());
       }
     }
+    // A tended cell has a lawn, not rocks, bushes and fallen logs.
+    if (tended) return;
     const h = tileHash(i * 13 + 5);
     if (h < 0.35 * density) {
       const px = x + 0.15 + rnd() * 0.7, pz = z + 0.15 + rnd() * 0.7;
@@ -811,6 +886,8 @@ class ChunkBuilder {
 
   /** A zoned lot nobody has built on yet: long grass and a sign saying what it is for. */
   private emptyLot(i: number, x: number, z: number): void {
+    // Half the zoned lots nobody has built on are building sites; the rest are long grass and a sign.
+    if (tileHash(i * 53 + 9) < 0.5 && this.src.raster.accSeg[i] >= 0) { this.site(i, x, z); return; }
     this.wild(i, x, z, 0.7);
     if (!this.fine || tileHash(i * 17 + 1) < 0.6) return;
     const { raster } = this.src;
@@ -825,6 +902,224 @@ class ChunkBuilder {
     kit.box(0, 0.06, 0.003, 0.08, 0.045, 0.004, 0xf2f2ee);
     kit.box(0, 0.085, 0.0055, 0.07, 0.012, 0.001, color);
     kit.box(0, 0.068, 0.0055, 0.05, 0.004, 0.001, 0x6a6a6a);
+  }
+
+  /** A building site: churned earth, a hoarding, a site cabin, materials, and now and then a crane. */
+  private site(i: number, x: number, z: number): void {
+    const kit = this.kit, rnd = stream(i * 131 + 7), { raster } = this.src;
+    const cx = x + 0.5, cz = z + 0.5, dx = raster.accX[i] - cx, dz = raster.accZ[i] - cz;
+    const face = Math.atan2(dx, dz);
+    kit.jitter = 0;
+    kit.at(cx - HALF, 0, cz - HALF, face);
+    kit.quad(0, 0.004, 0, 0.9, 0.9, 0x7a6448);
+    for (let n = 0; n < 5; n++) { kit.jitter = (rnd() - 0.5) * 0.15; kit.quad(-0.35 + rnd() * 0.7, 0.0045, -0.35 + rnd() * 0.7, 0.1 + rnd() * 0.15, 0.08 + rnd() * 0.1, 0x6a5238, rnd() * 3); }
+    kit.jitter = 0;
+    // A hoarding round three sides with a gate at the front.
+    const e = 0.46;
+    for (let t = -e; t < e; t += 0.1) {
+      for (const [bx, bz, yaw] of [[-e, t + 0.05, Math.PI / 2], [e, t + 0.05, Math.PI / 2], [t + 0.05, -e, 0]] as [number, number, number][]) kit.box(bx, 0, bz, 0.1, 0.08, 0.006, (Math.round(t * 10) & 1) ? 0xf2f2ee : 0x2f6f4f, yaw);
+    }
+    for (const t of [-e, -0.15, 0.15, e]) kit.box(t, 0, e, 0.008, 0.09, 0.008, 0xd8b43a);
+    kit.box(-0.3, 0.07, e, 0.3, 0.012, 0.004, 0xd8453b); kit.box(0.3, 0.07, e, 0.3, 0.012, 0.004, 0xd8453b);
+    // Site cabin, a sand heap, pallets of bricks and a cement mixer.
+    kit.box(0.28, 0, -0.3, 0.16, 0.09, 0.09, 0xe0a021); kit.box(0.28, 0.09, -0.3, 0.17, 0.008, 0.1, 0x8a8e92);
+    kit.box(0.28, 0.035, -0.254, 0.05, 0.035, 0.002, 0x2a3a4a);
+    kit.lump(-0.25, 0, -0.25, 0.07, 0xd9b75a, 0.55, rnd);
+    for (const px of [-0.05, 0.05]) { kit.box(px, 0, -0.32, 0.07, 0.006, 0.07, WOOD); kit.box(px, 0.006, -0.32, 0.06, 0.04, 0.06, 0xb5452f); }
+    kit.log(0.05, 0.02, 0.15, 0.03, 0.06, 0xe0a021, 0.6, 8);
+    kit.box(0.05, 0, 0.15, 0.05, 0.02, 0.07, 0x3a4046, 0.6);
+    // A dug foundation, or the first storey going up in scaffolding.
+    if (rnd() < 0.5) {
+      kit.quad(-0.05, 0.005, 0.02, 0.4, 0.3, 0x4a3a2a);
+      for (let px = -0.22; px <= 0.13; px += 0.07) kit.box(px, 0, 0.02, 0.01, 0.015, 0.3, 0x9a968c);
+    } else {
+      kit.box(-0.05, 0, 0.02, 0.4, 0.02, 0.3, 0xa8a398);
+      for (const [px, pz] of [[-0.24, -0.13], [0.14, -0.13], [-0.24, 0.17], [0.14, 0.17], [-0.05, -0.13], [-0.05, 0.17]]) kit.box(px, 0.02, pz, 0.012, 0.22, 0.012, 0x8a8e92);
+      for (const y of [0.1, 0.2]) {
+        kit.box(-0.05, 0.02 + y, -0.13, 0.4, 0.006, 0.02, WOOD); kit.box(-0.05, 0.02 + y, 0.17, 0.4, 0.006, 0.02, WOOD);
+        kit.box(-0.24, 0.02 + y, 0.02, 0.02, 0.006, 0.3, WOOD); kit.box(0.14, 0.02 + y, 0.02, 0.02, 0.006, 0.3, WOOD);
+      }
+      kit.box(-0.05, 0.02, 0.02, 0.36, 0.1, 0.26, 0xb9b5a8);
+    }
+    // A tower crane over the bigger sites.
+    if (tileHash(i * 61 + 3) < 0.35) {
+      const mx = 0.33, mz = 0.28, top = 1.4;
+      for (let y = 0; y < top; y += 0.08) {
+        for (const [ax, az] of [[-0.02, -0.02], [0.02, -0.02], [0.02, 0.02], [-0.02, 0.02]]) kit.box(mx + ax, y, mz + az, 0.006, 0.08, 0.006, 0xe0a021);
+        kit.beam(mx - 0.02, y, mz - 0.02, mx + 0.02, y + 0.08, mz - 0.02, 0.003, 0xe0a021);
+        kit.beam(mx + 0.02, y, mz + 0.02, mx - 0.02, y + 0.08, mz + 0.02, 0.003, 0xe0a021);
+      }
+      const jib = rnd() * Math.PI * 2, jx = Math.sin(jib), jz = Math.cos(jib);
+      kit.box(mx, top, mz, 0.06, 0.04, 0.06, 0x3a4046);
+      kit.beam(mx - jx * 0.25, top + 0.05, mz - jz * 0.25, mx + jx * 1.0, top + 0.05, mz + jz * 1.0, 0.018, 0xe0a021);
+      kit.beam(mx, top + 0.16, mz, mx + jx * 1.0, top + 0.06, mz + jz * 1.0, 0.004, 0x3a4046);
+      kit.beam(mx, top + 0.16, mz, mx - jx * 0.25, top + 0.06, mz - jz * 0.25, 0.004, 0x3a4046);
+      kit.box(mx, top + 0.04, mz, 0.01, 0.12, 0.01, 0xe0a021);
+      kit.box(mx - jx * 0.22, top + 0.02, mz - jz * 0.22, 0.06, 0.05, 0.06, 0x8a8e92);
+      const hx = mx + jx * (0.3 + rnd() * 0.6), hz = mz + jz * (0.3 + rnd() * 0.6), drop = 0.5 + rnd() * 0.5;
+      kit.box(hx, top + 0.04 - drop, hz, 0.002, drop, 0.002, 0x2a2c30);
+      kit.box(hx, top + 0.01 - drop, hz, 0.02, 0.03, 0.02, 0xd8453b);
+    }
+  }
+
+  /** Window boxes of flowers, a lamp by the door and a mat on the step: the front of a house. */
+  private houseFront(b: Body, rnd: () => number): void {
+    const kit = this.kit, z = b.z1;
+    kit.jitter = 0;
+    kit.box(-0.13, 0.165, z + 0.012, 0.11, 0.018, 0.024, 0x8a6240);
+    for (let x = -0.175; x <= -0.085; x += 0.018) {
+      kit.jitter = (rnd() - 0.5) * 0.2;
+      kit.lump(x, 0.183, z + 0.012, 0.008, 0x4f7f3d, 0.9, rnd);
+      kit.box(x, 0.194, z + 0.014, 0.006, 0.005, 0.006, pick(rnd, FLOWERS), rnd());
+    }
+    kit.jitter = 0;
+    kit.box(0.19, 0.2, z + 0.008, 0.014, 0.022, 0.014, 0x2a2f36);
+    kit.box(0.19, 0.205, z + 0.016, 0.009, 0.012, 0.002, 0xffe7a0);
+    kit.box(0.1, 0.001, z + 0.04, 0.07, 0.003, 0.035, 0x6b4f36);
+    // The house number on a little plaque.
+    kit.box(0.2, 0.16, z + 0.004, 0.022, 0.016, 0.002, 0xe8e2d0);
+  }
+
+  /**
+   * The roof of a flat-roofed building, as you see it from above or from a taller one: plant rooms and
+   * air handlers, vents and extract fans, water tanks on stilts, dishes and aerials, solar panels,
+   * skylights, a stair housing, a railing round the edge, a garden or a billboard, a helipad on the
+   * tallest towers.
+   */
+  private rooftop(i: number, b: Body, k: number, l: number, rnd: () => number): void {
+    const kit = this.kit, r = b.roof!;
+    const y = r.y, w = r.x1 - r.x0, d = r.z1 - r.z0;
+    if (w < 0.15 || d < 0.15) return;
+    kit.jitter = 0;
+    // Slots on a grid, so things do not pile into each other.
+    const cols = Math.max(1, Math.floor(w / 0.14)), rows = Math.max(1, Math.floor(d / 0.14));
+    const taken = new Set<number>();
+    const slot = (): [number, number] | null => {
+      for (let tries = 0; tries < 8; tries++) {
+        const c = Math.floor(rnd() * cols), rr = Math.floor(rnd() * rows);
+        if (taken.has(rr * cols + c)) continue;
+        taken.add(rr * cols + c);
+        return [r.x0 + (c + 0.5) * w / cols, r.z0 + (rr + 0.5) * d / rows];
+      }
+      return null;
+    };
+    const tall = y > 1.4;
+    // A railing round the edge of the taller roofs.
+    if (tall) {
+      const inset = 0.012;
+      for (const [ax, az, bx, bz] of [[r.x0, r.z0, r.x1, r.z0], [r.x1, r.z0, r.x1, r.z1], [r.x1, r.z1, r.x0, r.z1], [r.x0, r.z1, r.x0, r.z0]]) {
+        const len = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.round(len / 0.08));
+        for (let t = 0; t <= n; t++) {
+          const px = ax + (bx - ax) * t / n + (ax === bx ? (ax > (r.x0 + r.x1) / 2 ? -inset : inset) : 0);
+          const pz = az + (bz - az) * t / n + (az === bz ? (az > (r.z0 + r.z1) / 2 ? -inset : inset) : 0);
+          kit.box(px, y, pz, 0.004, 0.04, 0.004, 0x8a8e92);
+        }
+        const ox = ax === bx ? (ax > (r.x0 + r.x1) / 2 ? -inset : inset) : 0, oz = az === bz ? (az > (r.z0 + r.z1) / 2 ? -inset : inset) : 0;
+        kit.beam(ax + ox, y + 0.04, az + oz, bx + ox, y + 0.04, bz + oz, 0.004, 0x8a8e92);
+      }
+      // A stair housing with its door.
+      const s0 = slot();
+      if (s0) { kit.box(s0[0], y, s0[1], 0.12, 0.09, 0.1, 0xb9b5a8); kit.box(s0[0], y + 0.09, s0[1], 0.13, 0.008, 0.11, 0x6f6a62); kit.box(s0[0], y, s0[1] + 0.051, 0.035, 0.06, 0.002, 0x3a3f45); }
+    }
+    // Air handlers: a box, a grille and a fan on top.
+    const units = 1 + Math.floor(rnd() * (tall ? 4 : 3));
+    for (let n = 0; n < units; n++) {
+      const s1 = slot(); if (!s1) break;
+      const [x, z] = s1, turn = rnd() < 0.5 ? 0 : Math.PI / 2;
+      kit.box(x, y, z, 0.09, 0.05, 0.065, 0xc8ccce, turn);
+      kit.box(x, y + 0.012, z, 0.092, 0.026, 0.05, 0x8a9296, turn);
+      kit.prism(x + (turn ? 0 : 0.018), y + 0.05, z + (turn ? 0.018 : 0), 0.018, 0.004, 0x3a3f45, 10);
+      kit.prism(x - (turn ? 0 : 0.022), y + 0.05, z - (turn ? 0.022 : 0), 0.014, 0.004, 0x3a3f45, 10);
+    }
+    // Vent pipes and an extract fan or two.
+    for (let n = 0; n < 2 + Math.floor(rnd() * 4); n++) {
+      const x = r.x0 + 0.03 + rnd() * (w - 0.06), z = r.z0 + 0.03 + rnd() * (d - 0.06);
+      if (rnd() < 0.6) { kit.prism(x, y, z, 0.006, 0.04 + rnd() * 0.03, 0x8a8e92, 6); kit.prism(x, y + 0.07, z, 0.01, 0.006, 0x6a6e72, 6); }
+      else { kit.prism(x, y, z, 0.02, 0.02, 0x9aa0a6, 8, 0.016); kit.prism(x, y + 0.02, z, 0.024, 0.006, 0x6a6e72, 8, 0.004); }
+    }
+    // A run of conduit across the roof.
+    if (rnd() < 0.6) { const z = r.z0 + 0.04 + rnd() * (d - 0.08); kit.beam(r.x0 + 0.03, y + 0.008, z, r.x1 - 0.03, y + 0.008, z, 0.008, 0x6a6e72); }
+    if (k === T_RES) {
+      // Flats: a water tank on stilts, dishes and aerials, sometimes a garden or washing.
+      if (rnd() < 0.65) {
+        const s2 = slot();
+        if (s2) {
+          const [x, z] = s2;
+          for (const [ax, az] of [[-0.025, -0.025], [0.025, -0.025], [0.025, 0.025], [-0.025, 0.025]]) kit.box(x + ax, y, z + az, 0.006, 0.06, 0.006, WOOD_DARK);
+          kit.prism(x, y + 0.06, z, 0.04, 0.07, 0x8a6a4a, 10);
+          for (const yy of [0.075, 0.1]) kit.prism(x, y + yy, z, 0.0405, 0.004, 0x4a4e52, 10);
+          kit.prism(x, y + 0.13, z, 0.043, 0.025, 0x6b4f36, 10, 0);
+        }
+      }
+      for (let n = 0; n < 1 + Math.floor(rnd() * 3); n++) {
+        const x = r.x0 + 0.03 + rnd() * (w - 0.06), z = r.z0 + 0.03 + rnd() * (d - 0.06);
+        if (rnd() < 0.5) { kit.box(x, y, z, 0.003, 0.03, 0.003, METAL); kit.prism(x, y + 0.02, z + 0.004, 0.018, 0.005, 0xe8e8e2, 8, 0.022); }
+        else { kit.box(x, y, z, 0.003, 0.09, 0.003, METAL); for (const yy of [0.06, 0.075, 0.09]) kit.box(x, y + yy, z, 0.05, 0.002, 0.002, METAL, rnd()); }
+      }
+      if (rnd() < 0.3) {
+        // A roof garden: planters, greenery, a bench and a parasol.
+        const s3 = slot();
+        if (s3) {
+          const [x, z] = s3;
+          for (const o of [-0.04, 0.04]) { kit.box(x + o, y, z, 0.06, 0.02, 0.025, 0x9c9488); kit.jitter = (rnd() - 0.5) * 0.2; kit.lump(x + o, y + 0.02, z, 0.018, pick(rnd, BUSH), 0.9, rnd); kit.jitter = 0; }
+          kit.box(x, y, z + 0.04, 0.05, 0.012, 0.015, WOOD);
+          kit.box(x + 0.06, y, z + 0.05, 0.003, 0.05, 0.003, METAL); kit.prism(x + 0.06, y + 0.05, z + 0.05, 0.035, 0.012, pick(rnd, AWNING), 8, 0.004);
+        }
+      } else if (rnd() < 0.3) {
+        const z = r.z0 + 0.04 + rnd() * (d - 0.08);
+        for (const x of [r.x0 + 0.04, r.x1 - 0.04]) kit.box(x, y, z, 0.004, 0.05, 0.004, METAL);
+        kit.beam(r.x0 + 0.04, y + 0.05, z, r.x1 - 0.04, y + 0.05, z, 0.0015, 0xe8e8e2);
+        for (let x = r.x0 + 0.07; x < r.x1 - 0.07; x += 0.04) if (rnd() < 0.7) kit.box(x, y + 0.02, z, 0.025, 0.028, 0.002, pick(rnd, CLOTH));
+      }
+    }
+    if (k === T_OFFICE || (k === T_COM && l === 3)) {
+      // Solar panels in tilted rows, and on the tallest towers a helipad or a mast.
+      if (rnd() < 0.55 && d > 0.3) {
+        const rowsN = Math.min(4, Math.floor(d / 0.09));
+        for (let q = 0; q < rowsN; q++) {
+          const z = r.z0 + 0.06 + q * 0.09, x = (r.x0 + r.x1) / 2;
+          kit.box(x, y, z, w * 0.55, 0.012, 0.004, METAL);
+          kit.beam(x - w * 0.27, y + 0.012, z - 0.025, x - w * 0.27, y + 0.03, z + 0.02, 0.003, METAL);
+          kit.box(x, y + 0.015, z, w * 0.55, 0.004, 0.05, 0x1f3a5f);
+          for (let cx = x - w * 0.25; cx < x + w * 0.27; cx += 0.035) kit.box(cx, y + 0.0195, z, 0.001, 0.0005, 0.05, 0x9aa9b8);
+        }
+      }
+      if (y > 3 && tileHash(i * 71) < 0.5) {
+        const cx = (r.x0 + r.x1) / 2, cz = (r.z0 + r.z1) / 2;
+        kit.prism(cx, y, cz, Math.min(w, d) * 0.36, 0.006, 0x3a3f45, 16);
+        kit.disc(cx, y + 0.0065, cz, Math.min(w, d) * 0.3, 0xe0e0e0, 16);
+        kit.disc(cx, y + 0.007, cz, Math.min(w, d) * 0.27, 0x3a3f45, 16);
+        const hs = Math.min(w, d) * 0.12;
+        kit.box(cx - hs * 0.6, y + 0.0072, cz, hs * 0.22, 0.001, hs * 1.6, 0xf2d94a);
+        kit.box(cx + hs * 0.6, y + 0.0072, cz, hs * 0.22, 0.001, hs * 1.6, 0xf2d94a);
+        kit.box(cx, y + 0.0072, cz, hs * 1.2, 0.001, hs * 0.22, 0xf2d94a);
+      } else if (y > 2) {
+        const [x, z] = slot() ?? [(r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2];
+        for (let yy = 0; yy < 0.4; yy += 0.05) {
+          kit.beam(x - 0.015, y + yy, z, x + 0.015, y + yy + 0.05, z, 0.003, 0xd8453b);
+          kit.beam(x + 0.015, y + yy, z, x - 0.015, y + yy + 0.05, z, 0.003, 0xf2f2ee);
+        }
+        kit.box(x, y + 0.4, z, 0.012, 0.012, 0.012, 0xff3030);
+      }
+    }
+    if (k === T_COM && l < 3 && rnd() < 0.4 && w > 0.3) {
+      // A billboard on legs, facing the street.
+      const z = r.z1 - 0.06, x = (r.x0 + r.x1) / 2, bw = Math.min(0.45, w * 0.8);
+      for (const o of [-bw * 0.35, bw * 0.35]) kit.box(x + o, y, z, 0.01, 0.12, 0.01, 0x3a3f45);
+      kit.box(x, y + 0.12, z, bw, 0.16, 0.012, 0x2a2f36);
+      const hue = pick(rnd, [0xd8453b, 0x2f6fd8, 0xf2b31f, 0x3fae5f, 0x8a3fd8]);
+      kit.box(x, y + 0.13, z + 0.007, bw - 0.02, 0.14, 0.002, hue);
+      kit.box(x - bw * 0.2, y + 0.19, z + 0.009, bw * 0.4, 0.03, 0.001, 0xf2f2ee);
+      kit.box(x + bw * 0.18, y + 0.15, z + 0.009, bw * 0.3, 0.07, 0.001, 0xf2f2ee);
+      kit.box(x, y + 0.28, z + 0.02, bw, 0.005, 0.02, 0x3a3f45);
+    }
+    if (k === T_IND || (k === T_COM && rnd() < 0.5)) {
+      // Rows of skylights.
+      for (let x = r.x0 + 0.08; x < r.x1 - 0.05; x += 0.14) {
+        kit.box(x, y, (r.z0 + r.z1) / 2, 0.06, 0.015, d * 0.6, 0x8a9296);
+        kit.box(x, y + 0.015, (r.z0 + r.z1) / 2, 0.05, 0.004, d * 0.58, 0x5a7a90);
+      }
+    }
   }
 
   /** The frame of a built lot: its centre in the scene and the way its front faces. */
@@ -845,6 +1140,11 @@ class ChunkBuilder {
     this.kit.at(f.x, top, f.z, f.yaw);
     const rnd = stream(i * 2654435761 + (this.fine ? 7 : 3));
     if (body) this.walls(body, k, l, rnd);
+    if (body?.roof && !(k === T_RES && l === 1 && body.roof.y < body.h + 0.02)) {
+      this.rooftop(i, body, k, l, stream(i * 7919 + 11));
+      this.kit.at(...this.saved);
+    }
+    if (body && k === T_RES && l === 1) this.houseFront(body, rnd);
     switch (k) {
       case T_RES: if (l === 1) this.house(i, body, rnd); else this.flats(i, body, l, rnd); break;
       case T_COM: this.shop(i, body, l, rnd); break;
@@ -1467,7 +1767,26 @@ export function bodyOfGeometry(geometry: THREE.BufferGeometry): Body | null {
     if (ymin > 0.1 || ymax < 0.35 || (xmax - xmin > 1e-4 && zmax - zmin > 1e-4)) continue;
     x0 = Math.min(x0, xmin); x1 = Math.max(x1, xmax); z0 = Math.min(z0, zmin); z1 = Math.max(z1, zmax); h = Math.max(h, ymax);
   }
+  // The roof: the highest level holding a good share of the footprint in flat, upward-facing faces.
+  const levels = new Map<number, { area: number; x0: number; x1: number; z0: number; z1: number }>();
+  const n = g.attributes.normal;
+  for (let t = 0; t + 2 < p.count; t += 3) {
+    const y = p.getY(t);
+    if (y < 0.3 || Math.abs(p.getY(t + 1) - y) > 1e-4 || Math.abs(p.getY(t + 2) - y) > 1e-4 || (n && n.getY(t) < 0.9)) continue;
+    const ax = p.getX(t + 1) - p.getX(t), az = p.getZ(t + 1) - p.getZ(t), bx = p.getX(t + 2) - p.getX(t), bz = p.getZ(t + 2) - p.getZ(t);
+    const area = Math.abs(ax * bz - az * bx) / 2, key = Math.round(y * 200);
+    const l = levels.get(key) ?? { area: 0, x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    l.area += area;
+    for (let k = 0; k < 3; k++) { l.x0 = Math.min(l.x0, p.getX(t + k)); l.x1 = Math.max(l.x1, p.getX(t + k)); l.z0 = Math.min(l.z0, p.getZ(t + k)); l.z1 = Math.max(l.z1, p.getZ(t + k)); }
+    levels.set(key, l);
+  }
+  const footprint = Number.isFinite(x0) ? (x1 - x0) * (z1 - z0) : 0;
+  let roof: Body['roof'] = null;
+  for (const [key, l] of levels) {
+    if (footprint <= 0 || l.area < footprint * 0.45) continue;
+    if (!roof || key / 200 > roof.y) roof = { y: key / 200, x0: Math.max(l.x0, x0), x1: Math.min(l.x1, x1), z0: Math.max(l.z0, z0), z1: Math.min(l.z1, z1) };
+  }
   if (g !== geometry) g.dispose();
-  return Number.isFinite(x0) ? { x0, x1, z0, z1, h } : null;
+  return Number.isFinite(x0) ? { x0, x1, z0, z1, h, roof } : null;
 }
 

@@ -1452,6 +1452,21 @@ test('street detail streams in around the camera, nearest first and finest near,
   assert.ok(layer.stats.built > before, 'A changed map is rebuilt');
   layer.setActive(false);
   assert.equal(layer.group.children.length, 0, 'Leaving the street throws the detail away');
+
+  // From above, close in: coarser chunks round the point looked at, with the rooftops dressed.
+  layer.setOverview(true, source);
+  layer.update({ x: 42.5 - 40, z: 24.5 - 40 }, true, 10);
+  assert.ok(layer.stats.chunks > 5, 'Detail streams in round the point the camera looks at');
+  assert.ok(layer.group.children.every(m => !m.castShadow), 'From above nothing is built at the finest level');
+  let high = 0;
+  for (const mesh of layer.group.children) { const p = mesh.geometry.attributes.position.array; for (let k = 1; k < p.length; k += 3) if (p[k] > 1) high++; }
+  assert.ok(high > 500, `The downtown roofs carry plant, tanks, dishes and the like: ${high} points above 1`);
+  layer.setOverview(false);
+  assert.equal(layer.group.children.length, 0);
+  // Flat roofs are found; a gabled house has none you could stand things on.
+  const tower = source.body(C.T_RES, 3, 0), gabled = source.body(C.T_RES, 1, 0);
+  assert.ok(tower.roof && tower.roof.y > 2, 'A tower has a flat roof up top');
+  assert.ok(!gabled.roof || gabled.roof.y < gabled.h + 0.02, 'A gabled house has no roof deck above its walls');
 });
 const { Driver } = await import('../src/render/driver.ts');
 test('the driven car slides under the handbrake, leaves skid marks, and bumps off traffic instead of passing through it', () => {
@@ -1574,6 +1589,27 @@ test('street races are planned on the city streets, with barriers on the side st
   assert.ok(tuned.top > stock.top && tuned.grip > stock.grip, 'Upgrades improve the car');
   assert.ok(partCost('super', 0) > partCost('hatch', 0), 'Parts cost more on dearer cars');
   assert.ok(MODELS.super.top > MODELS.coupe.top && MODELS.coupe.top > MODELS.hatch.top, 'Dearer cars are faster');
+});
+const { VergeLayer, gardenTiles } = await import('../src/render/verges.ts');
+test('empty cells between the houses and the roads are planted, and nothing is planted on a road', () => {
+  const city = demoCity(true), net = Network.fromPlain(city.net), terrain = generateTerrain(city.seed), raster = rasterize(net);
+  const tiles = gardenTiles(city.kind, city.level, raster, terrain, city.extras.terraform);
+  assert.ok(tiles.length > 10, `The demo has leftover cells in town to plant: ${tiles.length}`);
+  const layer = new VergeLayer();
+  const t0 = performance.now();
+  layer.rebuild(city.kind, city.level, raster, net, terrain, city.extras.terraform);
+  const ms = performance.now() - t0;
+  assert.ok(layer.group.children.length > 0, 'Gardens are built');
+  assert.ok(ms < 1500, `Planting the town is quick enough to redo as it grows: ${ms.toFixed(0)} ms`);
+  let onRoad = 0, points = 0;
+  for (const mesh of layer.group.children) {
+    const p = mesh.geometry.attributes.position.array;
+    for (let k = 0; k < p.length; k += 27) { points++; if (net.onRoad(p[k] + 40, p[k + 2] + 40, -1, -0.02)) onRoad++; }
+  }
+  assert.ok(onRoad / points < 0.01, `Gardens stay off the roads: ${onRoad} of ${points} sampled points`);
+  const again = layer.group.children.length;
+  layer.rebuild(city.kind, city.level, raster, net, terrain, city.extras.terraform);
+  assert.equal(layer.group.children.length, again, 'An unchanged town is not replanted');
 });
 const { ParkedCarLayer, PARK_INSET } = await import('../src/render/parkedCars.ts');
 test('cars park along built streets, clear of traffic lanes, junctions and roundabouts', () => {

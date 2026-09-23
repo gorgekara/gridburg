@@ -82,6 +82,48 @@ export class Builder {
     this.paint(g, color);
   }
 
+  /** Any geometry, painted one colour: for shapes the box and cylinder helpers cannot make. */
+  add(geometry: THREE.BufferGeometry, color: number): void {
+    this.paint(geometry, color);
+  }
+
+  /** A square beam of thickness t from one point to another: pillars, rails, struts. */
+  beam(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, t: number, color: number): void {
+    const len = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+    if (len < 1e-5) return;
+    const flat = Math.hypot(x1 - x0, z1 - z0);
+    if (flat < len * 0.02) { this.box(t, Math.abs(y1 - y0), t, (x0 + x1) / 2, Math.min(y0, y1), (z0 + z1) / 2, color); return; }
+    const g = new THREE.BoxGeometry(t, t, len);
+    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y1, z1), new THREE.Vector3(0, 1, 0));
+    // lookAt aims -z at the target; the box runs along z either way, so only the middle matters.
+    m.setPosition((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    g.applyMatrix4(m);
+    this.paint(g, color);
+  }
+
+  /**
+   * A side profile, given as (z, y) points round the outline (front to the right, counter-clockwise),
+   * extruded across the width `w` and centred on x, with its edges rounded off by `round`.
+   */
+  profile(shape: THREE.Shape, w: number, x: number, color: number, round = 0.01, curve = 8): void {
+    const depth = Math.max(0.001, w - round * 2);
+    const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: round > 0, bevelThickness: round, bevelSize: round * 0.8, bevelSegments: 2, curveSegments: curve });
+    g.rotateY(-Math.PI / 2);
+    g.translate(x + depth / 2, 0, 0);
+    this.paint(g, color);
+  }
+
+  /** A box with rounded edges and corners, base at y, centred on (x, z). */
+  roundBox(w: number, h: number, d: number, x: number, y: number, z: number, color: number, r = 0.02): void {
+    const s = new THREE.Shape(), hz = d / 2, rr = Math.min(r, h / 2, hz);
+    s.moveTo(z - hz + rr, y);
+    s.lineTo(z + hz - rr, y); s.quadraticCurveTo(z + hz, y, z + hz, y + rr);
+    s.lineTo(z + hz, y + h - rr); s.quadraticCurveTo(z + hz, y + h, z + hz - rr, y + h);
+    s.lineTo(z - hz + rr, y + h); s.quadraticCurveTo(z - hz, y + h, z - hz, y + h - rr);
+    s.lineTo(z - hz, y + rr); s.quadraticCurveTo(z - hz, y, z - hz + rr, y);
+    this.profile(s, w, x, color, Math.min(r, w / 4), 3);
+  }
+
   /** A wheel on its side, its axle along x: tyre, rim and hub cap, centred on (x, y, z). */
   wheel(r: number, w: number, x: number, y: number, z: number, tyre: number, rim: number, seg = 12): void {
     const t = new THREE.CylinderGeometry(r, r, w, seg);

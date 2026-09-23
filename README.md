@@ -128,6 +128,23 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   along the kerbs of streets and avenues in front of built lots, half up on the pavement so the lanes
   stay free, and clear of junctions, crossings, roundabouts and bike tracks. You can
   walk up the ramps and over bridges.
+- **Detail from above.** Zoom in over the town and the same detail streams in round the point you
+  are looking at, along with the rooftops: plant rooms and air handlers, vents and extract fans,
+  conduit, water tanks on stilts, dishes and aerials, roof gardens and washing lines on the flats,
+  solar arrays, masts and helipads on the towers, billboards on the shops, skylights on the sheds, a
+  railing and a stair housing on anything tall. Empty zoned lots are building sites: churned earth,
+  hoardings, a site cabin, bricks and sand, scaffolding or a dug foundation, and sometimes a tower
+  crane. Shopping streets get newsstands, food carts, phone boxes and ice-cream bikes, and houses
+  window boxes, a lamp by the door, a doormat and a house number.
+- **Leftover ground is planted.** An empty cell between a road and a building, too small for the
+  woods and too big to leave bare, gets a little garden of its own at every zoom level: a grove of
+  broadleaf and conifer trees with a bench, round flower beds in stone kerbs, a statue on a paved
+  circle with benches and lamps, a fountain, or a lawn with a big tree and a picnic table, all kept
+  off the roads, the pavements and the lots next door. Build on the cell and the garden goes.
+- **Cars with some shape.** Cars, taxis, police cars, vans and the player's cars are built from a side
+  profile: a nose that rounds down to the bumper, a raked windscreen, a roof and a sloping rear
+  screen, arches cut round the wheels and every edge rounded, with glass, pillars, lamps, grilles,
+  plates and mirrors. Lorries and buses keep their boxy shape but with rounded edges.
 - **Street-level detail.** Walking or driving, the streets around you fill in with the small things
   you only see up close: paving joints, kerb stones, gutters, drains, manholes, patched and cracked
   asphalt, litter and fallen leaves; street name signs at junctions, traffic signs, parking meters
