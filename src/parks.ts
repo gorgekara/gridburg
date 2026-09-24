@@ -1,4 +1,4 @@
-import { N_TILES, T_PATH, T_PLAZA, T_LAWN, isDecoration, neighbor } from './constants';
+import { N_TILES, T_PATH, T_PLAZA, T_LAWN, SERVICES, isDecoration, neighbor } from './constants';
 
 /** Only pedestrian surfaces carry access through a freeform park. Amenities are destinations. */
 export function isParkWalkable(kind: number): boolean {
@@ -7,14 +7,17 @@ export function isParkWalkable(kind: number): boolean {
 
 /** Cardinal pedestrian access from roads connected to the city's network.
  * Roadside amenities can operate directly, but cannot bridge two paths. Ponds, trees, kiosks,
- * benches, flowers and fountains only receive access; none propagate it. Runs in O(N_TILES).
+ * benches, flowers and fountains only receive access; none propagate it. A standalone piece (a tree
+ * grove) needs no access at all. Runs in O(N_TILES).
  */
 export function parkAccess(kind: Uint8Array, roadConnected: (tile: number) => boolean): Uint8Array {
   const access = new Uint8Array(N_TILES);
   const queue = new Int32Array(N_TILES);
   let head = 0, tail = 0;
   for (let i = 0; i < N_TILES; i++) {
-    if (!isDecoration(kind[i]) || !roadConnected(i)) continue;
+    if (!isDecoration(kind[i])) continue;
+    if (SERVICES[kind[i]]?.standalone && !isParkWalkable(kind[i])) { access[i] = 1; continue; }
+    if (!roadConnected(i)) continue;
     access[i] = 1;
     if (isParkWalkable(kind[i])) queue[tail++] = i;
   }

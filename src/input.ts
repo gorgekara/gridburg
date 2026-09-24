@@ -8,7 +8,7 @@ import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint, roadPoint } from './placement';
-import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from './constants';
+import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK, T_PARKING, T_PARKING_M, T_PARKING_L } from './constants';
 import { DISTRICT_COLORS, terraformAllowed } from './extras';
 import type { TerraformAction } from './extras';
 
@@ -37,7 +37,7 @@ export type Tool =
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
   | 'park' | 'playground' | 'sports' | 'garden' | 'clinic' | 'hospital' | 'cityhospital' | 'school' | 'fire' | 'police' | 'policehq' | 'recycling' | 'university' | 'solar'
-  | 'cemetery' | 'crematorium' | 'postoffice' | 'barrier' | 'landmark'
+  | 'cemetery' | 'crematorium' | 'postoffice' | 'barrier' | 'landmark' | 'parking' | 'parkingm' | 'parkingl'
   | 'district' | 'undistrict' | 'lower' | 'raise' | 'flat'
   | 'bulldoze';
 /** How the road tools turn clicks into a road, modelled on Cities: Skylines. */
@@ -51,11 +51,11 @@ const TOOL_COLOR: Record<Tool, number> = {
   road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
-  cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a,
+  cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a, parking: 0x8b9096, parkingm: 0x8b9096, parkingl: 0x8b9096,
   district: 0xffffff, undistrict: 0xe04b3a, lower: 0x4f9fcf, raise: 0x9c9a62, flat: 0x7a9d5c,
   bulldoze: 0xe04b3a,
 };
-export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS, cemetery: T_CEMETERY, crematorium: T_CREMATORIUM, postoffice: T_POST_OFFICE, barrier: T_FLOOD_BARRIER, landmark: T_LANDMARK };
+export const SERVICE_TOOL: Partial<Record<Tool, number>> = { taxi: T_TAXI, trolley: T_TROLLEY, parkpath: T_PATH, pond: T_POND, parkshop: T_PARK_SHOP, tree: T_TREE, flowers: T_FLOWERS, bench: T_BENCH, fountain: T_FOUNTAIN, plaza: T_PLAZA, lawn: T_LAWN, bus: T_BUS, station: T_STATION, subway: T_SUBWAY, airport: T_AIRPORT, treatment: T_TREATMENT, park: T_PARK, playground: T_PLAYGROUND, sports: T_SPORTS, garden: T_GARDEN, clinic: T_CLINIC, hospital: T_HOSPITAL, cityhospital: T_CITY_HOSPITAL, school: T_SCHOOL, fire: T_FIRE, police: T_POLICE, policehq: T_POLICE_HQ, recycling: T_RECYCLING, university: T_UNIVERSITY, solar: T_SOLAR, coal: T_COAL, wind: T_WIND, gas: T_GAS, hydro: T_HYDRO, nuclear: T_NUCLEAR, pump: T_PUMP, tower: T_TOWER, outlet: T_OUTLET, docks: T_DOCKS, cemetery: T_CEMETERY, crematorium: T_CREMATORIUM, postoffice: T_POST_OFFICE, barrier: T_FLOOD_BARRIER, landmark: T_LANDMARK, parking: T_PARKING, parkingm: T_PARKING_M, parkingl: T_PARKING_L };
 const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: T_IND, office: T_OFFICE, farm: T_FARM, leisure: T_LEISURE };
 
 const BAD = 0xe04b3a;

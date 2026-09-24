@@ -2100,5 +2100,107 @@ test('flooded roundabouts keep circulating: no gridlock on or at the ring', () =
   Math.random = C.mulberry32(123);
 });
 
+const { vehicleColor } = await import('../src/render/cars.ts');
+const { parkAccess } = await import('../src/parks.ts');
+const { parkingStalls } = await import('../src/render/parkingGeo.ts');
+const { hasDriveway } = await import('../src/render/parkedCars.ts');
+test('every car and van gets a real paint colour, and the streets are not all white and black', () => {
+  const seen = new Set();
+  for (const type of [1, 2]) for (let id = 0; id < 5000; id++) {
+    // Large ids hash to negative numbers, which once picked no colour and left the car black.
+    const c = vehicleColor(type, id * 2654435761 >>> 0);
+    assert.equal(typeof c, 'number'); assert.ok(Number.isInteger(c) && c >= 0 && c <= 0xffffff);
+    seen.add(c);
+  }
+  assert.ok(seen.size >= 20, `Only ${seen.size} distinct colours`);
+});
+test('tree groves need no road, park path or utilities, and give nothing access to pass on', () => {
+  const kind = new Uint8Array(C.N_TILES), tree = C.idx(30, 30);
+  kind[tree] = C.T_TREE; kind[tree + 1] = C.T_PATH; kind[tree + 2] = C.T_BENCH;
+  const access = parkAccess(kind, () => false);
+  assert.equal(access[tree], 1, 'A tree grove works where it stands');
+  assert.equal(access[tree + 1], 0); assert.equal(access[tree + 2], 0, 'but other amenities still need a way in');
+  assert.ok(C.SERVICES[C.T_TREE].standalone && !C.SERVICES[C.T_BENCH].standalone);
+  const city = newCity(7); const t = generateTerrain(7);
+  const lone = [...Array(C.N_TILES).keys()].find(i => i % C.GRID > 5 && !t.water[i] && !t.shore[i] && city.kind[i] === 0 && i > 5 * C.GRID);
+  city.kind[lone] = C.T_TREE; city.level[lone] = 1;
+  load(city); send({ type: 'warm', ticks: 2 });
+  assert.equal(latest().flags[lone], 0, 'No road, power or water warnings over a lone grove');
+});
+test('car parks come in three sizes with bays inside their footprint and need only a road', () => {
+  const sizes = [[C.T_PARKING, 1, 1], [C.T_PARKING_M, 2, 2], [C.T_PARKING_L, 3, 2]];
+  let last = 0;
+  for (const [k, w, d] of sizes) {
+    const spec = C.SERVICES[k];
+    assert.deepEqual(spec.footprint ?? [1, 1], [w, d]);
+    assert.ok(spec.parking && !spec.civic && !spec.transport && !spec.power && !spec.water);
+    const stalls = parkingStalls(w, d);
+    assert.ok(stalls.length > last, `${spec.name} holds more cars than the size below it`); last = stalls.length;
+    for (const s of stalls) assert.ok(Math.abs(s.x) + 0.1 <= w / 2 && Math.abs(s.z) + 0.14 <= d / 2 + 1e-9, `${spec.name}: a bay spills off the lot`);
+    const geo = buildingGeometry(k, 1, 0); geo.computeBoundingBox();
+    assert.ok(geo.boundingBox.max.y < 1, 'Car parks are flat');
+    assert.ok(geo.boundingBox.min.x > -0.51 && geo.boundingBox.max.x < w - 0.49, `${spec.name} stays on its own cells`);
+  }
+});
+test('some houses on a street get a drive with the family car, clear of the kerbside parking', () => {
+  const city = demoCity(), net = Network.fromPlain(city.net), r = rasterize(net);
+  const level = Uint8Array.from(city.level).map((l, i) => C.isZone(city.kind[i]) ? Math.max(l, 1) : l);
+  const layer = new ParkedCarLayer();
+  layer.rebuild(net, city.kind, level, r, city.rot);
+  const homes = [...Array(C.N_TILES).keys()].filter(i => city.kind[i] === C.T_RES && level[i] === 1);
+  const drives = homes.filter(i => hasDriveway(i, city.kind, level));
+  assert.ok(drives.length > 0 && drives.length < homes.length, 'Some houses, not all');
+  assert.ok(layer.drives.count > 0, 'Drives are drawn');
+  const parked = [...layer.byTile.values()].flat();
+  for (const p of parked) {
+    const hit = net.nearestSeg(p.x + 40, p.z + 40, 2);
+    // A car on a drive or in a car park sits well back from any traffic lane.
+    if (hit) assert.ok(hit.dist >= (hit.seg.kind === KIND_AVENUE ? 0.64 : 0.18) + 0.16 - 5e-3, 'No parked car stands in a traffic lane');
+  }
+});
+test('the river bank never sags under a building beside it', () => {
+  const { HillLayer } = hillsModule;
+  const t = generateTerrain(11), ground = new W.WaterSim(t, new Uint8Array(C.N_TILES)).ground;
+  const bank = [...Array(C.N_TILES).keys()].filter(i => !t.water[i] && !t.shore[i] && [1, -1, C.GRID, -C.GRID].some(o => t.water[i + o] || t.shore[i + o]) && i % C.GRID > 2 && i % C.GRID < 77);
+  assert.ok(bank.length > 10);
+  const bare = new HillLayer(); bare.rebuild(ground);
+  const solid = new Uint8Array(C.N_TILES); for (const i of bank) solid[i] = 1;
+  const built = new HillLayer(); built.rebuild(ground, solid);
+  let sagged = 0;
+  for (const i of bank) {
+    const x = i % C.GRID - 40, z = Math.floor(i / C.GRID) - 40;
+    for (const [fx, fz] of [[0.1, 0.1], [0.5, 0.5], [0.9, 0.9], [0.1, 0.9], [0.9, 0.1]]) {
+      if (bare.heightAt(x + fx, z + fz) < -0.02) sagged++;
+      assert.ok(built.heightAt(x + fx, z + fz) > -0.02, `The ground under a riverside lot stays level (${built.heightAt(x + fx, z + fz).toFixed(2)})`);
+    }
+  }
+  assert.ok(sagged > 0, 'Without the fix the blurred channel does reach under riverside lots');
+});
+test('vehicles round corners on a curve and drive at their own pace', () => {
+  Math.random = C.mulberry32(52);
+  load(demoCity(true)); send({ type: 'warm', ticks: 150 }); send({ type: 'speed', value: 1 });
+  const last = new Map(); let sharpest = 0;
+  const speeds = new Map();
+  for (let tick = 0; tick < 20 * C.SIM_HZ; tick++) {
+    simulateFrame(); const f = messages.at(-1);
+    if (f.type !== 'frame') continue;
+    for (let n = 0; n < C.MAX_CARS; n++) {
+      if (f.cars[n * 4 + 3] !== 1) continue;
+      const id = f.carIds[n], a = f.cars[n * 4 + 2], x = f.cars[n * 4], z = f.cars[n * 4 + 1], prev = last.get(id);
+      if (prev) {
+        const step = Math.hypot(x - prev.x, z - prev.z);
+        if (step > 1e-3 && step < 0.5) sharpest = Math.max(sharpest, Math.abs(Math.atan2(Math.sin(a - prev.a), Math.cos(a - prev.a))));
+        if (step > 1e-3) { const list = speeds.get(id) ?? []; list.push(step); speeds.set(id, list); }
+      }
+      last.set(id, { a, x, z });
+    }
+    if (messages.length > 60) messages.splice(0, messages.length - 5);
+  }
+  assert.ok(sharpest < 1.2, `A moving car swung ${(sharpest * 180 / Math.PI).toFixed(0)} degrees in one frame`);
+  const top = [...speeds.values()].filter(l => l.length > 30).map(l => Math.max(...l)).sort((a, b) => a - b);
+  assert.ok(top.length > 10 && top.at(-1) / top[0] > 1.15, 'Drivers keep different paces');
+  Math.random = C.mulberry32(123);
+});
+
 Math.random = originalRandom;
 console.log(`${checks} checks passed`);

@@ -1,4 +1,4 @@
-import { isDecoration, T_PATH, neighbor } from '../constants';
+import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
 import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER } from '../constants';
 import { buildingRotation } from '../placement';
@@ -73,7 +73,7 @@ export class BuildingLayer {
     for (const k of [T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE]) {
       for (let l = 1; l <= 3; l++) for (let v = 0; v < VARIANTS; v++) add(k, l, v, N_TILES);
     }
-    for (const k of SERVICE_KINDS) for (let v = 0; v < (k === T_PATH ? 16 : 1); v++) add(k, 1, v, isDecoration(k) ? N_TILES : 512);
+    for (const k of SERVICE_KINDS) for (let v = 0; v < (k === T_PATH || k === T_TREE ? 16 : 1); v++) add(k, 1, v, isDecoration(k) ? N_TILES : 512);
 
     this.rotors = new THREE.InstancedMesh(rotorGeometry(), new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.6 }), 512);
     this.rotors.castShadow = true;
@@ -150,6 +150,11 @@ export class BuildingLayer {
       if (k === T_PATH) for (let d = 0; d < 4; d++) {
         const n = neighbor(i, d);
         if (n >= 0 && (isDecoration(kind[n]) || raster.cover[n])) variant |= 1 << d;
+      }
+      // A grove keeps its trees back from a building or a road beside it.
+      if (k === T_TREE) for (let d = 0; d < 4; d++) {
+        const n = neighbor(i, d);
+        if (n >= 0 && (raster.cover[n] || (isZone(kind[n]) && level[n] > 0) || (isService(kind[n]) && !isDecoration(kind[n])))) variant |= 1 << d;
       }
       const kk = key(k, l, variant);
       const mesh = this.meshes.get(kk);

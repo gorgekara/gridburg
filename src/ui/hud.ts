@@ -1,4 +1,4 @@
-import { T_TROLLEY, T_TAXI, T_FLOOD_BARRIER, T_LANDMARK, FLOOD_BARRIER_RADIUS } from '../constants';
+import { T_TROLLEY, T_TAXI, T_FLOOD_BARRIER, T_LANDMARK, FLOOD_BARRIER_RADIUS, T_PARKING, T_PARKING_M, T_PARKING_L } from '../constants';
 import { COST_DIG, COST_FILL, COST_RAISE, COST_LOWER, TAX_LABELS } from '../extras';
 import type { Taxes } from '../extras';
 import { T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, LEISURE_UNLOCK } from '../constants';
@@ -59,7 +59,6 @@ const svc = (k: number): string => money(SERVICES[k].cost);
 
 // Laid out like the Cities: Skylines build menu: pick a category, then a tool from its panel.
 const CATEGORIES: Category[] = [
-  { id: 'inspect', label: 'Inspect', tools: [{ id: 'inspect', label: 'Inspect building', key: 'I', price: 'Free', hint: 'Click a building to see local services, upkeep and the exact reasons it cannot grow' }] },
   {
     id: 'roads', label: 'Roads',
     tools: [
@@ -148,23 +147,25 @@ const CATEGORIES: Category[] = [
       { id: 'subway', label: 'Metro station', price: svc(T_SUBWAY), note: '1 cell · $2.5/s', hint: 'Metro stations link to each other automatically through underground tunnels, so trains skip road traffic. 14-cell catchment, 100 passenger capacity per connection. Needs utilities' },
       { id: 'taxi', label: 'Taxi stop', price: svc(T_TAXI), note: '4 cabs · On-demand rides', hint: 'One stop dispatches up to four taxis for nearby passengers. Cabs drive directly to destinations through traffic. Needs road access and utilities' },
       { id: 'trolley', label: 'Trolleybus stop', price: svc(T_TROLLEY), note: 'Electric road transit', hint: 'Place two stops beside connected surface streets or avenues. Operating stops create trolleybus routes automatically and need utilities' },
+      { id: 'parking', label: SERVICES[T_PARKING].name, price: svc(T_PARKING), note: '1 cell · 8 spaces', hint: 'A small lot beside a road for shoppers and visitors to leave their cars. Needs a road; no utilities' },
+      { id: 'parkingm', label: SERVICES[T_PARKING_M].name, price: svc(T_PARKING_M), note: '2 × 2 · 36 spaces', hint: 'A bigger car park with lamps down its aisles. Needs a road; no utilities. Right-click or G rotates it' },
+      { id: 'parkingl', label: SERVICES[T_PARKING_L].name, price: svc(T_PARKING_L), note: '3 × 2 · 56 spaces', hint: `A large car park for a busy centre. Needs a road; no utilities. Unlocks at ${MILESTONES[SERVICES[T_PARKING_L].unlock ?? 0].name}` },
       { id: 'airport', label: 'Regional airport', price: svc(T_AIRPORT), note: '8 × 3 cells · $7/s', hint: 'Clear an 8 × 3 site, its perimeter and 12 cells beyond each runway end. Rotate to aim the flight path. Flights replace some incoming car trips within 24 cells; needs utilities' },
     ],
   },
   {
+    // Parks and the smaller landscaping pieces share one menu.
     id: 'parks', label: 'Parks',
     tools: [...(['parkpath', 'lawn', 'plaza', 'pond', 'parkshop', 'park', 'playground', 'sports', 'garden'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
       return { id, label: spec.name, price: money(spec.cost), note: id === 'parkpath' ? 'Straight or curved · $15 / cell' : ['lawn', 'plaza'].includes(id) ? 'Drag to paint' : 'Place and rotate',
         hint: spec.decoration ? 'Create your own park on clear land. Join paths, plazas or lawns to a road; ponds and kiosks belong beside them. Paths connect automatically. Right-click or G rotates a piece' : `Place ${spec.name.toLowerCase()} near residents for recreation` };
-    }), { id: 'landmark' as Tool, label: SERVICES[T_LANDMARK].name, price: svc(T_LANDMARK), note: '2 × 2 · draws tourists', hint: `A landmark that draws ${SERVICES[T_LANDMARK].attraction} visitors a minute to the city and lifts land values around it. Unlocks at ${MILESTONES[SERVICES[T_LANDMARK].unlock ?? 0].name}` }],
-  },
-  {
-    id: 'decorations', label: 'Decorations',
-    tools: (['tree', 'flowers', 'bench', 'fountain'] as Tool[]).map(id => {
+    }), ...(['tree', 'flowers', 'bench', 'fountain'] as Tool[]).map(id => {
       const spec = SERVICES[SERVICE_TOOL[id]!];
-      return { id, label: spec.name, price: money(spec.cost), note: 'Landscape your city', hint: 'Place on clear land, or replace another decoration. Connect to park paths or a road to benefit nearby residents. G rotates; Bulldoze removes' };
-    }),
+      return { id, label: spec.name, price: money(spec.cost), note: spec.standalone ? 'Grows anywhere' : 'Landscape your city',
+        hint: spec.standalone ? 'Plant on clear land, or replace another decoration. Trees need no road, path or utilities to cheer up the homes around them. Bulldoze removes'
+          : 'Place on clear land, or replace another decoration. Connect to park paths or a road to benefit nearby residents. G rotates; Bulldoze removes' };
+    }), { id: 'landmark' as Tool, label: SERVICES[T_LANDMARK].name, price: svc(T_LANDMARK), note: '2 × 2 · draws tourists', hint: `A landmark that draws ${SERVICES[T_LANDMARK].attraction} visitors a minute to the city and lifts land values around it. Unlocks at ${MILESTONES[SERVICES[T_LANDMARK].unlock ?? 0].name}` }],
   },
   {
     id: 'bulldoze', label: 'Bulldoze',
@@ -756,7 +757,7 @@ export class Hud {
           <b>one-way</b> streets or <b>roundabouts</b>. Roads turn red where traffic is slow</li>
           <li><b>Utilities</b> run along roads. Buildings need <b>power</b>, <b>water</b> and <b>sewage</b> to grow past
           small. Pumps and outlets sit on the river; keep the pump <b>upstream</b> (arrows show the flow)</li>
-          <li><b>Inspect (I)</b> — click any building to see its local coverage and growth blockers. Amber markers warn of a service downgrade after 180 simulation seconds</li>
+          <li><b>Inspect</b> — click any building to see its local coverage and growth blockers. Amber markers warn of a service downgrade after 180 simulation seconds</li>
           <li><b>Budget</b> — click your treasury to adjust service funding, review expenses or take a repayable recovery loan. Private development continues while the city is in debt</li>
           <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
@@ -792,7 +793,7 @@ export class Hud {
       { icon: 'city', title: 'A patch of land. Your future metropolis.', text: 'Your goal is to grow a connected, happy city from a small settlement to 6,500 residents. Balance homes, jobs, services and your budget. Every population milestone earns a grant and new tools. There is no timer—you can keep building after reaching Metropolis.', task: 'Your first milestone: welcome 120 residents.', button: 'Show me how' },
       { icon: 'road', title: 'Start with a connection', text: 'The highway is your link to the outside world. Extend a road from its end, then zone homes beside it. Add shops for customers and industry for jobs. Keep factories away from homes because pollution spreads.', task: 'First steps: extend the highway → zone homes → add jobs.', button: 'Next: keep the lights on' },
       { icon: 'water', title: 'Give your neighborhoods the essentials', text: 'Build a wind turbine, a water tower, and a sewage outlet on the river bank. Utilities travel through connected roads. Keep sewage downstream of drinking-water pumps. Later, a treatment plant filters 95% of its effluent when powered.', task: 'Watch electricity, water and sewage meters at the bottom left.', button: 'Next: help your city grow' },
-      { icon: 'services', title: 'Make it a place people want to live', text: 'Parks improve happiness. As your city grows, add clinics, schools, fire protection, police and waste collection. Apartments need local healthcare and education; towers need wider services. Click a building with Inspect to see exactly what is missing.', task: 'Reach milestones, reinvest grants, and check your budget before expanding.', button: 'Next: connect a bigger city' },
+      { icon: 'services', title: 'Make it a place people want to live', text: 'Parks improve happiness. As your city grows, add clinics, schools, fire protection, police and waste collection. Apartments need local healthcare and education; towers need wider services. Click a building to see exactly what is missing.', task: 'Reach milestones, reinvest grants, and check your budget before expanding.', button: 'Next: connect a bigger city' },
       { icon: 'transport', title: 'A bigger city needs more ways to move', text: 'At 400 residents, bus stops can connect homes and jobs and you can buy new highway entrances. At 900, offices bring clean jobs. At 1,800, railway stations add elevated links along roads and metro stations add underground ones. At 3,500, build a regional airport.', task: 'Place two stops or stations with utility service. Routes form automatically.', button: 'Let’s build' },
     ];
     const page = pages[this.tutorialPage];

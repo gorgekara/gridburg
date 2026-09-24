@@ -12,6 +12,7 @@ import { buildingRotation } from '../placement';
 import { VARIANTS } from './buildingGeo';
 import type { VisualDetail } from './detail';
 import { isGardenTile } from './verges';
+import { hasDriveway } from './parkedCars';
 import { siteOwners } from '../sites';
 
 /**
@@ -1250,8 +1251,9 @@ class ChunkBuilder {
     kit.box(-0.36, 0.06, 0.44, 0.014, 0.014, 0.026, pick(rnd, [0x2f3338, 0xc8382f, 0x2f5f9f, 0xe8e2d0]));
     if (front < 0.47) kit.quad(0.1, 0.0015, (front + 0.48) / 2, 0.07, 0.48 - front, 0xb5aa98);
     if (fine && front < 0.47) for (let s = front + 0.02; s < 0.47; s += 0.035) kit.quad(0.1, 0.002, s, 0.068, 0.002, 0x9a8f7e);
-    // Wheelie bins beside the house.
-    const binX = right + 0.05 < 0.45 ? right + 0.045 : left - 0.045;
+    // Wheelie bins beside the house, on the side away from the drive if it has one.
+    const drive = hasDriveway(i, this.src.kind, this.src.level);
+    const binX = !drive && right + 0.05 < 0.45 ? right + 0.045 : left - 0.045;
     if (Math.abs(binX) < 0.44) for (const [n, color] of [[0, pick(rnd, BIN)], [1, pick(rnd, BIN)]] as [number, number][]) {
       const z = front - 0.03 - n * 0.045;
       kit.box(binX, 0, z, 0.034, 0.05, 0.036, color);
@@ -1326,7 +1328,7 @@ class ChunkBuilder {
         kit.disc(x, 0.0355, z, 0.07, DARK, 12);
       } else if (h < 0.75) {
         // A garden shed.
-        const x = rnd() < 0.5 ? -0.3 : 0.3, z = gz0 + 0.08;
+        const x = drive || rnd() < 0.5 ? -0.3 : 0.3, z = gz0 + 0.08;
         kit.jitter = (rnd() - 0.5) * 0.1;
         kit.box(x, 0, z, 0.14, 0.1, 0.12, pick(rnd, [0x8a6240, 0x6f8a6a, 0xa89a7a, 0x7a5a3a]));
         kit.box(x, 0.1, z, 0.16, 0.012, 0.14, 0x5a4a3a);
@@ -1368,7 +1370,7 @@ class ChunkBuilder {
       }
       if (fine && rnd() < 0.5) {
         // A bicycle leaning on the side wall.
-        const x = rnd() < 0.5 ? left - 0.015 : right + 0.015;
+        const x = drive || rnd() < 0.5 ? left - 0.015 : right + 0.015;
         if (Math.abs(x) < 0.44) this.bicycle(x, back + 0.08, Math.PI / 2, pick(rnd, [0x2f6fb7, 0xc8382f, 0x3f3f3f, 0x3f8f4f]));
       }
     }

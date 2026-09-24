@@ -1,5 +1,6 @@
 import { parkGeometry } from './parkGeo';
-import { isDecoration, T_TROLLEY, T_TAXI } from '../constants';
+import { parkingGeometry } from './parkingGeo';
+import { isDecoration, T_TROLLEY, T_TAXI, isParking } from '../constants';
 import type { VisualDetail } from './detail';
 import { T_OFFICE, T_BUS, T_STATION, T_AIRPORT, T_TREATMENT, T_SUBWAY, SERVICES, T_FARM, T_LEISURE, T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK } from '../constants';
 import * as THREE from 'three';
@@ -740,6 +741,9 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   const v = variant % VARIANTS;
   if (isDecoration(kind)) {
     parkGeometry(b, kind, variant);
+  } else if (isParking(kind)) {
+    const [w, d] = SERVICES[kind].footprint ?? [1, 1];
+    parkingGeometry(b, w, d);
   } else if (kind === T_RES) {
     if (level === 1) {
       const w = [0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v], h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
@@ -1413,7 +1417,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   // The frontmost building detail meets the lot's +z boundary; rotation then faces it
   // toward the road. Keep the tile center fixed so zoning, picking and saves agree.
   geometry.computeBoundingBox();
-  if (!isDecoration(kind) && kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
+  if (!isDecoration(kind) && !isParking(kind) && kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
     geometry.translate(0, 0, 0.5 - geometry.boundingBox.max.z);
     geometry.computeBoundingBox();
   }

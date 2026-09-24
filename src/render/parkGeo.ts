@@ -1,9 +1,26 @@
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN } from '../constants';
 import { Builder } from './buildingGeo';
 
-/** Shared, static tile pieces; paths join their neighbours using a four-bit connection mask. */
+/** Where a grove's trees stand, pulled in from any side with a building or road on it. */
+function groveSpots(blocked: number): [number, number, number][] {
+  const spots: [number, number, number][] = [[-0.19, -0.12, 0.7], [0.2, 0.16, 0.85], [0.2, -0.24, 0.5]];
+  return spots.map(([x, z, h]) => {
+    // Keep a canopy's width back from a built-up edge; squeezed from both sides, it grows smaller.
+    const room = 0.5 - 0.2 * h;
+    const lo = (side: number): number => (blocked & (1 << side) ? -room + 0.12 : -0.5);
+    const hi = (side: number): number => (blocked & (1 << side) ? room - 0.12 : 0.5);
+    const squeeze = ((blocked & 5) === 5 ? 0.8 : 1) * ((blocked & 10) === 10 ? 0.8 : 1);
+    return [Math.min(hi(1), Math.max(lo(3), x)), Math.min(hi(2), Math.max(lo(0), z)), h * squeeze];
+  });
+}
+
+/**
+ * Shared, static tile pieces; paths join their neighbours using a four-bit connection mask, and a tree
+ * grove uses the same mask for the sides it must keep clear of. Only the park surfaces lay their own
+ * ground; everything else stands on the town's grass, so it matches the land around it.
+ */
 export function parkGeometry(b: Builder, kind: number, connections: number): void {
-  b.box(1, 0.012, 1, 0, 0, 0, kind === T_PLAZA ? 0xb7b3a6 : 0x749858);
+  if (kind === T_PATH || kind === T_PLAZA || kind === T_LAWN) b.box(1, 0.012, 1, 0, 0, 0, kind === T_PLAZA ? 0xb7b3a6 : 0x749858);
   if (kind === T_PATH) {
     const mask = connections || 5;
     b.box(0.13, 0.012, 0.13, 0, 0.014, 0, 0xd0be98);
@@ -38,12 +55,14 @@ export function parkGeometry(b: Builder, kind: number, connections: number): voi
     for (const x of [-0.12, 0, 0.12]) b.box(0.05, 0.004, 0.22, x, 0.348, 0.19, 0xe9dfc3);
     b.pane(0.21, 0.035, 0, 0.365, 0.187, 0, 0xeee1bc);
   } else if (kind === T_TREE && b.detail > 0) {
-    // A broadleaf and a conifer, shaped and lumpy rather than a pair of cones.
-    b.tree(-0.19, 0.012, -0.12, 0.7, 'broad', 0x4c7b49, 11);
-    b.tree(0.2, 0.012, 0.16, 0.85, 'conifer', 0x3f7a4c, 12);
-    b.flat(Builder.blobOutline(-0.19, -0.12, 0.09, 0.08, 0.1, 1), 0.016, 0.004, 0x5b4a3a);
+    // Broadleaves and a conifer, shaped and lumpy rather than a pair of cones.
+    const [a, c, d] = groveSpots(connections);
+    b.tree(a[0], 0.012, a[1], a[2], 'broad', 0x4c7b49, 11);
+    b.tree(c[0], 0.012, c[1], c[2], 'conifer', 0x3f7a4c, 12);
+    b.tree(d[0], 0.012, d[1], d[2], 'broad', 0x5a8a4a, 13);
+    b.flat(Builder.blobOutline(a[0], a[1], 0.09, 0.08, 0.1, 1), 0.016, 0.004, 0x5b4a3a);
   } else if (kind === T_TREE) {
-    for (const [x, z, h] of [[-0.19, -0.12, 0.65], [0.2, 0.16, 0.82]]) {
+    for (const [x, z, h] of groveSpots(connections)) {
       b.cyl(0.035, h * 0.48, x, 0.015, z, 0x786047, 6);
       b.taper(0.015, 0.23, h * 0.7, x, h * 0.3, z, 0x4c7b49, 7);
       b.taper(0.01, 0.17, h * 0.55, x, h * 0.58, z, 0x638b4e, 7);

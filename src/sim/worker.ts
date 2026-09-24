@@ -215,7 +215,7 @@ let roadLength = 0;
 /** A stretch of one segment on a route. On a motorway, which side the slip road ahead or behind is on (±1), if any. */
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
-interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean }
+interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
 let carSequence = 0;
@@ -606,23 +606,44 @@ function wiredRoute(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] |
   return path?.map(leg => ({ ...leg, seg: trolleySegIndex.get(leg.seg)! })) ?? null;
 }
 
+/**
+ * How briskly a driver goes, as a share of the road's speed. Everyone drives a little differently:
+ * some dawdle, some push on; lorries and buses keep it steady, and blue lights hurry.
+ */
+function drivingPace(vehicle: number): number {
+  const r = Math.random();
+  switch (vehicle) {
+    case 2: return 0.84 + r * 0.22;
+    case 3: case 10: return 0.76 + r * 0.14;
+    case 4: case 8: return 0.84 + r * 0.1;
+    case 5: case 6: return 1.1 + r * 0.1;
+    case 7: return 1;
+    case 9: return 0.95 + r * 0.2;
+    default: return 0.78 + r * 0.42;
+  }
+}
+
 function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission, taxiStop?: number): boolean {
   if (!freeList.length || sSeg < 0 || gSeg < 0) return false;
   const findRoute = vehicle === 8 ? wiredRoute : route;
-  const legs = findRoute(sSeg, sS, gSeg, gS);
+  let legs = findRoute(sSeg, sS, gSeg, gS);
   if (!legs || legs.length === 0) { noPath++; return false; }
   if (line !== undefined) {
     const back = findRoute(gSeg, gS, sSeg, sS);
     if (!back) return false;
     legs.push(...back);
   }
+  // A trip that starts or ends right on a node has an empty leg there, pointing along a road the car
+  // never drives; it would appear facing that way and then spin round on the spot.
+  const driven = legs.filter(l => l.p1 - l.p0 > 1e-3);
+  if (driven.length) legs = driven;
   const slot = freeList.at(-1)!;
   markRampLegs(legs);
   alignRingLegs(legs, slot, vehicle);
   const placement = carPose(legs[0], legs[0].p0, slot, vehicle);
   if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
   freeList.pop(); trafficSpace.set(slot, placement);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop };
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, pace: drivingPace(vehicle), stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop };
   activeCars++;
   return true;
 }
@@ -815,6 +836,51 @@ function carPose(leg: Leg, progress: number, slot: number, type: number): Vehicl
   return { y: roadHeight(seg, leg.fwd ? progress : seg.len - progress), x: p.x - tz * lane, z: p.z + tx * lane, angle: Math.atan2(tx, tz), type };
 }
 
+/** How far either side of a junction a turning vehicle eases round the corner instead of pivoting on the spot. */
+const CORNER = 0.55;
+const lerpPose = (a: VehiclePose, b: VehiclePose, t: number): { x: number; z: number } => ({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+
+/**
+ * Where a vehicle is drawn as it goes round a corner. The traffic model hands a car from one link to
+ * the next at the node, turning it in one step; drawn like that it spins through 90 degrees on the
+ * spot. Over the last stretch of one link and the first of the next the car instead follows a
+ * quadratic curve from its lane on the way in to its lane on the way out, bending about the junction,
+ * and faces along the curve. The traffic space checks the same pose, so what is drawn never overlaps.
+ */
+function cornerPose(c: Car, li: number, p: number, slot: number): VehiclePose | null {
+  const leg = c.legs[li];
+  let from: Leg | undefined, to: Leg | undefined, along = 0, ra = 0, rb = 0;
+  const reach = (l: Leg): number => Math.min(CORNER, (l.p1 - l.p0) * 0.45);
+  const next = c.legs[li + 1], prev = c.legs[li - 1];
+  if (next && leg.p1 - p < reach(leg)) { from = leg; to = next; ra = reach(leg); rb = reach(next); along = ra - (leg.p1 - p); }
+  else if (prev && p - leg.p0 < reach(leg)) { from = prev; to = leg; ra = reach(prev); rb = reach(leg); along = ra + (p - leg.p0); }
+  if (!from || !to || ra <= 1e-3 || rb <= 1e-3) return null;
+  const start = carPose(from, from.p1 - ra, slot, c.vehicle), end = carPose(to, to.p0 + rb, slot, c.vehicle);
+  let turn = end.angle - start.angle;
+  turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+  if (Math.abs(turn) < 0.12) return null; // near enough straight on
+  // Bend about the corner where the two lanes would meet, so the curve leaves one lane and joins the
+  // other along their own directions and the car faces along it. Where the lanes do not meet ahead
+  // of the car (a U-turn, an awkward roundabout mouth) bend about the junction and turn steadily.
+  const ax = Math.sin(start.angle), az = Math.cos(start.angle), bx = Math.sin(end.angle), bz = Math.cos(end.angle);
+  const gx = end.x - start.x, gz = end.z - start.z, cross = ax * bz - az * bx;
+  // start + s0·a = end − s1·b: how far the corner lies ahead of the start and behind the end.
+  const s0 = Math.abs(cross) > 0.2 ? (gx * bz - gz * bx) / cross : -1, s1 = Math.abs(cross) > 0.2 ? (ax * gz - az * gx) / cross : -1;
+  const meet = s0 > 0.02 && s1 > 0.02 && s0 < 2 * (ra + rb) && s1 < 2 * (ra + rb);
+  const control = meet ? { x: start.x + ax * s0, z: start.z + az * s0 } : lerpPose(carPose(from, from.p1, slot, c.vehicle), carPose(to, to.p0, slot, c.vehicle), 0.5);
+  const t = Math.max(0, Math.min(1, along / (ra + rb))), u = 1 - t;
+  const x = u * u * start.x + 2 * u * t * control.x + t * t * end.x;
+  const z = u * u * start.z + 2 * u * t * control.z + t * t * end.z;
+  const own = carPose(leg, p, slot, c.vehicle);
+  const dx = u * (control.x - start.x) + t * (end.x - control.x), dz = u * (control.z - start.z) + t * (end.z - control.z);
+  return { ...own, x, z, angle: meet && dx * dx + dz * dz > 1e-8 ? Math.atan2(dx, dz) : start.angle + turn * t };
+}
+
+/** Where a vehicle on its `li`th leg at progress `p` actually is: in its lane, or rounding a corner. */
+function vehiclePose(c: Car, li: number, p: number, slot: number): VehiclePose {
+  return cornerPose(c, li, p, slot) ?? carPose(c.legs[li], p, slot, c.vehicle);
+}
+
 /**
  * A circulating vehicle is about to reach this roundabout node, so an entering car must give way.
  * A car that has stopped on the arc is not about to arrive: it is queued for the box itself, and the
@@ -861,7 +927,7 @@ function stepCars(dt: number): void {
       if (playerP !== undefined && c.p < playerP - 0.02 && playerP < leaderP) { leaderP = playerP; leaderLength = 0.34; }
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
-      const v = segSpeed(seg) * (c.vehicle === 7 ? 1.55 : 1);
+      const v = segSpeed(seg) * (c.vehicle === 7 ? 1.55 : 1) * c.pace;
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
       if (c.crash !== undefined && incidents.crashes.has(c.crash)) {
@@ -969,7 +1035,7 @@ function stepCars(dt: number): void {
       const travel = c.p + v * dt;
       let newP = Math.min(travel, maxP, legEnd);
       if (newP < c.p) newP = c.p;
-      const target = carPose(leg, newP, slot, c.vehicle);
+      const target = vehiclePose(c, c.li, newP, slot);
       if (!trafficSpace.canMove(slot, target)) newP = c.p;
       else trafficSpace.set(slot, target);
       const moved = newP - c.p;
@@ -997,7 +1063,7 @@ function stepCars(dt: number): void {
         const nextSeg = segs[next.seg];
         const carry = Math.max(0, Math.min(travel - legEnd, laneTail[nextKey] - next.p0 - GAP[nextSeg.kind], next.p1 - next.p0));
         for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
-          const target = carPose(next, nextP, slot, c.vehicle);
+          const target = vehiclePose(c, c.li + 1, nextP, slot);
           if (!trafficSpace.canMove(slot, target)) continue;
           c.li++;
           c.p = nextP;
@@ -1034,7 +1100,7 @@ function writeFrame(): void {
     const c = slots[s];
     const o = s * 4;
     if (!c) continue;
-    const world = trafficSpace.poses.get(s) ?? carPose(c.legs[c.li], c.p, s, c.vehicle);
+    const world = trafficSpace.poses.get(s) ?? vehiclePose(c, c.li, c.p, s);
     out[o] = world.x - half;
     out[o + 1] = world.z - half;
     out[o + 2] = world.angle;

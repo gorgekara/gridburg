@@ -1,5 +1,9 @@
 import * as THREE from 'three';
-import { GRID, N_TILES, T_FARM, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
+import type { Raster } from '../roads/raster';
+import { buildingRotation } from '../placement';
+import { VARIANTS } from './buildingGeo';
+import { parkingStalls } from './parkingGeo';
 import { HALF_WIDTH, KIND_AVENUE, KIND_ROAD } from '../roads/network';
 import { Network } from '../roads/network';
 import { vehicleColor, vehicleGeometry } from './cars';
@@ -17,6 +21,18 @@ const HALF_LENGTH = 0.14, HALF_WIDTH_CAR = 0.075;
 
 interface Parked { x: number; z: number; fx: number; fz: number }
 
+/** House designs narrow enough to leave room for a drive down their right-hand side, inside the fence. */
+const DRIVE_VARIANTS = [0, 2, 5];
+/** Centre line of a drive across the lot, and how far back it runs from the front (clear of the back-garden shrub). */
+const DRIVE_X = 0.385, DRIVE_BACK = -0.2, DRIVE_WIDTH = 0.16;
+
+/** Some houses on a road get a drive down one side with the family car on it. */
+export function hasDriveway(tile: number, kind: Uint8Array, level: Uint8Array): boolean {
+  if (kind[tile] !== T_RES || level[tile] !== 1) return false;
+  const variant = Math.floor(tileHash(tile) * VARIANTS) % VARIANTS;
+  return DRIVE_VARIANTS.includes(variant) && tileHash(tile * 13 + 7) < 0.6;
+}
+
 /**
  * Cars parked along the kerbs of streets and avenues, half up on the pavement the way narrow European
  * streets do it, so they leave the traffic lanes free. They only park in front of built lots, keep
@@ -29,8 +45,15 @@ export class ParkedCarLayer {
   /** Parked cars by tile, for the driving mode to bump into. */
   private byTile = new Map<number, Parked[]>();
 
+  /** Paved drives up to the houses. */
+  private drives: THREE.InstancedMesh;
+
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 });
+    const drive = new THREE.BoxGeometry(DRIVE_WIDTH, 0.022, 1); drive.translate(0, 0.011, 0);
+    this.drives = new THREE.InstancedMesh(drive, new THREE.MeshStandardMaterial({ color: 0xb3aea3, roughness: 0.9 }), N_TILES);
+    this.drives.count = 0; this.drives.frustumCulled = false; this.drives.receiveShadow = true;
+    this.group.add(this.drives);
     this.meshes = [1, 2].map(type => {
       const g = vehicleGeometry(type); g.scale(SCALE, SCALE, SCALE);
       const m = new THREE.InstancedMesh(g, mat, CAP);
@@ -41,15 +64,72 @@ export class ParkedCarLayer {
     });
   }
 
-  rebuild(net: Network, kind: Uint8Array, level: Uint8Array): void {
+  rebuild(net: Network, kind: Uint8Array, level: Uint8Array, raster?: Raster, rot?: Uint8Array): void {
     let built = 0;
-    for (let i = 0; i < N_TILES; i++) if (level[i]) built = (built * 31 + i * 4 + level[i] + kind[i] * 7) >>> 0;
-    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike).length}`;
+    for (let i = 0; i < N_TILES; i++) if (level[i] || isParking(kind[i])) built = (built * 31 + i * 4 + level[i] + kind[i] * 7 + (rot?.[i] ?? 0) * 3) >>> 0;
+    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike).length}:${raster ? 1 : 0}`;
     if (signature === this.signature) return;
     this.signature = signature;
     this.byTile.clear();
     const half = GRID / 2, obj = new THREE.Object3D(), color = new THREE.Color();
     const counts = [0, 0];
+    const put = (x: number, z: number, angle: number, type: number, id: number): void => {
+      const m = type - 1;
+      if (counts[m] >= CAP) return;
+      obj.position.set(x, 0, z); obj.rotation.set(0, angle, 0); obj.updateMatrix();
+      this.meshes[m].setMatrixAt(counts[m], obj.matrix);
+      this.meshes[m].setColorAt(counts[m]++, color.setHex(vehicleColor(type, id)));
+      const tile = Math.floor(z + half) * GRID + Math.floor(x + half), list = this.byTile.get(tile) ?? [];
+      list.push({ x, z, fx: Math.sin(angle), fz: Math.cos(angle) });
+      this.byTile.set(tile, list);
+    };
+    // Mouths of the drives, so nobody parks across them.
+    const mouths: { x: number; z: number }[] = [];
+    let drives = 0;
+    if (raster) for (let i = 0; i < N_TILES; i++) {
+      if (isParking(kind[i])) {
+        // Bays on a car park, most of them taken.
+        const spec = SERVICES[kind[i]], turn = (rot?.[i] ?? 0) & 3, [w, d] = spec.footprint ?? [1, 1];
+        const [rw, rd] = turn % 2 ? [d, w] : [w, d];
+        let cx: number, cz: number, facing: number;
+        if (spec.footprint) { cx = i % GRID + rw / 2; cz = Math.floor(i / GRID) + rd / 2; facing = turn * Math.PI / 2; }
+        else {
+          cx = raster.lotX[i]; cz = raster.lotZ[i];
+          facing = turn ? turn * Math.PI / 2 : raster.accSeg[i] >= 0 ? buildingRotation(raster.accX[i] - cx, raster.accZ[i] - cz) : 0;
+        }
+        const cos = Math.cos(facing), sin = Math.sin(facing);
+        parkingStalls(w, d).forEach((stall, n) => {
+          const id = i * 211 + n, h = tileHash(id);
+          if (h < 0.3) return;
+          // Now and then a car reversed in instead.
+          const angle = facing + stall.angle + (h > 0.9 ? Math.PI : 0) + (h - 0.6) * 0.06;
+          put(cx - half + stall.x * cos + stall.z * sin, cz - half - stall.x * sin + stall.z * cos, angle, h > 0.93 ? 2 : 1, id);
+        });
+        continue;
+      }
+      if (!hasDriveway(i, kind, level) || raster.accSeg[i] < 0) continue;
+      const seg = net.segs.get(raster.accSeg[i]);
+      if (!seg) continue;
+      const lx = raster.lotX[i], lz = raster.lotZ[i], dx = raster.accX[i] - lx, dz = raster.accZ[i] - lz;
+      // The kerb, measured forward from the middle of the lot: only houses right on the street get a drive.
+      const kerb = Math.hypot(dx, dz) - HALF_WIDTH[seg.kind];
+      if (kerb > 0.75 || kerb < 0.45) continue;
+      const facing = buildingRotation(dx, dz), cos = Math.cos(facing), sin = Math.sin(facing);
+      const at = (x: number, z: number): [number, number] => [lx - half + x * cos + z * sin, lz - half - x * sin + z * cos];
+      const [mx, mz] = at(DRIVE_X, (DRIVE_BACK + kerb) / 2);
+      obj.position.set(mx, 0, mz); obj.rotation.set(0, facing, 0); obj.scale.set(1, 1, kerb - DRIVE_BACK); obj.updateMatrix();
+      this.drives.setMatrixAt(drives++, obj.matrix);
+      obj.scale.set(1, 1, 1);
+      mouths.push({ x: at(DRIVE_X, kerb)[0], z: at(DRIVE_X, kerb)[1] });
+      // Most drives have the car at home, parked nose in or backed up to the house.
+      const h = tileHash(i * 17 + 3);
+      if (h < 0.8) {
+        const [cx, cz] = at(DRIVE_X, 0.06);
+        put(cx, cz, facing + (h < 0.45 ? 0 : Math.PI), h > 0.7 ? 2 : 1, i * 7 + 1);
+      }
+    }
+    this.drives.count = drives;
+    this.drives.instanceMatrix.needsUpdate = true;
     const crossings = crossingApproaches(net);
     for (const seg of net.segs.values()) {
       // Streets and avenues only: a lane is too narrow, and nobody parks on an expressway, a bridge or in a tunnel.
@@ -78,6 +158,7 @@ export class ParkedCarLayer {
           if (counts[m] >= CAP) continue;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;
           if (net.onRoad(x + half, z + half, seg.id, 0.12)) continue;
+          if (mouths.some(m => Math.abs(m.x - x) + Math.abs(m.z - z) < 0.3)) continue;
           // Parked facing the way traffic runs on that side, nose slightly out now and then.
           const fx = at.tx * side, fz = at.tz * side;
           obj.position.set(x, 0, z);

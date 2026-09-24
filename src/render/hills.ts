@@ -107,11 +107,13 @@ export class HillLayer {
   /**
    * `ground` is the height of every tile as the water simulation sees it: the river bed below the
    * bank, dug ground below it too, hills above, filled ground level. The river's channel is cut the
-   * same way as anything the player digs.
+   * same way as anything the player digs. `solid` marks dry tiles with something standing on them:
+   * the blurred bank must not sag under a building or a road beside the river, so those tiles stay
+   * level and the bank drops away at their edge instead, like an embankment.
    */
-  rebuild(ground: Float32Array): void {
+  rebuild(ground: Float32Array, solid?: Uint8Array): void {
     let hash = 0;
-    for (let i = 0; i < N_TILES; i++) hash = (Math.imul(hash, 31) + Math.round(ground[i] * 100)) | 0;
+    for (let i = 0; i < N_TILES; i++) hash = (Math.imul(hash, 31) + Math.round(ground[i] * 100) + (solid?.[i] ? 7 : 0)) | 0;
     const signature = `${hash}`;
     if (signature === this.signature) return;
     this.signature = signature;
@@ -139,6 +141,22 @@ export class HillLayer {
     for (let gz = 0; gz < SIZE; gz++) for (let gx = 0; gx < SIZE; gx++) {
       const i = gz * SIZE + gx;
       if (Math.abs(field[i]) > 0.05) field[i] *= 1 + 0.12 * Math.sin(gx * 1.7 + gz * 0.9) * Math.cos(gz * 1.3 - gx * 0.4);
+    }
+    if (solid) {
+      // Level ground under anything built on dry land: every vertex touching such a tile is held up.
+      const tileOf = (g: number, side: number): number => Math.floor(g / RES - MARGIN + side * 0.25);
+      for (let gz = 0; gz < SIZE; gz++) for (let gx = 0; gx < SIZE; gx++) {
+        const i = gz * SIZE + gx;
+        if (field[i] >= 0) continue;
+        let held = false;
+        for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
+          const tx = tileOf(gx, sx), tz = tileOf(gz, sz);
+          if (tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) continue;
+          const t = tz * GRID + tx;
+          if (solid[t] && ground[t] >= 0) held = true;
+        }
+        if (held) field[i] = 0;
+      }
     }
     this.heights.set(field);
     this.pitTexture.needsUpdate = true;

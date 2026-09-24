@@ -259,13 +259,20 @@ function lightGeometry(type: number): THREE.BufferGeometry {
   return g;
 }
 
-// Weighted like a real car park: mostly white, black, silver and grey, with a few bright ones.
-const CAR_COLORS = [0xf1f1ec, 0xf1f1ec, 0x26292d, 0x26292d, 0xb4b9bd, 0xb4b9bd, 0x6b7076, 0xa8312b, 0x2e5c9a, 0x1f3350, 0x355d45, 0xd9a93a, 0xcdbb97, 0xd66f2c, 0x6fa6c8, 0x6a2230];
-const VAN_COLORS = [0xf1f1ec, 0xf1f1ec, 0xf1f1ec, 0xb4b9bd, 0x6b7076, 0x2e4f7c, 0xb13a2f, 0x3f6b4a, 0xe0b43c, 0x26292d];
+// Still plenty of white, black and silver, but with a good share of colour: reds, blues, greens,
+// yellows, oranges, teals and the odd pastel, so a street reads as a lively mix.
+const CAR_COLORS = [
+  0xf1f1ec, 0xf1f1ec, 0x26292d, 0xb4b9bd, 0x6b7076,
+  0xc8312b, 0xa8312b, 0xe0533a, 0x2e5c9a, 0x3b7fd0, 0x1f3350, 0x6fa6c8, 0x355d45, 0x4f9a55, 0x8fc15a,
+  0xd9a93a, 0xf2c94c, 0xd66f2c, 0xf08a3c, 0x2a9d8f, 0x3fb7b0, 0x6a2230, 0x8d4a9e, 0xb86fc2, 0xe78fb3,
+  0xcdbb97, 0x9c6b3f, 0xa8d5e2,
+];
+const VAN_COLORS = [0xf1f1ec, 0xf1f1ec, 0xb4b9bd, 0x6b7076, 0x2e4f7c, 0x3b7fd0, 0xb13a2f, 0xe0533a, 0x3f6b4a, 0x6bab4f, 0xe0b43c, 0xf08a3c, 0x2a9d8f, 0x26292d];
 export const vehicleColor = (type: number, id: number): number => {
   const palette = type === 1 ? CAR_COLORS : VAN_COLORS;
   const h = Math.imul(id ^ (id >>> 15), 0x2c1b3c6d) >>> 0;
-  return palette[(h ^ (h >>> 12)) % palette.length];
+  // Kept unsigned: a negative hash picked no colour at all and left half the cars black.
+  return palette[((h ^ (h >>> 12)) >>> 0) % palette.length];
 };
 
 const matrix = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3();

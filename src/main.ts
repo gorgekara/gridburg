@@ -12,6 +12,7 @@ import { SubwayLayer } from './render/subway';
 import { TransitLineLayer } from './render/transitLines';
 import { AlleyLayer } from './render/alleys';
 import { HelicopterLayer } from './render/helicopters';
+import { BalloonLayer } from './render/balloons';
 import { BoatLayer } from './render/boats';
 import { Walker } from './render/walker';
 import { Driver } from './render/driver';
@@ -93,6 +94,7 @@ const subway = new SubwayLayer();
 const transitLines = new TransitLineLayer();
 const alleys = new AlleyLayer();
 const helicopters = new HelicopterLayer();
+const balloons = new BalloonLayer();
 const boats = new BoatLayer();
 const incidents = new IncidentLayer();
 const pedestrians = new PedestrianLayer();
@@ -112,7 +114,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -520,17 +522,24 @@ input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);
 input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 
+/** Tiles with a lot, a building or a road on them, which the river's bank must not sag under. */
+function solidGround(): Uint8Array {
+  const solid = new Uint8Array(N_TILES);
+  for (let i = 0; i < N_TILES; i++) if (game.kind[i] || game.raster.cover[i]) solid[i] = 1;
+  return solid;
+}
+
 /** The ground and the river's normal level as the main thread knows them, for drawing the water at its simulated height. */
 let levels = new WaterSim(game.baseTerrain, game.extras.terraform, game.kind);
 flood.setTerrain(game.terrain);
 hills.setTerrain(game.terrain, levels.edgeGround());
-hills.rebuild(levels.ground);
+hills.rebuild(levels.ground, solidGround());
 /** The ground as the water sees it, and the relief drawn from it: the river's channel, pits, hills and levees. */
-const refreshRelief = (): void => { levels = new WaterSim(game.baseTerrain, game.extras.terraform, game.kind); hills.rebuild(levels.ground); };
+const refreshRelief = (): void => { levels = new WaterSim(game.baseTerrain, game.extras.terraform, game.kind); hills.rebuild(levels.ground, solidGround()); };
 const reshape = (): void => { terraformLayer.rebuild(game.extras.terraform, game.baseTerrain.water); refreshRelief(); landscape.develop(game.kind, game.raster, game.net); };
 game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); audio.play('build'); };
 game.onUndo = () => { reshape(); };
-game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); hills.setTerrain(game.terrain, levels.edgeGround()); hills.rebuild(levels.ground); river.rebuild(game.terrain, levels.edgeGround()); flood.setTerrain(game.terrain); flood.rebuild(null, levels); hud.resetProgress(); hud.update(game.stats); };
+game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); hills.setTerrain(game.terrain, levels.edgeGround()); hills.rebuild(levels.ground, solidGround()); river.rebuild(game.terrain, levels.edgeGround()); flood.setTerrain(game.terrain); flood.rebuild(null, levels); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
   parkPaths.rebuild(game.parkPaths);
   showCoverage();
@@ -545,7 +554,7 @@ game.onEdit = () => {
   refreshRelief();
   pedestrians.rebuild(game.net);
   furniture.rebuild(game.net, game.kind, game.raster);
-  parked.rebuild(game.net, game.kind, game.level);
+  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot);
   cyclists.rebuild(game.net);
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
@@ -569,7 +578,7 @@ game.onState = () => {
   // The police and traffic helicopters only take to the air once the town is a City.
   helicopters.group.visible = game.stats.cityLevel >= 4;
   helicopters.watch(game.incidents);
-  parked.rebuild(game.net, game.kind, game.level);
+  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot);
   pedestrians.setCrowd(game.stats.pop, daylight(game.cityTime).night);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
@@ -712,7 +721,7 @@ focusCity(false);
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 /** How far the nearest fire engine or police car is from the camera: what the siren fades with. */
@@ -780,6 +789,7 @@ renderer.setAnimationLoop((now: number) => {
   const alpha = Math.max(0, Math.min(1, (performance.now() - game.nextTime) / span));
   incidents.update(game.simTime);
   helicopters.update(now / 1000);
+  balloons.update(dt, light.night);
   boats.update(now / 1000, (x, z) => { const s = game.waterSurface, tx = Math.floor(x + GRID / 2), tz = Math.floor(z + GRID / 2); if (!s || tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) return -0.25; const v = s[tz * GRID + tx]; return v === v ? v : -0.25; });
   pedestrians.update(dt, now / 1000);
   cyclists.update(dt);

@@ -57,6 +57,11 @@ export const T_CREMATORIUM = 48;
 export const T_POST_OFFICE = 49;
 export const T_FLOOD_BARRIER = 50;
 export const T_LANDMARK = 51;
+/** Car parks in three sizes: a corner lot, a block and a big one. */
+export const T_PARKING = 52;
+export const T_PARKING_M = 53;
+export const T_PARKING_L = 54;
+export const isParking = (kind: number): boolean => kind >= T_PARKING && kind <= T_PARKING_L;
 /** A barrier on the bank keeps floodwater out of the streets behind it. */
 export const FLOOD_BARRIER_RADIUS = 7;
 export const isDecoration = (kind: number): boolean => kind >= T_PATH && kind <= T_LAWN;
@@ -99,6 +104,10 @@ export interface ServiceSpec {
   transport?: 'bus' | 'rail' | 'subway' | 'air' | 'trolley' | 'taxi';
   /** Landscaping pieces can be built without direct road access. */
   decoration?: boolean;
+  /** A car park: paid for from the road budget, with no funding slider of its own. */
+  parking?: boolean;
+  /** Works where it stands: needs no road, park path or utilities to benefit its neighbours. */
+  standalone?: boolean;
   treatment?: number;
   civic?: CivicNeed;
   capacity?: number;
@@ -175,13 +184,16 @@ Object.assign(SERVICES, {
   [T_PATH]: decoration('Park path', 15),
   [T_POND]: decoration('Park pond', 160, 60),
   [T_PARK_SHOP]: decoration('Park kiosk', 260, 100),
-  [T_TREE]: decoration('Tree grove', 45, 30),
+  [T_TREE]: { ...decoration('Tree grove', 45, 30), standalone: true },
   [T_FLOWERS]: decoration('Flower bed', 35, 20),
   [T_BENCH]: decoration('Bench', 25, 15),
   [T_FOUNTAIN]: decoration('Fountain', 240, 90),
   [T_PLAZA]: decoration('Paved plaza', 40),
   [T_LAWN]: decoration('Park lawn', 10),
   [T_TAXI]: { name: 'Taxi stop', cost: 650, upkeep: 0.5, unlock: 2, transport: 'taxi', radius: 10, capacity: 4, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
+  [T_PARKING]: { name: 'Parking lot', cost: 300, parking: true, upkeep: 0.1, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
+  [T_PARKING_M]: { name: 'Car park', cost: 1100, parking: true, upkeep: 0.35, footprint: [2, 2] as [number, number], power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
+  [T_PARKING_L]: { name: 'Large car park', cost: 2200, parking: true, upkeep: 0.6, unlock: 2, footprint: [3, 2] as [number, number], power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
   [T_TROLLEY]: { name: 'Trolleybus stop', cost: 850, upkeep: 0.7, unlock: 2, transport: 'trolley', radius: 10, capacity: 40, power: 0, water: 0, sewage: 0, pollution: 0, needsWater: false },
 });
 
