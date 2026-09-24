@@ -222,6 +222,8 @@ let carSequence = 0;
 const incidents = new Incidents();
 const dispatchCooldown = new Map<number, number>();
 const slots: (Car | null)[] = new Array(MAX_CARS).fill(null);
+/** Vehicle slots only service vehicles and public transport may take. */
+const SERVICE_RESERVE = 24;
 const freeList: number[] = [];
 for (let i = MAX_CARS - 1; i >= 0; i--) freeList.push(i);
 let activeCars = 0;
@@ -624,7 +626,10 @@ function drivingPace(vehicle: number): number {
 }
 
 function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission, taxiStop?: number): boolean {
-  if (!freeList.length || sSeg < 0 || gSeg < 0) return false;
+  // The last few slots are kept for fire engines, patrols, bin lorries and buses, so a gridlocked
+  // city full of commuters can still send out its services.
+  const reserve = mission || line !== undefined ? 0 : SERVICE_RESERVE;
+  if (freeList.length <= reserve || sSeg < 0 || gSeg < 0) return false;
   const findRoute = vehicle === 8 ? wiredRoute : route;
   let legs = findRoute(sSeg, sS, gSeg, gS);
   if (!legs || legs.length === 0) { noPath++; return false; }
