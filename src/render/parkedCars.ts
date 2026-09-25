@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRID, N_TILES, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
-import { buildingRotation } from '../placement';
+import { lotScale } from '../placement';
 import { VARIANTS } from './buildingGeo';
 import { parkingStalls } from './parkingGeo';
 import { HALF_WIDTH, KIND_AVENUE, KIND_ROAD } from '../roads/network';
@@ -95,10 +95,11 @@ export class ParkedCarLayer {
         if (spec.footprint) { cx = i % GRID + rw / 2; cz = Math.floor(i / GRID) + rd / 2; facing = turn * Math.PI / 2; }
         else {
           cx = raster.lotX[i]; cz = raster.lotZ[i];
-          facing = turn ? turn * Math.PI / 2 : raster.accSeg[i] >= 0 ? buildingRotation(raster.accX[i] - cx, raster.accZ[i] - cz) : 0;
+          facing = turn ? turn * Math.PI / 2 : raster.accSeg[i] >= 0 ? raster.face[i] : 0;
         }
-        const cos = Math.cos(facing), sin = Math.sin(facing);
-        parkingStalls(w, d).forEach((stall, n) => {
+        const cos = Math.cos(facing), sin = Math.sin(facing), k = spec.footprint ? 1 : lotScale(facing);
+        parkingStalls(w, d).forEach((raw, n) => {
+          const stall = { ...raw, x: raw.x * k, z: raw.z * k };
           const id = i * 211 + n, h = tileHash(id);
           if (h < 0.3) return;
           // Now and then a car reversed in instead.
@@ -114,10 +115,12 @@ export class ParkedCarLayer {
       // The kerb, measured forward from the middle of the lot: only houses right on the street get a drive.
       const kerb = Math.hypot(dx, dz) - HALF_WIDTH[seg.kind];
       if (kerb > 0.75 || kerb < 0.45) continue;
-      const facing = buildingRotation(dx, dz), cos = Math.cos(facing), sin = Math.sin(facing);
-      const at = (x: number, z: number): [number, number] => [lx - half + x * cos + z * sin, lz - half - x * sin + z * cos];
-      const [mx, mz] = at(DRIVE_X, (DRIVE_BACK + kerb) / 2);
-      obj.position.set(mx, 0, mz); obj.rotation.set(0, facing, 0); obj.scale.set(1, 1, kerb - DRIVE_BACK); obj.updateMatrix();
+      const facing = raster.face[i], cos = Math.cos(facing), sin = Math.sin(facing);
+      // On an angled road the house is shrunk into its cell, so its drive tucks in beside it too.
+      const k = lotScale(facing), back = DRIVE_BACK * k;
+      const at = (x: number, z: number): [number, number] => [lx - half + x * k * cos + z * sin, lz - half - x * k * sin + z * cos];
+      const [mx, mz] = at(DRIVE_X, (back + kerb) / 2);
+      obj.position.set(mx, 0, mz); obj.rotation.set(0, facing, 0); obj.scale.set(1, 1, kerb - back); obj.updateMatrix();
       this.drives.setMatrixAt(drives++, obj.matrix);
       obj.scale.set(1, 1, 1);
       mouths.push({ x: at(DRIVE_X, kerb)[0], z: at(DRIVE_X, kerb)[1] });

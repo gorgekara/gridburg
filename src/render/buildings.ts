@@ -1,7 +1,7 @@
 import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
 import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER } from '../constants';
-import { buildingRotation } from '../placement';
+import { lotScale } from '../placement';
 import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
@@ -15,6 +15,7 @@ const q = new THREE.Quaternion();
 const q2 = new THREE.Quaternion();
 const pos = new THREE.Vector3();
 const one = new THREE.Vector3(1, 1, 1);
+const lotSize = new THREE.Vector3(1, 1, 1);
 const col = new THREE.Color();
 const yAxis = new THREE.Vector3(0, 1, 0);
 const zAxis = new THREE.Vector3(0, 0, 1);
@@ -164,7 +165,7 @@ export class BuildingLayer {
       counts.set(kk, n + 1);
       // A placed building faces the quarter turn it was given; a grown one faces its road.
       let facing = k === T_PATH ? 0 : turn * Math.PI / 2;
-      if (!turn && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz);
+      if (!turn && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = raster.face[i];
       // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
       if ((k === T_DOCKS || k === T_HYDRO || k === T_FLOOD_BARRIER) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);
@@ -182,7 +183,9 @@ export class BuildingLayer {
         m4.compose(pos, q, one);
         m4.multiply(pivot.makeTranslation(-(w - 1) / 2, 0, -(d - 1) / 2));
       } else {
-        m4.compose(pos, q, one);
+        // Turned to an angled road, a building shrinks across the ground to stay inside its cell.
+        const k = lotScale(facing);
+        m4.compose(pos, q, k === 1 ? one : lotSize.set(k, 1, k));
       }
       mesh.setMatrixAt(n, m4);
       mesh.userData.tileIds[n] = i;

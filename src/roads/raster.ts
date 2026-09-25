@@ -2,6 +2,10 @@ import { roadHeight } from './structures';
 import { GRID, N_TILES } from '../constants';
 import { HALF_WIDTH, ROAD_FRONTAGE } from './network';
 import type { Network } from './network';
+import { buildingRotation } from '../placement';
+
+/** tan 10°: a road within this of an axis lays its lots out on the grid, as roads always did. */
+const NEAR_AXIS = Math.tan((10 * Math.PI) / 180);
 
 /** How far from the edge of a road a tile can be and still use it: three rows deep, like CS zoning. */
 export const ACCESS_DEPTH = 2.7;
@@ -19,6 +23,8 @@ export interface Raster {
   /** Visual lot centers close to narrow curbs; logical zoning cells remain stable. */
   lotX: Float32Array;
   lotZ: Float32Array;
+  /** Which way the building on each lot faces: squared to the grid beside straight roads, turned to angled ones. */
+  face: Float32Array;
 }
 
 /** Project the road network onto the tile grid: which tiles are paved and which can reach a road. */
@@ -29,6 +35,8 @@ export function rasterize(net: Network): Raster {
   const accX = new Float32Array(N_TILES);
   const accZ = new Float32Array(N_TILES);
   const roadWidth = new Float32Array(N_TILES);
+  // Direction of the road at each tile's access point, to tell grid frontage from angled.
+  const accTx = new Float32Array(N_TILES), accTz = new Float32Array(N_TILES);
   const best = new Float32Array(N_TILES).fill(1e9);
 
   for (const seg of net.segs.values()) {
@@ -64,6 +72,8 @@ export function rasterize(net: Network): Raster {
             accX[t] = qx;
             accZ[t] = qz;
             roadWidth[t] = hw;
+            const l = Math.sqrt(l2);
+            accTx[t] = dx / l; accTz[t] = dz / l;
           }
         }
       }
@@ -78,14 +88,17 @@ export function rasterize(net: Network): Raster {
     }
   }
   const lotX = new Float32Array(N_TILES), lotZ = new Float32Array(N_TILES);
+  const onGrid = (i: number): boolean => Math.min(Math.abs(accTx[i]), Math.abs(accTz[i])) <= Math.max(Math.abs(accTx[i]), Math.abs(accTz[i])) * NEAR_AXIS;
   for (let i = 0; i < N_TILES; i++) {
     const x = i % GRID + 0.5, z = Math.floor(i / GRID) + 0.5;
     lotX[i] = x; lotZ[i] = z;
     if (cover[i] || accSeg[i] < 0) continue;
     const dx = accX[i] - x, dz = accZ[i] - z;
-    // Straight roadside strips can move together without changing their spacing.
-    // Curved frontage keeps its grid position to avoid rotating lots into each other.
-    if (Math.abs(dx) > 0.001 && Math.abs(dz) > 0.001) continue;
+    // Beside a road squared to the grid, only lots straight across from it move, so a row keeps its
+    // spacing and the corner past a dead end stays put. Beside an angled road every lot moves up
+    // along the road's normal. Lots that would then crowd a neighbour are put back below; a building
+    // turned to an angled road shrinks to fit its cell, so that axis-aligned test still keeps them apart.
+    if (onGrid(i) && Math.abs(dx) > 0.001 && Math.abs(dz) > 0.001) continue;
     const distance = Math.hypot(dx, dz);
     const front = roadWidth[i] + 0.09 + 0.5;
     if (distance < front) continue;
@@ -113,5 +126,11 @@ export function rasterize(net: Network): Raster {
       }
     }
   }
-  return { cover, accSeg, accS, accX, accZ, lotX, lotZ };
+  const face = new Float32Array(N_TILES);
+  for (let i = 0; i < N_TILES; i++) {
+    if (accSeg[i] < 0) continue;
+    const dx = accX[i] - lotX[i], dz = accZ[i] - lotZ[i];
+    face[i] = onGrid(i) ? Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) * (Math.PI / 2) : buildingRotation(dx, dz);
+  }
+  return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face };
 }

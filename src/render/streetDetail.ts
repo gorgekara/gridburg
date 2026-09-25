@@ -8,7 +8,7 @@ import type { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import type { Raster } from '../roads/raster';
 import type { Terrain } from '../terrain';
-import { buildingRotation } from '../placement';
+import { lotScale } from '../placement';
 import { VARIANTS } from './buildingGeo';
 import type { VisualDetail } from './detail';
 import { isGardenTile } from './verges';
@@ -103,8 +103,9 @@ export class Kit {
 
   get triangles(): number { return this.pos.length / 9; }
 
-  at(x: number, y: number, z: number, yaw = 0): this {
-    this.ox = x; this.oy = y; this.oz = z; this.c = Math.cos(yaw); this.s = Math.sin(yaw);
+  /** Where the next pieces go: an origin, a turn, and a shrink across the ground (for angled lots). */
+  at(x: number, y: number, z: number, yaw = 0, scale = 1): this {
+    this.ox = x; this.oy = y; this.oz = z; this.c = Math.cos(yaw) * scale; this.s = Math.sin(yaw) * scale;
     return this;
   }
 
@@ -1169,11 +1170,11 @@ class ChunkBuilder {
   }
 
   /** The frame of a built lot: its centre in the scene and the way its front faces. */
-  private lotFrame(i: number): { x: number; z: number; yaw: number } {
+  private lotFrame(i: number): { x: number; z: number; yaw: number; scale: number } {
     const { raster } = this.src;
     const tx = raster.lotX[i], tz = raster.lotZ[i];
-    const yaw = raster.accSeg[i] >= 0 ? buildingRotation(raster.accX[i] - tx, raster.accZ[i] - tz) : 0;
-    return { x: tx - HALF, z: tz - HALF, yaw };
+    const yaw = raster.accSeg[i] >= 0 ? raster.face[i] : 0;
+    return { x: tx - HALF, z: tz - HALF, yaw, scale: lotScale(yaw) };
   }
 
   private lot(i: number): void {
@@ -1182,8 +1183,8 @@ class ChunkBuilder {
     const body = this.src.body(k, l, v);
     const f = this.lotFrame(i);
     const top = lotTop(k, l);
-    this.remember(f.x, top, f.z, f.yaw);
-    this.kit.at(f.x, top, f.z, f.yaw);
+    this.remember(f.x, top, f.z, f.yaw, f.scale);
+    this.kit.at(f.x, top, f.z, f.yaw, f.scale);
     const rnd = stream(i * 2654435761 + (this.fine ? 7 : 3));
     if (body) this.walls(body, k, l, rnd);
     if (body?.roof && !(k === T_RES && l === 1 && body.roof.y < body.h + 0.02)) {
@@ -1376,9 +1377,9 @@ class ChunkBuilder {
     }
   }
 
-  private saved: [number, number, number, number] = [0, 0, 0, 0];
+  private saved: [number, number, number, number, number] = [0, 0, 0, 0, 1];
   /** Remember the current lot frame, so a helper that places things in the scene can hand it back. */
-  private remember(x: number, y: number, z: number, yaw: number): void { this.saved = [x, y, z, yaw]; }
+  private remember(x: number, y: number, z: number, yaw: number, scale = 1): void { this.saved = [x, y, z, yaw, scale]; }
   /** Local lot coordinates to the scene, for helpers that need a scene point. */
   private toScene(lx: number, lz: number): [number, number] {
     const [x, , z, yaw] = this.saved;

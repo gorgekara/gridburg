@@ -15,6 +15,9 @@ const SEAM = 0x74726b;
  * ragged, lived-in pattern instead of a comb. Fire engines and patrol cars already answer calls at
  * these buildings from the street they connect to; the alley is the route their crews walk up.
  */
+/** tan 10°: frontage further off an axis than this gets no back lanes. */
+const OFF_AXIS = Math.tan((10 * Math.PI) / 180);
+
 export class AlleyLayer {
   readonly group = new THREE.Group();
   private mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
@@ -52,6 +55,8 @@ export class AlleyLayer {
       const dx = raster.accX[i] - lx, dz = raster.accZ[i] - lz;
       const distance = Math.hypot(dx, dz);
       if (distance < SET_BACK) continue;
+      // Lanes run along tile edges, so they only suit rows squared to the grid, not angled frontage.
+      if (Math.min(Math.abs(dx), Math.abs(dz)) > Math.max(Math.abs(dx), Math.abs(dz)) * OFF_AXIS) continue;
       // Walk out along the tile boundary on one side, chosen by the tile's own hash.
       const r = tileHash(i);
       const alongX = Math.abs(dx) > Math.abs(dz);

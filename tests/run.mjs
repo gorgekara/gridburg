@@ -240,9 +240,13 @@ test('road previews and committed endpoints land on tile centers', () => {
     assert.ok(onCell(entry.dx ? entry.z : entry.x), JSON.stringify(entry));
     assert.ok(Number.isInteger(entry.dx ? entry.x : entry.z), JSON.stringify(entry));
   }
+  // Buildings square up with the grid within 10° of it, and otherwise turn to face an angled road.
   for (let a = -Math.PI; a < Math.PI; a += 0.1) {
     const rotation = buildingRotation(Math.sin(a), Math.cos(a));
-    assert.ok(Math.abs(rotation / (Math.PI / 2) - Math.round(rotation / (Math.PI / 2))) < 1e-8);
+    const off = Math.abs(a / (Math.PI / 2) - Math.round(a / (Math.PI / 2))) * 90;
+    const squared = Math.abs(rotation / (Math.PI / 2) - Math.round(rotation / (Math.PI / 2))) < 1e-8;
+    if (off < 9.9) assert.ok(squared, `${off}° off the grid squares up`);
+    else if (off > 10.1) assert.ok(Math.abs(rotation - a) < 1e-9, `${off}° off the grid follows the road`);
   }
   const legacy = new Network(); legacy.addNode(10.5, 10.5);
   assert.deepEqual(roadPoint(legacy, { x: 10.4, z: 10.4 }), { x: 10.5, z: 10.5 }, 'Existing connections retain priority');
