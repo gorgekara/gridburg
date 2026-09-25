@@ -347,20 +347,21 @@ Restoring coverage clears the countdown. Saving and reloading preserves it.
 
 Narrow curbs meet compatible straight roadside lots. Lot strips move together toward the curb; conflicting shifts are rejected at junctions. Building fronts reach their road-facing lot boundary.
 
-Roads are placed freely, but zoning and buildings keep to the tile grid. A two-lane road on grid
-snap fills one square and an avenue a three-square corridor, matching the squares zoning uses. An
-avenue costs $180/cell and three times a road's upkeep, for the three tiles it takes. Beside a road
-within 10° of the grid, tile buildings square up with it exactly as they always did. Beside an
-angled or curved road they turn to face it and shrink across the ground to stay inside their
-cell, and their lots move up to the kerb along the road's normal. Larger sites keep to the grid,
-and back lanes only run behind rows squared to it.
+Roads are placed freely, and zoning follows them. While a zone tool is in hand, every street with
+frontage shows rows of zone cells along its kerb, up to three deep, at whatever angle or curve the
+road takes. Paint them with the zone brush (three sizes; Shift-drag unzones, $5 a cell). Buildings
+stand full size in their cells, in rows turned to face the road. Beside a road within 10° of the grid
+the cells fall on the tiles exactly where lots always were. On the inside of a tight curve the rows
+thin out rather than overlap. A two-lane road on grid snap fills one square and an avenue a
+three-square corridor. An avenue costs $180/cell and three times a road's upkeep, for the three tiles
+it takes. Larger sites keep to the grid, and back lanes only run behind rows squared to it.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | Left click | Place road points, signals, roundabouts and service buildings |
-| Left drag | Zone or bulldoze a rectangle (a drag also lays a single road) |
+| Left drag | Paint zone cells along roads (Shift-drag unzones); bulldoze a rectangle (a drag also lays a single road) |
 | Right click / Esc | Stop laying a road; Esc again puts the tool away, closes panels and clears the inspection |
 | Right drag, Q / E | Rotate |
 | WASD / arrows, middle drag | Pan |
@@ -408,8 +409,10 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   approach's turn lanes. In the traffic worker every lane is its own queue; cars change lanes with a
   gap check, and a junction admits any car whose movement (sampled from the same corner curves the
   cars drive) does not overlap a car already crossing, with the longest waiter reserving the box.
-- **Zoning stays on a tile grid.** The network is rasterized onto it (`src/roads/raster.ts`): tiles under a
-  road are reserved, tiles within three rows of a road can use it, and buildings turn to face their road.
+- **Zone cells follow the roads; the simulation stays on tiles.** The network is rasterized onto the tile
+  grid (`src/roads/raster.ts`): tiles under a road are reserved, and road-aligned cells (up to three rows
+  per side, dropped where they would touch a road or another cell) are each matched to one tile, which
+  takes the cell's position, facing and road access. The worker and saves keep working per tile.
   Straight roadside lots meet narrow curbs; intersecting lot shifts are rejected at junctions.
 - **Building variety:** four deterministic designs per zone and level vary height, proportions and roof details.
   Level 2 homes have three to five floors. Designs remain stable across saves and do not change simulation capacity.

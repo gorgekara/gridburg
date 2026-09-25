@@ -447,6 +447,7 @@ export class Input {
       this.zoneErase = e.shiftKey;
       this.zoneChanged = 0;
       this.zoneBroke = false;
+      this.zoneLast = null;
       this.paintZone(p);
       this.previewZone(p, e);
     } else if (this.isRectTool()) {
@@ -971,6 +972,8 @@ export class Input {
   private zoneErase = false;
   private zoneChanged = 0;
   private zoneBroke = false;
+  /** Where the stroke last painted, so a fast drag fills in the stretch between two pointer events. */
+  private zoneLast: { x: number; z: number } | null = null;
 
   private zoneUnlocked(): boolean {
     const zk = ZONE_TOOL[this.tool]!, level = this.game.stats.cityLevel;
@@ -979,10 +982,18 @@ export class Input {
     return true;
   }
 
-  /** Paint (or with Shift, clear) the zone cells under the brush, each once per stroke. */
+  /** Paint (or with Shift, clear) the zone cells under the brush, each once per stroke, all along the way from the last point. */
   private paintZone(p: P): void {
+    const radius = ZONE_BRUSH[this.brushSize], from = this.zoneLast ?? p;
+    const steps = Math.min(200, Math.ceil(Math.hypot(p.x - from.x, p.z - from.z) / (radius * 0.5)));
+    for (let k = 1; k <= steps; k++) this.paintZoneAt(from.x + (p.x - from.x) * k / steps, from.z + (p.z - from.z) * k / steps);
+    if (!steps) this.paintZoneAt(p.x, p.z);
+    this.zoneLast = { x: p.x, z: p.z };
+  }
+
+  private paintZoneAt(x: number, z: number): void {
     const g = this.game, zk = ZONE_TOOL[this.tool]!;
-    for (const t of zoneCellsUnder(g.raster, p.x, p.z, ZONE_BRUSH[this.brushSize])) {
+    for (const t of zoneCellsUnder(g.raster, x, z, ZONE_BRUSH[this.brushSize])) {
       if (this.painted.has(t)) continue;
       this.painted.add(t);
       if (this.zoneErase) {
