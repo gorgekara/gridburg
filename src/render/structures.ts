@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { roadHalf } from '../roads/lanes';
 import { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
-import { roadHeight, PORTAL_AT } from '../roads/structures';
+import { roadHeight, tunnelMouth, levelY, isLegacySpan } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { MeshBuilder } from './meshBuilder';
 import { SweepBuilder, straightPath } from './sweep';
@@ -29,7 +29,7 @@ const PIER_SPACING = 4;
  * Road bridges as solid low-poly structures: a swept slab with fascia bands, parapet walls with caps,
  * lamp posts, twin-column piers with pier caps, and retaining-wall embankments under the ramps.
  */
-function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Builder): void {
+function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Builder, trim: [number, number]): void {
   const hw = roadHalf(seg), W = hw + 0.28, len = seg.len;
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const steps = Math.max(8, Math.ceil(len / 0.35));
@@ -47,33 +47,44 @@ function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Buil
   ], [SOFFIT, BAND, BAND, CONCRETE, BAND, BAND], { capColor: BAND });
 
   // Parapet walls with a slightly wider cap, trimmed back from the junctions at either end.
-  const rail = between(0.9, len - 0.9);
+  const rail = between(trim[0], len - trim[1]);
   for (const side of [-1, 1]) {
     const flip = (v: readonly [number, number][]): ProfileVertex[] => v.map(([a, u]) => [a * side, u] as const);
     sweep.sweep(rail, flip([[W - 0.13, 0], [W, 0], [W, 0.17], [W - 0.13, 0.17]]), PARAPET);
     sweep.sweep(rail, flip([[W - 0.155, 0.17], [W + 0.02, 0.17], [W + 0.02, 0.205], [W - 0.155, 0.205]]), CAP);
   }
 
+  // Stretches of the deck by height: low enough to sit on an embankment, or high on piers. Walks the
+  // road's own profile, so a ramp climbing to a level, a level deck and an old hump all come out right.
+  const runs = (test: (y: number) => boolean): [number, number][] => {
+    const out: [number, number][] = [];
+    let from = -1;
+    for (let i = 0; i < path.length; i++) {
+      const on = test(path[i].y);
+      if (on && from < 0) from = path[i].d;
+      if ((!on || i === path.length - 1) && from >= 0) { out.push([from, on ? path[i].d : path[i - 1].d]); from = -1; }
+    }
+    return out.filter(([a, b]) => b - a > 0.05);
+  };
   // Where the ramp is low it rests on an embankment held by battered retaining walls.
-  const dLow = path.find(p => p.y >= 0.15)?.d ?? len / 2;
-  const dHigh = path.find(p => p.y >= EMBANK_TOP)?.d ?? len / 2;
   const embank: ProfileVertex[] = [[-W - 0.07, -0.1, 1], [W + 0.07, -0.1, 1], [W - 0.01, DECK_BOTTOM + 0.04], [-W + 0.01, DECK_BOTTOM + 0.04]];
-  if (dHigh > dLow) {
-    sweep.sweep(between(dLow, dHigh), embank, [WALL, WALL, CONCRETE, WALL], { capColor: WALL });
-    sweep.sweep(between(len - dHigh, len - dLow), embank, [WALL, WALL, CONCRETE, WALL], { capColor: WALL });
-  }
+  for (const [a, b] of runs(y => y >= 0.15 && y < EMBANK_TOP)) sweep.sweep(between(a, b), embank, [WALL, WALL, CONCRETE, WALL], { capColor: WALL });
 
   // Piers: twin octagonal columns on footings, topped by a pier cap under the deck.
-  const span = len - 2 * dHigh, count = Math.max(1, Math.round(span / PIER_SPACING));
   const colAcross = hw * 0.62;
-  for (let k = 1; k < count; k++) {
-    const d = dHigh + (span * k) / count;
+  const piers: number[] = [];
+  for (const [a, b] of runs(y => y >= EMBANK_TOP)) {
+    const span = b - a, count = Math.max(1, Math.round(span / PIER_SPACING));
+    for (let k = 1; k < count; k++) piers.push(a + (span * k) / count);
+  }
+  const dHigh = runs(y => y >= EMBANK_TOP)[0]?.[0] ?? len / 2;
+  for (const d of piers) {
     Network.poseAt(seg, d, pose);
     const h = roadHeight(seg, d), rx = -pose.tz, rz = pose.tx, beamBottom = h + DECK_BOTTOM - BEAM_DEPTH;
     if (beamBottom < 0.15) continue;
     const feet = [-1, 1].map(side => ({ x: pose.x + rx * colAcross * side, z: pose.z + rz * colAcross * side }));
-    // Never stand a pier on a road that passes underneath.
-    if (feet.some(f => surface.some(s => Network.nearestOn(s, f.x, f.z).dist < roadHalf(s) + 0.4))) continue;
+    // Never stand a pier on a road that passes underneath, at whatever level it is.
+    if (feet.some(f => others.some(s => { const r = Network.nearestOn(s, f.x, f.z); return r.dist < roadHalf(s) + 0.4 && roadHeight(s, r.s) < h - 0.6; }))) continue;
     const x = pose.x - OFFSET, z = pose.z - OFFSET, reach = W - 0.12;
     sweep.sweep(straightPath(x - rx * reach, h, z - rz * reach, x + rx * reach, h, z + rz * reach),
       [[-0.13, DECK_BOTTOM - BEAM_DEPTH], [0.13, DECK_BOTTOM - BEAM_DEPTH], [0.17, DECK_BOTTOM], [-0.17, DECK_BOTTOM]], PIER, { capColor: BAND });
@@ -108,7 +119,9 @@ function buildPortals(seg: RSeg, material: THREE.Material): THREE.Mesh[] {
   const clear = 0.72; // headroom inside the mouth
   const wall = 0.2, span = hw + 0.14; // inner face of each side wall
   for (const end of [0, seg.len]) {
-    const at = end === 0 ? PORTAL_AT : seg.len - PORTAL_AT;
+    const mouth = tunnelMouth(seg, end ? 1 : 0);
+    if (mouth === null) continue; // this end is underground: the road carries on down there
+    const at = end === 0 ? mouth : seg.len - mouth;
     Network.poseAt(seg, at, pose);
     // Facing out of the tunnel: towards the start for the first portal, towards the end for the last.
     const out_ = end === 0 ? -1 : 1;
@@ -160,19 +173,22 @@ export class StructureLayer {
   /** Everything a span's geometry depends on: its own shape, and for bridges the roads that suppress piers. */
   private signature(seg: RSeg, surface: RSeg[]): string {
     const last = seg.n * 2;
-    let signature = `${seg.kind}:${seg.structure}:${seg.len.toFixed(3)}:${seg.pts[0].toFixed(3)},${seg.pts[1].toFixed(3)}:${seg.pts[last].toFixed(3)},${seg.pts[last + 1].toFixed(3)}:${seg.cx.toFixed(3)},${seg.cz.toFixed(3)}`;
+    let signature = `${seg.kind}:${seg.structure}:${seg.ya ?? 0}:${seg.yb ?? 0}:${seg.len.toFixed(3)}:${seg.pts[0].toFixed(3)},${seg.pts[1].toFixed(3)}:${seg.pts[last].toFixed(3)},${seg.pts[last + 1].toFixed(3)}:${seg.cx.toFixed(3)},${seg.cz.toFixed(3)}`;
     if (seg.structure !== 1) return signature;
     for (const s of surface) {
       if (s.maxX < seg.minX - 2 || s.minX > seg.maxX + 2 || s.maxZ < seg.minZ - 2 || s.minZ > seg.maxZ + 2) continue;
-      signature += `|${s.id},${s.kind},${s.cx.toFixed(2)},${s.cz.toFixed(2)},${s.len.toFixed(2)}`;
+      signature += `|${s.id},${s.kind},${s.cx.toFixed(2)},${s.cz.toFixed(2)},${s.len.toFixed(2)},${s.ya ?? 0},${s.yb ?? 0}`;
     }
     return signature;
   }
 
-  private build(seg: RSeg, surface: RSeg[]): THREE.Mesh[] {
+  private build(net: Network, seg: RSeg, others: RSeg[]): THREE.Mesh[] {
     if (seg.structure !== 1) return buildPortals(seg, this.material);
     const sweep = new SweepBuilder(), cols = new Builder(1);
-    buildBridge(seg, surface, sweep, cols);
+    // The parapet stops short of a junction or the ground, but runs on unbroken where one deck
+    // carries straight on into the next up in the air.
+    const trim = [seg.a, seg.b].map(id => { const n = net.nodes.get(id)!; return (n.level ?? 0) > 0 && net.degree(id) === 2 ? 0 : 0.9; }) as [number, number];
+    buildBridge(seg, others, sweep, cols, trim);
     return [sweep.build(), cols.build()].map(geometry => {
       const mesh = new THREE.Mesh(geometry, this.material);
       mesh.castShadow = true; mesh.receiveShadow = true;
@@ -184,7 +200,8 @@ export class StructureLayer {
     if (net === this.builtNet && net.version === this.builtVersion) return;
     this.builtNet = net; this.builtVersion = net.version;
     const guides = new MeshBuilder(), traces = new MeshBuilder(), pose = { x: 0, z: 0, tx: 0, tz: 0 };
-    const surface = [...net.segs.values()].filter(s => !s.structure);
+    // Everything a pier might land on: ground roads, and the lower decks of a stack.
+    const surface = [...net.segs.values()].filter(s => !s.structure || !isLegacySpan(s));
     const live = new Set<number>();
     for (const seg of net.segs.values()) {
       if (!seg.structure) continue;
@@ -193,7 +210,7 @@ export class StructureLayer {
       const cached = this.built.get(seg.id);
       if (cached?.signature !== signature) {
         if (cached) for (const mesh of cached.meshes) { mesh.geometry.dispose(); this.solids.remove(mesh); }
-        const meshes = this.build(seg, surface);
+        const meshes = this.build(net, seg, surface.filter(o => o.id !== seg.id));
         this.solids.add(...meshes);
         this.built.set(seg.id, { signature, meshes });
       }
@@ -208,7 +225,8 @@ export class StructureLayer {
         const hw = roadHalf(seg);
         const step = 0.4;
         // Start past the portal mouth: the ramps are real road, and the band belongs over the bore.
-        const from = PORTAL_AT + 0.9, to = seg.len - from;
+        const ma = tunnelMouth(seg, 0), mb = tunnelMouth(seg, 1);
+        const from = ma === null ? 0 : ma + 0.9, to = seg.len - (mb === null ? 0 : mb + 0.9);
         const pts: number[] = [];
         for (let d = from; d <= to + 1e-6; d = Math.min(to, d + step)) {
           Network.poseAt(seg, d, pose);
@@ -228,6 +246,31 @@ export class StructureLayer {
           }
         }
       }
+    }
+    // Elevated junctions and deck joints: a slab under the node on one column, keyed by the node's
+    // negated id alongside the spans.
+    for (const n of net.nodes.values()) {
+      const level = n.level ?? 0;
+      if (level <= 0) continue;
+      const arms = net.segsAt(n.id);
+      if (!arms.length) continue;
+      const key = -n.id, y = levelY(level), r = Math.max(...arms.map(roadHalf)) + 0.28;
+      live.add(key);
+      const blocked = surface.some(s => { const hit = Network.nearestOn(s, n.x, n.z); return hit.dist < roadHalf(s) + 0.45 && roadHeight(s, hit.s) < y - 0.6; });
+      const signature = `${n.x.toFixed(3)},${n.z.toFixed(3)}:${level}:${r.toFixed(3)}:${blocked}`;
+      if (this.built.get(key)?.signature === signature) continue;
+      const old = this.built.get(key);
+      if (old) for (const mesh of old.meshes) { mesh.geometry.dispose(); this.solids.remove(mesh); }
+      const cols = new Builder(n.id);
+      cols.cyl(r, -DECK_BOTTOM + DECK_TOP, n.x - OFFSET, y + DECK_BOTTOM, n.z - OFFSET, CONCRETE, 18);
+      if (!blocked) {
+        cols.cyl(0.24, y + DECK_BOTTOM + 0.3, n.x - OFFSET, -0.3, n.z - OFFSET, PIER, 8);
+        cols.cyl(0.34, 0.16, n.x - OFFSET, -0.1, n.z - OFFSET, FOOTING, 8);
+      }
+      const mesh = new THREE.Mesh(cols.build(), this.material);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      this.solids.add(mesh);
+      this.built.set(key, { signature, meshes: [mesh] });
     }
     for (const [id, entry] of this.built) {
       if (live.has(id)) continue;

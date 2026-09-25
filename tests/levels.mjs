@@ -115,5 +115,44 @@ test('binary saves keep node levels, including tunnels', () => {
   assert.ok(tunnel && close(ST.roadHeight(tunnel, 2), -1.8));
 });
 
+const { StructureLayer } = await import('../src/render/structures.ts');
+/** Every vertex of the structure layer's solids, in map coordinates. */
+function solidPoints(layer) {
+  const out = [];
+  layer.group.traverse(o => {
+    if (!o.isMesh || !o.geometry.attributes.position) return;
+    o.updateMatrixWorld(true);
+    const p = o.geometry.attributes.position, v = new (o.position.constructor)();
+    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); out.push([v.x + 40, v.y, v.z + 40]); }
+  });
+  return out;
+}
+
+test('a flyover stands on piers beside the road below, never on it', () => {
+  const net = new Network();
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_AVENUE);
+  net.insertPath([{ x: 20, z: 40 }, { x: 28, z: 40 }], KIND_ROAD, false, 0, true, [0, 1]);
+  net.insertPath([{ x: 28, z: 40 }, { x: 52, z: 40 }], KIND_ROAD, false, 0, true, [1, 1]);
+  net.insertPath([{ x: 52, z: 40 }, { x: 60, z: 40 }], KIND_ROAD, false, 0, true, [1, 0]);
+  const layer = new StructureLayer();
+  layer.rebuild(net);
+  const pts = solidPoints(layer);
+  assert.ok(pts.length > 100, 'deck built');
+  // Columns are what reach down to the ground: none of them within the avenue's carriageway.
+  const onAvenue = pts.filter(([x, y, z]) => Math.abs(x - 40) < 0.86 && y < 0.2 && y > -0.35 && Math.abs(z - 40) < 1.2);
+  assert.equal(onAvenue.length, 0, `${onAvenue.length} column vertices on the avenue`);
+  assert.ok(pts.some(([x, y]) => y < -0.25 && x > 29 && x < 51), 'piers elsewhere along the deck');
+});
+
+test('an elevated junction gets a deck slab under the node', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD, false, 0, true, [2, 2]);
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD, false, 0, true, [2, 2]);
+  const layer = new StructureLayer();
+  layer.rebuild(net);
+  const slab = solidPoints(layer).filter(([x, y, z]) => Math.hypot(x - 40, z - 40) < 0.7 && Math.abs(y - 2.2) < 0.3);
+  assert.ok(slab.length > 10, 'slab at the junction');
+});
+
 console.log(`${checks} level checks passed; ${failures} failed`);
 if (failures) process.exit(1);

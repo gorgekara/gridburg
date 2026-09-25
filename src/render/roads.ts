@@ -1,4 +1,4 @@
-import { roadHeight, PORTAL_AT } from '../roads/structures';
+import { roadHeight, tunnelMouth, levelY } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
@@ -177,10 +177,15 @@ export class RoadLayer {
     for (const n of net.nodes.values()) {
       // The kerb disc only has to close the notch where two arms of a bend meet; a big disc under a
       // narrow street meeting a wide avenue used to bulge out past the street's own kerbs.
+      // Up on a level the disc sits on the deck; underground there is nothing to draw.
+      if ((n.level ?? 0) < 0) continue;
       let hw = Infinity;
       for (const s of net.segsAt(n.id)) hw = Math.min(hw, nodeEdge(s, n.id, tapers, Math.min));
+      const ny = levelY(n.level ?? 0);
+      b.heightAt = ny ? () => ny : null;
       if (Number.isFinite(hw)) b.disc(n.x - half, n.z - half, hw + 0.09, 0.031, CURB);
     }
+    b.heightAt = null;
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
@@ -193,8 +198,13 @@ export class RoadLayer {
     // little way into the mouth where the dark bore takes over.
     for (const s of net.segs.values()) {
       if (s.structure !== 2) continue;
-      const reach = Math.min(s.len / 2, PORTAL_AT + 0.45);
-      for (const [from, to] of [[0, reach], [s.len - reach, s.len]]) {
+      // Up to each mouth, from any end that is on the ground.
+      const ends: [number, number][] = [];
+      const ma = tunnelMouth(s, 0), mb = tunnelMouth(s, 1);
+      if (ma !== null) ends.push([0, Math.min(s.len / 2, ma + 0.45)]);
+      if (mb !== null) ends.push([s.len - Math.min(s.len / 2, mb + 0.45), s.len]);
+      b.heightAt = (x, z) => Math.max(-0.5, roadHeight(s, Network.nearestOn(s, x + half, z + half).s));
+      for (const [from, to] of ends) {
         const steps = Math.max(2, Math.ceil((to - from) / 0.3));
         const pts = new Float32Array((steps + 1) * 2);
         for (let k = 0; k <= steps; k++) {
@@ -206,12 +216,17 @@ export class RoadLayer {
         b.band(pts, steps + 1, sideHalf(s, -1), sideHalf(s, 1), 0.045, ASPHALT);
         if (s.kind !== KIND_LANE) b.ribbon(pts, steps + 1, 0.022, 0.056, s.kind === KIND_ROAD ? DASH : LINE);
       }
+      b.heightAt = null;
     }
     for (const n of net.nodes.values()) {
+      if ((n.level ?? 0) < 0) continue;
       let hw = 0;
       for (const s of net.segsAt(n.id)) hw = Math.max(hw, nodeEdge(s, n.id, tapers, Math.max));
+      const ny = levelY(n.level ?? 0);
+      b.heightAt = ny ? () => ny : null;
       if (hw > 0) b.disc(n.x - half, n.z - half, hw, 0.046, ASPHALT);
     }
+    b.heightAt = null;
     roundaboutFlares(net, b);
     junctionFillets(net, b, tapers);
     rampGores(net, b);
@@ -410,7 +425,7 @@ export class RoadLayer {
         const spot = net.vergeSpot(seg, node.id, sideHalf(seg, seg.b === node.id ? 1 : -1) + 0.2, Math.min(1.0, seg.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
-        v3.set(spot.x - half, 0, spot.z - half);
+        v3.set(spot.x - half, Math.max(0, levelY(node.level ?? 0)), spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-tx, -tz));
         m4.compose(v3, q, one);
         this.stopSigns.setMatrixAt(signCount++, m4);
@@ -434,12 +449,12 @@ export class RoadLayer {
         const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
-        v3.set(spot.x - half, 0, spot.z - half);
+        v3.set(spot.x - half, Math.max(0, levelY(node.level ?? 0)), spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(tx, tz));
         m4.compose(v3, q, one);
         this.poles.setMatrixAt(n, m4);
         for (let lens = 0; lens < 3; lens++) {
-          v3.y = (0.84 - lens * 0.12) * 0.72; m4.compose(v3, q, one);
+          v3.y = Math.max(0, levelY(node.level ?? 0)) + (0.84 - lens * 0.12) * 0.72; m4.compose(v3, q, one);
           this.lamps.setMatrixAt(n * 3 + lens, m4);
         }
         const fwd = s.b === node.id;
