@@ -110,7 +110,7 @@ export type MainToWorker =
 
 export type WorkerToMain =
   | { type: 'notice'; message: string }
-  | { type: 'probe'; arrived: number; gaveUp: number; cars: number; lanes: Record<number, number[]>; nearLine: number; rightLane: number }
+  | { type: 'probe'; arrived: number; gaveUp: number; cars: number; lanes: Record<number, number[]>; nearLine: number; rightLane: number; trips: Record<string, number> }
   | { type: 'inspection'; report: TileReport | null }
   | { type: 'state'; incidents: IncidentView; incidentSave: IncidentSnapshot; neglect: Uint8Array; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; maps?: CityMaps; disaster?: DisasterView | null; stats: Stats }
   | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; cars: Float32Array; segCong: Uint8Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface height of every tile holding water worth drawing (NaN elsewhere) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };

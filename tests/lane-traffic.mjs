@@ -108,5 +108,47 @@ test('cars reach a lane that goes their way before the stop line', () => {
   assert.ok(avenue.rightShare >= 0.9, `${Math.round(avenue.rightShare * 100)}%`);
 });
 
+/**
+ * A street from the west meets a busy avenue. Traffic from the west mostly goes straight across,
+ * waiting for a gap in the avenue; the rest turns right. With a turn pocket on the last stretch,
+ * right turners should get past the queue of cars waiting to cross.
+ */
+function pocketRun(pocket) {
+  const net = new Network();
+  net.insertPath([{ x: 18, z: 40 }, { x: 34, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 34, z: 40 }, { x: 40, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 40 }, { x: 60, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 18 }, { x: 40, z: 62 }], N.KIND_AVENUE);
+  const centre = net.nearestNode(40, 40, 0.1);
+  const near = net.segsAt(centre.id).find(s => { const o = net.nodes.get(s.a === centre.id ? s.b : s.a); return o.x === 34; });
+  if (pocket) { if (near.b === centre.id) near.addR = 1; else near.addL = 1; }
+  load(net);
+  const byEnd = (x, z) => { const n = net.nearestNode(x, z, 0.1); const s = net.segsAt(n.id)[0]; return { seg: s.id, s: s.a === n.id ? 0.6 : s.len - 0.6 }; };
+  const west = byEnd(18, 40), east = byEnd(60, 40), north = byEnd(40, 18), south = byEnd(40, 62);
+  const start = ask([]).trips;
+  let t = 0, next = 0;
+  for (let i = 0; i < 150 * C.SIM_HZ; i++) {
+    clock();
+    t += 1 / C.SIM_HZ;
+    if (t >= next) {
+      next += 0.35;
+      ask([
+        Math.random() < 0.4 ? { a: west.seg, as: west.s, b: south.seg, bs: south.s } : { a: west.seg, as: west.s, b: east.seg, bs: east.s },
+        { a: north.seg, as: north.s, b: south.seg, bs: south.s },
+        { a: south.seg, as: south.s, b: north.seg, bs: north.s },
+      ]);
+    }
+  }
+  const end = ask([]);
+  const got = (a, b) => (end.trips[`${a.seg}>${b.seg}`] ?? 0) - (start[`${a.seg}>${b.seg}`] ?? 0);
+  return { right: got(west, south), straight: got(west, east), gaveUp: end.gaveUp };
+}
+const plainApproach = pocketRun(false), withPocket = pocketRun(true);
+console.log(`  right turners from the side street: ${plainApproach.right} without a pocket, ${withPocket.right} with one (straight on ${plainApproach.straight} / ${withPocket.straight})`);
+test('a right-turn pocket lets right turners past the cars waiting to go straight', () => {
+  assert.ok(withPocket.right > plainApproach.right * 1.2, `${plainApproach.right} -> ${withPocket.right}`);
+  assert.ok(withPocket.straight >= plainApproach.straight * 0.9, 'straight traffic is no worse off');
+});
+
 console.log(`${checks} lane traffic checks passed; ${failures} failed`);
 if (failures) process.exit(1);

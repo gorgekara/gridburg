@@ -102,6 +102,8 @@ let commuteAvg = 0;
 let noPath = 0, gaveUp = 0;
 /** Running totals for the traffic probe tests use; never reset by the economy tick. */
 let arrivedTotal = 0, gaveUpTotal = 0;
+/** Completed trips by first and last road (segment ids), for the probe. */
+const arrivedBy = new Map<string, number>();
 let subCount = 0;
 let netIncome = 0;
 const demand: [number, number, number, number] = [0, 0, 0, 0];
@@ -1381,6 +1383,8 @@ function stepCars(dt: number): void {
             if (c.taxiStop !== undefined) { taxiWindow++; money += 0.16 * effects.fare; }
             if (!c.through) commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
             arrivedTotal++;
+            const trip = `${segs[c.legs[0].seg].id}>${segs[leg.seg].id}`;
+            arrivedBy.set(trip, (arrivedBy.get(trip) ?? 0) + 1);
             freeCar(slot); leaderP = Infinity; }
         }
       } else if (c.p >= legEnd - 1e-4) {
@@ -2189,7 +2193,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         if (!want || nodeType[legEndNode(leg)] === J_PLAIN || leg.p1 - c.p > 1.6) continue;
         near++; if (want.includes(c.lane)) right++;
       }
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right });
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy) });
       break;
     }
     case 'warm': {
