@@ -7,7 +7,9 @@ import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
-import { gridPoint, roadPoint } from './placement';
+import { gridPoint } from './placement';
+import { snapPoint } from './roads/snap';
+import type { Snapped, SnapCtx } from './roads/snap';
 import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK, T_PARKING, T_PARKING_M, T_PARKING_L } from './constants';
 import { DISTRICT_COLORS, terraformAllowed } from './extras';
 import type { TerraformAction } from './extras';
@@ -91,6 +93,12 @@ export class Input {
   onDistrict: (() => void) | null = null;
   /** Land brush size: 0 small, 1 medium, 2 large. */
   brushSize = 1;
+  /** Road points snap to tile centres, as they used to, instead of to guides and angle steps. */
+  gridSnapOn = false;
+  /** Alt held: road points go exactly where the pointer is, unless they join a road. */
+  private free = false;
+  /** The last road-point snap, whose guides and label the preview shows. */
+  private lastSnap: Snapped | null = null;
   /** Which roundabout the tool draws: matched to the roads, or a size the player picked. */
   ringSize: RingSize = 'auto';
   private painted = new Set<number>();
@@ -263,6 +271,10 @@ export class Input {
     const t = map[key];
     if (t) this.setTool(t);
     if (key === 'g' && SERVICE_TOOL[this.tool] !== undefined) this.rotatePlacement();
+    else if (key === 'g' && this.isRoadTool() && this.tool !== 'parkpath') {
+      this.gridSnapOn = !this.gridSnapOn;
+      this.onToast?.(this.gridSnapOn ? 'Grid snap on: road points sit on tile centres' : 'Grid snap off: roads go anywhere, with guides and 15° steps');
+    }
     if (this.isRoadTool()) {
       if (e.key === '+' || e.key === '=' || e.key === 'PageUp') this.setElevation(this.elevation + 1);
       if (e.key === '-' || e.key === '_' || e.key === 'PageDown') this.setElevation(this.elevation - 1);
@@ -305,15 +317,23 @@ export class Input {
     return this.tool === 'parkpath' ? { x: Math.max(0.25, Math.min(GRID - 0.25, Math.round(p.x * 4) / 4)), z: Math.max(0.25, Math.min(GRID - 0.25, Math.round(p.z * 4) / 4)) } : gridPoint(p);
   }
 
-  /** Snap a road point to an existing node, then an existing road, then the grid intersection. */
-  private snap(p: P): P {
+  /**
+   * Snap a road point: an existing node, then an existing road, then guide lines and 15° steps from
+   * `ctx.from` (or tile centres with grid snap on). Alt leaves it where the pointer is.
+   */
+  private snap(p: P, ctx: SnapCtx = {}): P {
     if (this.tool === 'parkpath') {
       for (const path of this.game.parkPaths) for (const end of [{ x: path.ax, z: path.az }, { x: path.bx, z: path.bz }]) if (Math.hypot(end.x - p.x, end.z - p.z) < 0.3) return end;
       return this.gridSnap(p);
     }
-    const hit = this.game.net.nearestSeg(p.x, p.z, 0.8);
-    if (hit?.seg.structure && hit.s > 0.9 && hit.seg.len - hit.s > 0.9) return gridPoint(p);
-    return roadPoint(this.game.net, p);
+    this.lastSnap = snapPoint(this.game.net, p, { grid: this.gridSnapOn, free: this.free, ...ctx });
+    return { x: this.lastSnap.x, z: this.lastSnap.z };
+  }
+
+  /** Where a curve's bend goes: guides and steps from the start, but never onto a road. */
+  private bendPoint(start: P, p: P): P {
+    if (this.tool === 'parkpath') return this.gridSnap(p);
+    return this.snap(p, { joins: false, from: start });
   }
 
   private onRoad(p: P): boolean {
@@ -329,6 +349,7 @@ export class Input {
   // ---- pointer handling --------------------------------------------------------------------------
   private onDown = (e: PointerEvent): void => {
     if (this.suspended) return;
+    this.free = e.altKey;
     if (e.button === 2) { this.rightDown = { x: e.clientX, y: e.clientY }; return; }
     if (e.button !== 0) return;
     const p = this.pick(e);
@@ -360,6 +381,7 @@ export class Input {
   private onMove = (e: PointerEvent): void => {
     if (this.suspended) return;
     if (this.tool === 'none') { this.clearHover(); return; }
+    this.free = e.altKey;
     const p = this.pick(e);
     if (!p) { if (!this.dragging && !this.chain.length) this.clearHover(); return; }
     if (this.isRoadTool()) {
@@ -385,6 +407,7 @@ export class Input {
   };
 
   private onUp = (e: PointerEvent): void => {
+    this.free = e.altKey;
     if (e.button === 2) {
       // A right click that did not turn into a camera drag cancels the road being laid.
       const d = this.rightDown;
@@ -466,8 +489,9 @@ export class Input {
     return atB ? { x: pose.tx, z: pose.tz } : { x: -pose.tx, z: -pose.tz };
   }
 
-  /** Where a straight road would end: continues the existing road's heading when the cursor is within ~30° of it. */
+  /** Where a road would end: straight roads step their heading by 15° from the road they continue. */
   private endPoint(start: P, heading: P | null, cursor: P): P {
+    if (this.tool !== 'parkpath') return this.snap(cursor, { from: start, heading: this.mode === 'straight' ? heading : null });
     const end = this.snap(cursor);
     if (this.mode !== 'straight' || !heading || this.onRoad(end)) return end;
     const dx = cursor.x - start.x, dz = cursor.z - start.z, len = Math.hypot(dx, dz);
@@ -572,7 +596,7 @@ export class Input {
     }
     const start = this.chain[0];
     if (this.mode === 'curve' && this.chain.length === 1) {
-      const c = this.gridSnap(p);
+      const c = this.bendPoint(start, p);
       if (Math.hypot(c.x - start.x, c.z - start.z) < 0.8) return;
       this.chain.push(c);
       return;
@@ -620,10 +644,11 @@ export class Input {
 
     if (choosingBend) {
       // Second click of a curve: show the tangent line out of the start point.
-      const c = this.gridSnap(cursor);
+      const c = this.bendPoint(start, cursor);
       b.ribbon([start.x - half, start.z - half, c.x - half, c.z - half], 2, 0.05, 0.1, GUIDE);
       b.disc(c.x - half, c.z - half, 0.22, 0.11, GUIDE);
-      label = 'Click to set the bend';
+      this.drawGuides(b);
+      label = this.lastSnap?.label && this.tool !== 'parkpath' ? `${this.lastSnap.label} · Click to set the bend` : 'Click to set the bend';
     } else {
       const end = this.endPoint(start, this.chain.length ? this.heading : this.tangentAt(start), cursor);
       if (Math.hypot(end.x - start.x, end.z - start.z) >= 0.8) {
@@ -652,7 +677,9 @@ export class Input {
           b.disc(c.x - half, c.z - half, 0.16, 0.11, GUIDE);
         }
         b.disc(end.x - half, end.z - half, 0.26, 0.11, GUIDE);
-        label = problem ?? `$${cost.toLocaleString()} · ${this.tool === 'parkpath' ? "Park path" : this.roadStructure(path) === 1 ? "Bridge" : this.roadStructure(path) === 2 ? "Tunnel" : "Road"}`;
+        const snapLabel = this.tool !== 'parkpath' ? this.lastSnap?.label : null;
+        if (this.tool !== 'parkpath') this.drawGuides(b);
+        label = problem ?? `${snapLabel ? `${snapLabel} · ` : ''}$${cost.toLocaleString()} · ${this.tool === 'parkpath' ? "Park path" : this.roadStructure(path) === 1 ? "Bridge" : this.roadStructure(path) === 2 ? "Tunnel" : "Road"}`;
       }
     }
     b.disc(start.x - half, start.z - half, 0.26, 0.11, GUIDE);
@@ -661,6 +688,20 @@ export class Input {
     this.shape.visible = true;
     this.hover.visible = false;
     this.onCost?.(label, e.clientX, e.clientY, ok);
+  }
+
+  /** Dashed lines along whichever guides the last snap caught on. */
+  private drawGuides(b: MeshBuilder): void {
+    const half = GRID / 2;
+    for (const g of this.lastSnap?.guides ?? []) {
+      const len = Math.hypot(g.bx - g.ax, g.bz - g.az);
+      if (len < 0.1) continue;
+      const ux = (g.bx - g.ax) / len, uz = (g.bz - g.az) / len;
+      for (let d = 0; d < len; d += 0.5) {
+        const e = Math.min(len, d + 0.28);
+        b.ribbon([g.ax + ux * d - half, g.az + uz * d - half, g.ax + ux * e - half, g.az + uz * e - half], 2, 0.03, 0.105, GUIDE);
+      }
+    }
   }
 
   // ---- rectangles: zones and bulldoze --------------------------------------------------------------
@@ -898,7 +939,7 @@ export class Input {
     } else if (this.isRoadTool()) {
       const s = this.snap(p);
       hx = s.x; hz = s.z; size = 0.6;
-      label = 'Click to start';
+      label = this.tool !== 'parkpath' && this.lastSnap?.label ? `${this.lastSnap.label} · Click to start` : 'Click to start';
     } else if (this.tool === 'light' || this.tool === 'stopsign') {
       const n = this.game.net.nearestNode(p.x, p.z, 1.4);
       const sign = this.tool === 'stopsign';
