@@ -1,5 +1,7 @@
 import { GRID } from '../constants';
 import { canAddLanes, laneLimits, clampLanes, roadHalf } from './lanes';
+import { renameSeg, flipSeg, clonePlan } from './signals';
+import type { SignalPlan } from './signals';
 
 export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
@@ -62,6 +64,8 @@ export interface RNode {
   fixed: boolean; // cannot be bulldozed
   entry: boolean; // the highway connection at the map edge
   stop: boolean; // an all-way stop: every approach halts before entering
+  /** A signal plan the player has set; absent means the default for the junction. */
+  signal?: SignalPlan;
 }
 
 export interface RSeg {
@@ -91,6 +95,8 @@ export interface PlainNet {
   nextId: number;
   nodes: number[][]; // id, x, z, flags
   segs: number[][]; // id, a, b, cx, cz, flags
+  /** Signal plans the player has set, by node id. */
+  signals?: [number, SignalPlan][];
 }
 
 export interface Pose { x: number; z: number; tx: number; tz: number }
@@ -250,6 +256,7 @@ export class Network {
       } else if (list.length < 3) {
         node.light = false;
         node.stop = false;
+        delete node.signal;
       }
     }
     this.version++;
@@ -380,6 +387,10 @@ export class Network {
     const left = this.addSeg(s.a, node.id, l.cx, l.cz, s.kind, s.oneway, s.fixed, 0.05);
     const right = this.addSeg(node.id, s.b, r.cx, r.cz, s.kind, s.oneway, s.fixed, 0.05);
     for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; copyLanes(s, child); }
+    // A signal at either end keeps its plan: the piece that now meets it takes over its movements.
+    const atA = this.nodes.get(s.a)?.signal, atB = this.nodes.get(s.b)?.signal;
+    if (atA && left) renameSeg(atA, segId, left.id);
+    if (atB && right) renameSeg(atB, segId, right.id);
     return { node, left, right };
   }
 
@@ -689,7 +700,7 @@ export class Network {
       if (!n) continue;
       const deg = this.degree(nid);
       if (deg === 0 && !n.fixed && !n.entry) { this.nodes.delete(nid); this.adj.delete(nid); }
-      else if (deg < 3) { n.light = false; n.stop = false; }
+      else if (deg < 3) { n.light = false; n.stop = false; delete n.signal; }
     }
   }
 
@@ -714,6 +725,7 @@ export class Network {
     const t = s.a;
     s.a = s.b;
     s.b = t;
+    for (const n of [s.a, s.b]) { const plan = this.nodes.get(n)?.signal; if (plan) flipSeg(plan, id); }
     // What was on the right is now on the left.
     const r = s.addR, l = s.addL;
     if (l) s.addR = l; else delete s.addR;
@@ -852,7 +864,9 @@ export class Network {
       if (s.addR || s.addL) row.push(packLanes(s.addR ?? 0, s.addL ?? 0));
       segs.push(row);
     }
-    return { nextId: this.nextId, nodes, segs };
+    const signals: [number, SignalPlan][] = [];
+    for (const n of this.nodes.values()) if (n.signal && n.light) signals.push([n.id, clonePlan(n.signal)]);
+    return { nextId: this.nextId, nodes, segs, ...(signals.length ? { signals } : {}) };
   }
 
   static fromPlain(p: PlainNet): Network {
@@ -878,6 +892,7 @@ export class Network {
       net.adj.get(b)!.push(id);
     }
     for (const s of net.segs.values()) if (!canAddBikeLane(s, net)) s.bike = false;
+    for (const [id, plan] of p.signals ?? []) { const n = net.nodes.get(id); if (n) n.signal = clonePlan(plan); }
     net.nextId = p.nextId;
     return net;
   }

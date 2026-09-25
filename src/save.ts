@@ -8,6 +8,8 @@ import type { Policies } from './policies';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
 import { packLanes, unpackLanes } from './roads/network';
+import { remapPlan } from './roads/signals';
+import type { SignalPlan } from './roads/signals';
 import { defaultExtras, extrasFromJson, extrasToJson } from './extras';
 import type { CityExtras } from './extras';
 
@@ -103,7 +105,13 @@ export function encode(d: SaveData): string {
   const segHi = segs.flatMap((s, k) => (s[5] & 256 ? [k] : []));
   // Added lanes: only the segments that have any, by their index in the list above.
   const segLanes = segs.flatMap((s, k) => (s[6] !== undefined ? [[k, ...unpackLanes(s[6])]] : []));
-  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segLanes.length ? { segLanes } : {}) }));
+  // Signal plans, by node index, with their movements keyed by segment index.
+  const segAt = new Map(segs.map((s, k) => [s[0], k]));
+  const signals = (d.net.signals ?? []).flatMap(([id, plan]) => {
+    const k = index.get(id), mapped = remapPlan(plan, sid => segAt.get(sid));
+    return k === undefined || !mapped ? [] : [[k, mapped] as [number, SignalPlan]];
+  });
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segLanes.length ? { segLanes } : {}), ...(signals.length ? { signals } : {}) }));
   bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
   for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
@@ -232,6 +240,18 @@ export function decode(str: string): SaveData | null {
         const ok = (v: unknown): boolean => Number.isInteger(v) && Math.abs(v as number) <= 6;
         if (!Array.isArray(json.segLanes) || !json.segLanes.every((e: unknown) => Array.isArray(e) && e.length === 3 && Number.isInteger(e[0]) && e[0] >= 0 && e[0] < net.segs.length && ok(e[1]) && ok(e[2]))) return null;
         for (const [k, r, l] of json.segLanes as number[][]) net.segs[k][6] = packLanes(r, l);
+      }
+      // A plan that does not read back cleanly is dropped; the junction runs its default instead.
+      if (Array.isArray(json.signals)) {
+        const plans: [number, SignalPlan][] = [];
+        for (const entry of json.signals as unknown[]) {
+          if (!Array.isArray(entry) || entry.length !== 2 || !Number.isInteger(entry[0]) || entry[0] < 0 || entry[0] >= net.nodes.length) continue;
+          const plan = entry[1] as SignalPlan;
+          if (!plan || !Array.isArray(plan.phases) || plan.phases.some(p => !p || typeof p.green !== 'number' || typeof p.moves !== 'object' || !p.moves)) continue;
+          const mapped = remapPlan(plan, k => (Number.isInteger(k) && k >= 0 && k < net.segs.length ? net.segs[k][0] : undefined));
+          if (mapped) plans.push([net.nodes[entry[0]][0], { ...(plan.adaptive ? { adaptive: true } : {}), phases: mapped.phases }]);
+        }
+        if (plans.length) net.signals = plans;
       }
       extras = parsed; p += length;
     }

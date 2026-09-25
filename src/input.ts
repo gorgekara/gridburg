@@ -934,7 +934,7 @@ export class Input {
       if (n.ring) { this.onToast?.('Roundabouts do not need lights'); return; }
       if (!n.light && !g.canAfford(COST_LIGHT)) { this.onToast?.('Not enough money'); return; }
       n.light = !n.light;
-      if (n.light) n.stop = false;
+      if (n.light) n.stop = false; else delete n.signal;
       net.version++;
       g.spend(n.light ? COST_LIGHT : 0);
       g.flush();
