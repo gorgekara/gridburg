@@ -3,7 +3,7 @@ import { isDecoration } from '../constants';
 import { roadHeight, STRUCTURE_COST } from '../roads/structures';
 import { Incidents } from './incidents';
 import { T_FIRE, T_POLICE, T_POLICE_HQ, T_DOCKS, DOCK_JOBS, DOCK_CATCH } from '../constants';
-import { TrafficSpace, vehicleLength } from './trafficSpace';
+import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute, trolleyLaneOffset } from './transit';
@@ -24,8 +24,10 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_MOTORWAY, KIND_RAMP, HALF_WIDTH, isGreen, isMotorway, isCarriageway } from '../roads/network';
+import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, isGreen, isMotorway, isCarriageway } from '../roads/network';
 import type { RSeg } from '../roads/network';
+import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
+import { isOneWayKind } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
 import type { EditPayload, MainToWorker, Stats, TileReport } from './messages';
@@ -82,7 +84,7 @@ function locatePlayer(): void {
   const { x, z } = player;
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
-    const reach = HALF_WIDTH[seg.kind] + 0.05;
+    const reach = roadHalf(seg) + 0.05;
     if (x < seg.minX - reach || x > seg.maxX + reach || z < seg.minZ - reach || z > seg.maxZ + reach) continue;
     const hit = Network.nearestOn(seg, x, z);
     if (hit.dist > reach) continue;
@@ -210,6 +212,18 @@ let entryNodes: number[] = [];
 let gates: { x: number; z: number; dx: number; dz: number }[] = [];
 let entries: { seg: number; s: number }[] = [];
 let segCong = new Float32Array(0);
+/** The network itself, for lane layouts and turn tables. */
+let laneNet = new Network();
+/** Per direction of a segment (seg·2 + dir): its lanes; per lane (dirKey·MAXL + lane): centre offset, and the stretch where it is full width. */
+let dirLanes = new Uint8Array(0);
+let laneCentreTab = new Float32Array(0), laneFromTab = new Float32Array(0), laneToTab = new Float32Array(0);
+/** Turn tables for each approach (seg·2 + dir), built when first needed. */
+let approachCache = new Map<number, { exits: { seg: number; fwd: boolean; angle: number; lanes: number }[]; serve: number[][]; targets(lane: number, exit: number): number[] }>();
+/** Cars inside each junction box, the car that has waited longest and reserved it, and cached movement paths and conflicts. */
+let boxCars: number[][] = [];
+let boxWait = new Int32Array(0);
+let movePaths = new Map<string, VehiclePose[]>();
+let moveConflicts = new Map<string, boolean>();
 let roadUpkeep = 0;
 let roadLength = 0;
 
@@ -217,7 +231,19 @@ let roadLength = 0;
 /** A stretch of one segment on a route. On a motorway, which side the slip road ahead or behind is on (±1), if any. */
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
-interface Car { uid: number; legs: Leg[]; li: number; p: number; time: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean }
+interface Car {
+  uid: number; legs: Leg[]; li: number; p: number; time: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
+  lane: number; nextLane: number; prevLane: number;
+  /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
+  chFrom: number; chP: number; chT: number; chLane: number;
+  /** No lane change before this time. */
+  lcCool: number;
+  /** How long it has waited at a stop line in a lane that does not go its way. */
+  laneWait: number;
+  /** The junction box it is inside (−1 for none), and the leg it entered it from. */
+  box: number; boxLi: number;
+}
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
 let carSequence = 0;
@@ -264,6 +290,7 @@ function pickWeighted(tiles: number[], cum: number[]): number {
 function applyNetwork(p: EditPayload): void {
   const net = Network.fromPlain(p.net);
   trolleyNet = net;
+  laneNet = net;
   const oldLens = segs.map((s) => s.len);
   const oldA = segs.map((s) => s.a);
 
@@ -305,7 +332,9 @@ function applyNetwork(p: EditPayload): void {
     nodeEdges[segA[i]].push({ seg: i, to: segB[i], fwd: true });
     if (!s.oneway) nodeEdges[segB[i]].push({ seg: i, to: segA[i], fwd: false });
     // The motorway and its interchanges came with the map: the city neither pays for nor counts them.
-    if (!s.fixed) { roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1); roadLength += s.len; }
+    // A road with lanes added costs more to keep, in proportion to the lanes it carries.
+    const lanes = lanesFor(net, s, true) + lanesFor(net, s, false), usual = oneWay(s) ? (isOneWayKind(s.kind) ? DEFAULT_LANES[s.kind] : 2 * DEFAULT_LANES[s.kind]) : 2 * DEFAULT_LANES[s.kind];
+    if (!s.fixed) { roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1) * Math.max(0.5, lanes / Math.max(1, usual)); roadLength += s.len; }
   });
   lockOwner = new Int32Array(nodeIds.length).fill(-1);
   ringClaim = new Int32Array(nodeIds.length).fill(-1);
@@ -313,7 +342,7 @@ function applyNetwork(p: EditPayload): void {
   ringIn = nodeIds.map(() => []);
   newSegs.forEach((s, i) => {
     if (!s.oneway || nodeType[segA[i]] !== J_RING || nodeType[segB[i]] !== J_RING) return;
-    ringArc[i] = 1; ringIn[segB[i]].push(i * 2);
+    ringArc[i] = 1; ringIn[segB[i]].push(i * 2 * MAXL);
   });
   // Slip roads: note which carriageway they leave or join, on which side, and how far they run
   // alongside it, so cars drift out of the outer lane instead of cutting across from the centre.
@@ -336,11 +365,15 @@ function applyNetwork(p: EditPayload): void {
       for (let d = 0.5; d < Math.min(s.len - 0.5, 9); d += 0.25) {
         Network.poseAt(s, end ? s.len - d : d, pose);
         mouth = d;
-        if (Network.nearestOn(road, pose.x, pose.z).dist > HALF_WIDTH[road.kind] + 0.25) break;
+        if (Network.nearestOn(road, pose.x, pose.z).dist > roadHalf(road) + 0.25) break;
       }
       if (end) rampEnd[i] = side; else rampStart[i] = side;
       rampMouth[i] = Math.max(rampMouth[i], mouth);
-      rampLane[i] = road.kind === KIND_MOTORWAY ? 0.44 : 0.25;
+      // The ramp meets the carriageway's lane on its own side, wherever lanes have put that lane.
+      // Carriageways are one way, so their lanes all run a→b.
+      const roadFwd = true;
+      const n = lanesFor(net, road, roadFwd);
+      rampLane[i] = Math.abs(laneCentre(net, road, roadFwd, side > 0 ? 0 : Math.max(0, n - 1))) || (road.kind === KIND_MOTORWAY ? 0.44 : 0.25);
     }
   });
   nodeHalf = new Float32Array(nodeIds.length);
@@ -348,7 +381,7 @@ function applyNetwork(p: EditPayload): void {
     if (nodeType[ni] === J_LIGHT) {
       for (const [sid, g] of net.lightGroups(id)) nodeGroups[ni].set(segIndex.get(sid)!, g);
     }
-    for (const s of net.segsAt(id)) nodeHalf[ni] = Math.max(nodeHalf[ni], HALF_WIDTH[s.kind]);
+    for (const s of net.segsAt(id)) nodeHalf[ni] = Math.max(nodeHalf[ni], roadHalf(s));
   });
 
   // Any purchased highway entry can serve its own connected neighborhoods.
@@ -384,7 +417,7 @@ function applyNetwork(p: EditPayload): void {
     const ni = segIndex.get(s.id);
     if (ni === undefined) return;
     const ns = newSegs[ni];
-    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i] || ns.kind !== s.kind || ns.oneway !== s.oneway || ns.structure !== s.structure || ns.cx !== s.cx || ns.cz !== s.cz) return;
+    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i] || ns.kind !== s.kind || ns.oneway !== s.oneway || ns.structure !== s.structure || ns.cx !== s.cx || ns.cz !== s.cz || (ns.addR ?? 0) !== (s.addR ?? 0) || (ns.addL ?? 0) !== (s.addL ?? 0)) return;
     remap[i] = ni;
     newCong[ni] = segCong[i];
   });
@@ -399,13 +432,49 @@ function applyNetwork(p: EditPayload): void {
     if (!ok) { freeCar(c); continue; }
     for (const leg of car.legs) leg.seg = remap[leg.seg];
     car.lock = -1; // locks were reset with the node arrays
+    car.box = -1; car.nextLane = -1;
   }
   segs = newSegs;
   segCong = newCong;
-  laneCars = new Array(segs.length * 2);
+  laneCars = new Array(segs.length * 2 * MAXL);
   for (let i = 0; i < laneCars.length; i++) laneCars[i] = [];
-  laneTail = new Float32Array(segs.length * 2);
-  laneFresh = new Float32Array(segs.length * 2);
+  laneTail = new Float32Array(segs.length * 2 * MAXL);
+  laneFresh = new Float32Array(segs.length * 2 * MAXL);
+  // Lanes: how many each way, where each sits, and where along the road each is open at full width.
+  // A lane that begins where a narrower road hands over opens after the taper; one that has nothing
+  // to carry on into at the far end closes before it, and its traffic has to move over first.
+  dirLanes = new Uint8Array(segs.length * 2);
+  laneCentreTab = new Float32Array(segs.length * 2 * MAXL);
+  laneFromTab = new Float32Array(segs.length * 2 * MAXL);
+  laneToTab = new Float32Array(segs.length * 2 * MAXL).fill(1e9);
+  segs.forEach((s, i) => {
+    for (const fwd of [true, false]) {
+      const dk = i * 2 + (fwd ? 0 : 1), n = Math.min(MAXL, lanesFor(net, s, fwd));
+      dirLanes[dk] = n;
+      for (let l = 0; l < n; l++) laneCentreTab[dk * MAXL + l] = laneCentre(net, s, fwd, l);
+      if (!n) continue;
+      const tl = taperLength(s);
+      const startNode = fwd ? s.a : s.b, endNode = fwd ? s.b : s.a;
+      if (net.degree(startNode) === 2) {
+        const up = net.segsAt(startNode).find(o => o.id !== s.id)!;
+        const upFwd = up.b === startNode;
+        if (lanesFor(net, up, upFwd)) {
+          const fed = new Set(matchLanes(net, up, upFwd, s, fwd));
+          for (let l = 0; l < n; l++) if (!fed.has(l)) laneFromTab[dk * MAXL + l] = tl;
+        }
+      }
+      if (net.degree(endNode) === 2) {
+        const down = net.segsAt(endNode).find(o => o.id !== s.id)!;
+        const downFwd = down.a === endNode;
+        if (lanesFor(net, down, downFwd)) matchLanes(net, s, fwd, down, downFwd).forEach((j, l) => { if (j < 0) laneToTab[dk * MAXL + l] = s.len - tl; });
+      }
+    }
+  });
+  approachCache = new Map();
+  boxCars = nodeIds.map(() => []);
+  boxWait = new Int32Array(nodeIds.length).fill(-1);
+  movePaths = new Map();
+  moveConflicts = new Map();
 
   // Tile access arrives keyed by segment id; store indices.
   cover = p.cover;
@@ -550,6 +619,8 @@ function freeCar(slot: number): void {
   const c = slots[slot];
   if (!c) return;
   if (c.lock >= 0 && c.lock < lockOwner.length && lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
+  if (c.box >= 0 && c.box < boxCars.length) leaveBox(slot);
+  for (let n = 0; n < boxWait.length; n++) if (boxWait[n] === slot) boxWait[n] = -1;
   trafficSpace.remove(slot);
   slots[slot] = null;
   freeList.push(slot);
@@ -563,6 +634,8 @@ function clearCars(): void {
   freeList.length = 0;
   for (let i = MAX_CARS - 1; i >= 0; i--) freeList.push(i);
   lockOwner.fill(-1); ringClaim.fill(-1); spawnSpace.clear();
+  for (const list of boxCars) list.length = 0;
+  boxWait.fill(-1);
 }
 
 const legStart = (l: Leg): number => (l.fwd ? segA[l.seg] : segB[l.seg]);
@@ -587,19 +660,19 @@ function markRampLegs(legs: Leg[]): void {
   }
 }
 
-function alignRingLegs(legs: Leg[], slot: number, vehicle: number): void {
+function alignRingLegs(legs: Leg[], vehicle: number): void {
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     if (!ringArc[leg.seg]) continue;
     const arc = segs[leg.seg];
     const next = legs[i + 1];
     if (next && !ringArc[next.seg] && legEndNode(leg) === legStart(next)) {
-      const to = carPose(next, next.p0, slot, vehicle);
+      const to = carPose(next, next.p0, vehicle);
       leg.p1 = clamp(Network.nearestOn(arc, to.x, to.z).s, leg.p0 + 0.05, leg.p1);
     }
     const prev = legs[i - 1];
     if (prev && !ringArc[prev.seg] && legEndNode(prev) === legStart(leg)) {
-      const from = carPose(prev, prev.p1, slot, vehicle);
+      const from = carPose(prev, prev.p1, vehicle);
       leg.p0 = clamp(Network.nearestOn(arc, from.x, from.z).s, leg.p0, leg.p1 - 0.05);
     }
   }
@@ -646,11 +719,12 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   if (driven.length) legs = driven;
   const slot = freeList.at(-1)!;
   markRampLegs(legs);
-  alignRingLegs(legs, slot, vehicle);
-  const placement = carPose(legs[0], legs[0].p0, slot, vehicle);
+  alignRingLegs(legs, vehicle);
+  const placement = carPose(legs[0], legs[0].p0, vehicle);
   if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
   freeList.pop(); trafficSpace.set(slot, placement);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, pace: drivingPace(vehicle), stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop };
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, pace: drivingPace(vehicle), stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
+    lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1 };
   activeCars++;
   return true;
 }
@@ -794,60 +868,65 @@ function spawn(dt: number): void {
  * measured in, so inner-lane cars close up until their bodies overlap, and an outer lane wide enough
  * for an avenue reaches out across the mouth of every entry arm.
  */
-/** Which lane a car is in, for the probe: before real lanes, the lane its slot draws it in. */
-function carLane(c: Car): number {
-  const slot = slots.indexOf(c);
-  const leg = c.legs[c.li], seg = segs[leg.seg];
-  return Math.round(Math.abs(laneOffset(leg.seg, seg, slot, leg, c.p)) * 10);
-}
+/** Which lane a car is in, for the probe. */
+const carLane = (c: Car): number => c.lane;
 
 /** Travel speed on a road, slowed where the street has been calmed. */
 function segSpeed(seg: RSeg): number {
   return SPEED[seg.kind] * (seg.calm ? 0.55 : 1);
 }
 
-function laneOffset(segIndex: number, seg: RSeg, slot: number, leg?: Leg, progress = 0): number {
-  if (ringArc[segIndex]) return 0;
-  const MERGE = 5;
-  if (isCarriageway(seg.kind)) {
-    // Three lanes on a motorway, two on the smaller highway; the outer lane is where ramps meet it.
-    const OUTER_LANE = seg.kind === KIND_MOTORWAY ? 0.44 : 0.25;
-    let lane = seg.kind === KIND_MOTORWAY ? ((slot % 3) - 1) * OUTER_LANE : (slot & 1 ? 1 : -1) * OUTER_LANE;
-    if (leg?.toRamp) {
-      // Drift into the outer lane over the last stretch before the exit.
-      const left = Math.max(0, Math.min(MERGE, leg.p1 - progress));
-      lane += (leg.toRamp * OUTER_LANE - lane) * (1 - left / MERGE);
-    } else if (leg?.fromRamp) {
-      // Come in on the outer lane and ease over to the car's own lane.
-      const done = Math.max(0, Math.min(MERGE, progress - leg.p0));
-      lane += (leg.fromRamp * OUTER_LANE - lane) * (1 - done / MERGE);
-    }
-    return lane;
-  }
-  if (seg.kind === KIND_RAMP) {
-    // Leave and rejoin along the outer lane, easing onto the ramp's own centre line.
-    const OUTER_LANE = rampLane[segIndex] || 0.44;
-    const mouth = rampMouth[segIndex] || 1;
-    if (rampStart[segIndex] && progress < mouth) return rampStart[segIndex] * OUTER_LANE * (1 - progress / mouth);
-    if (rampEnd[segIndex] && seg.len - progress < mouth) return rampEnd[segIndex] * OUTER_LANE * (1 - (seg.len - progress) / mouth);
-    return 0;
-  }
-  // Three lanes each way on an expressway, two on an avenue, one on anything narrower.
-  if (seg.kind === KIND_HIGHWAY) {
-    return seg.oneway ? ((slot % 3) - 1) * 0.86 : 0.22 + (slot % 3) * 0.44;
-  }
-  if (seg.kind === KIND_AVENUE) return seg.oneway ? (slot & 1 ? 0.43 : -0.43) : (slot & 1 ? 0.22 : 0.64);
-  if (seg.oneway) return seg.kind === KIND_LANE ? 0 : (slot & 1 ? 0.18 : -0.18);
-  return seg.kind === KIND_LANE ? 0.1 : 0.18;
+/** The per-lane queue a car in lane `lane` of this leg belongs to. */
+const laneKey = (seg: number, fwd: boolean, lane: number): number => (seg * 2 + (fwd ? 0 : 1)) * MAXL + lane;
+const dirKeyOf = (key: number): number => Math.floor(key / MAXL);
+const legLanes = (l: Leg): number => Math.max(1, dirLanes[l.seg * 2 + (l.fwd ? 0 : 1)]);
+/** Where the middle of a lane of a leg sits, to the right of travel. */
+const centreOf = (l: Leg, lane: number): number => laneCentreTab[(l.seg * 2 + (l.fwd ? 0 : 1)) * MAXL + Math.max(0, Math.min(legLanes(l) - 1, lane))];
+const smoothstep = (u: number): number => { const v = u < 0 ? 0 : u > 1 ? 1 : u; return v * v * (3 - 2 * v); };
+const LC_DIST = 1.6, LC_TIME = 1.4;
+
+/** A slip road leaves and rejoins along the carriageway's lane on its side, easing onto its own centre line. */
+function rampOffset(segIndex: number, seg: RSeg, progress: number): number {
+  if (seg.kind !== KIND_RAMP) return 0;
+  const lane = rampLane[segIndex] || 0.44;
+  const mouth = rampMouth[segIndex] || 1;
+  if (rampStart[segIndex] && progress < mouth) return rampStart[segIndex] * lane * (1 - progress / mouth);
+  if (rampEnd[segIndex] && seg.len - progress < mouth) return rampEnd[segIndex] * lane * (1 - (seg.len - progress) / mouth);
+  return 0;
 }
 
-function carPose(leg: Leg, progress: number, slot: number, type: number): VehiclePose {
+/**
+ * How far to the right of its leg's centre line car `c` is drawn on leg `li` at progress `p`: in the
+ * middle of its lane, sliding across while it changes lanes, in the lane it chose on the next leg,
+ * or the one it left on the last. Trolleybuses keep to their wires.
+ */
+function latOf(c: Car, li: number, p: number): number {
+  const leg = c.legs[li], seg = segs[leg.seg];
+  if (c.vehicle === 8) return trolleyLaneOffset(seg);
+  const along = leg.fwd ? p : seg.len - p;
+  let lat: number;
+  if (li === c.li) {
+    lat = centreOf(leg, c.lane);
+    if (c.chT >= 0) lat = c.chFrom + (lat - c.chFrom) * smoothstep(Math.max((p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME));
+  } else if (li === c.li + 1) lat = centreOf(leg, c.nextLane >= 0 ? c.nextLane : 0);
+  else lat = centreOf(leg, c.prevLane);
+  // A ramp's own offset is measured along the ramp; on a ring there is only the one lane.
+  return ringArc[leg.seg] ? 0 : lat + rampOffset(leg.seg, seg, along) * (leg.fwd ? 1 : -1);
+}
+
+function carPoseAt(leg: Leg, progress: number, type: number, lane: number): VehiclePose {
   const seg = segs[leg.seg];
   const p = { x: 0, z: 0, tx: 0, tz: 0 };
   Network.poseAt(seg, leg.fwd ? progress : seg.len - progress, p);
   const dir = leg.fwd ? 1 : -1, tx = p.tx * dir, tz = p.tz * dir;
-  const lane = type === 8 ? trolleyLaneOffset(seg) : laneOffset(leg.seg, seg, slot, leg, leg.fwd ? progress : seg.len - progress);
   return { y: roadHeight(seg, leg.fwd ? progress : seg.len - progress), x: p.x - tz * lane, z: p.z + tx * lane, angle: Math.atan2(tx, tz), type };
+}
+
+/** A pose in lane `lane` of a leg, for placing a car before it has a record (spawning, lining up on a ring). */
+function carPose(leg: Leg, progress: number, type: number, lane = 0): VehiclePose {
+  const seg = segs[leg.seg];
+  const lat = type === 8 ? trolleyLaneOffset(seg) : ringArc[leg.seg] ? 0 : centreOf(leg, lane) + rampOffset(leg.seg, seg, leg.fwd ? progress : seg.len - progress) * (leg.fwd ? 1 : -1);
+  return carPoseAt(leg, progress, type, lat);
 }
 
 /** How far either side of a junction a turning vehicle eases round the corner instead of pivoting on the spot. */
@@ -861,15 +940,24 @@ const lerpPose = (a: VehiclePose, b: VehiclePose, t: number): { x: number; z: nu
  * quadratic curve from its lane on the way in to its lane on the way out, bending about the junction,
  * and faces along the curve. The traffic space checks the same pose, so what is drawn never overlaps.
  */
-function cornerPose(c: Car, li: number, p: number, slot: number): VehiclePose | null {
+function cornerPose(c: Car, li: number, p: number): VehiclePose | null {
   const leg = c.legs[li];
-  let from: Leg | undefined, to: Leg | undefined, along = 0, ra = 0, rb = 0;
-  const reach = (l: Leg): number => Math.min(CORNER, (l.p1 - l.p0) * 0.45);
+  let fi = -1, ti = -1, along = 0, ra = 0, rb = 0;
+  // A corner starts where the lane it turns into would cross this one, at the least: a kerb lane on
+  // a wide road lies well out from the centre line, and turning any later hooks back across the box.
+  const reach = (l: Leg, other: number): number => Math.min(Math.max(CORNER, Math.abs(other) + 0.15), (l.p1 - l.p0) * 0.45);
   const next = c.legs[li + 1], prev = c.legs[li - 1];
-  if (next && leg.p1 - p < reach(leg)) { from = leg; to = next; ra = reach(leg); rb = reach(next); along = ra - (leg.p1 - p); }
-  else if (prev && p - leg.p0 < reach(leg)) { from = prev; to = leg; ra = reach(prev); rb = reach(leg); along = ra + (p - leg.p0); }
-  if (!from || !to || ra <= 1e-3 || rb <= 1e-3) return null;
-  const start = carPose(from, from.p1 - ra, slot, c.vehicle), end = carPose(to, to.p0 + rb, slot, c.vehicle);
+  const here = latOf(c, li, p);
+  if (next && leg.p1 - p < reach(leg, latOf(c, li + 1, next.p0))) {
+    const there = latOf(c, li + 1, next.p0);
+    fi = li; ti = li + 1; ra = reach(leg, there); rb = reach(next, here); along = ra - (leg.p1 - p);
+  } else if (prev && p - leg.p0 < reach(leg, latOf(c, li - 1, prev.p1))) {
+    const there = latOf(c, li - 1, prev.p1);
+    fi = li - 1; ti = li; ra = reach(prev, here); rb = reach(leg, there); along = ra + (p - leg.p0);
+  }
+  if (fi < 0 || ra <= 1e-3 || rb <= 1e-3) return null;
+  const from = c.legs[fi], to = c.legs[ti];
+  const start = carPoseAt(from, from.p1 - ra, c.vehicle, latOf(c, fi, from.p1 - ra)), end = carPoseAt(to, to.p0 + rb, c.vehicle, latOf(c, ti, to.p0 + rb));
   let turn = end.angle - start.angle;
   turn = Math.atan2(Math.sin(turn), Math.cos(turn));
   if (Math.abs(turn) < 0.12) return null; // near enough straight on
@@ -881,18 +969,206 @@ function cornerPose(c: Car, li: number, p: number, slot: number): VehiclePose | 
   // start + s0·a = end − s1·b: how far the corner lies ahead of the start and behind the end.
   const s0 = Math.abs(cross) > 0.2 ? (gx * bz - gz * bx) / cross : -1, s1 = Math.abs(cross) > 0.2 ? (ax * gz - az * gx) / cross : -1;
   const meet = s0 > 0.02 && s1 > 0.02 && s0 < 2 * (ra + rb) && s1 < 2 * (ra + rb);
-  const control = meet ? { x: start.x + ax * s0, z: start.z + az * s0 } : lerpPose(carPose(from, from.p1, slot, c.vehicle), carPose(to, to.p0, slot, c.vehicle), 0.5);
+  const control = meet ? { x: start.x + ax * s0, z: start.z + az * s0 } : lerpPose(carPoseAt(from, from.p1, c.vehicle, latOf(c, fi, from.p1)), carPoseAt(to, to.p0, c.vehicle, latOf(c, ti, to.p0)), 0.5);
   const t = Math.max(0, Math.min(1, along / (ra + rb))), u = 1 - t;
   const x = u * u * start.x + 2 * u * t * control.x + t * t * end.x;
   const z = u * u * start.z + 2 * u * t * control.z + t * t * end.z;
-  const own = carPose(leg, p, slot, c.vehicle);
+  const own = carPoseAt(leg, p, c.vehicle, latOf(c, li, p));
   const dx = u * (control.x - start.x) + t * (end.x - control.x), dz = u * (control.z - start.z) + t * (end.z - control.z);
   return { ...own, x, z, angle: meet && dx * dx + dz * dz > 1e-8 ? Math.atan2(dx, dz) : start.angle + turn * t };
 }
 
 /** Where a vehicle on its `li`th leg at progress `p` actually is: in its lane, or rounding a corner. */
-function vehiclePose(c: Car, li: number, p: number, slot: number): VehiclePose {
-  return cornerPose(c, li, p, slot) ?? carPose(c.legs[li], p, slot, c.vehicle);
+function vehiclePose(c: Car, li: number, p: number): VehiclePose {
+  return cornerPose(c, li, p) ?? carPoseAt(c.legs[li], p, c.vehicle, latOf(c, li, p));
+}
+
+// ---- lanes: turn tables, choosing a lane, changing lanes ------------------------------------------
+/** The turn table for arriving along a leg at its end node, with exits in segment indices. */
+function approachOf(l: Leg): NonNullable<ReturnType<typeof approachCache.get>> {
+  const dk = l.seg * 2 + (l.fwd ? 0 : 1);
+  let a = approachCache.get(dk);
+  if (!a) {
+    const seg = segs[l.seg];
+    const raw = approachLanes(laneNet, l.fwd ? seg.b : seg.a, seg, l.fwd);
+    const index = trolleySegIndex;
+    a = { exits: raw.exits.map(e => ({ ...e, seg: index.get(e.seg) ?? -1 })), serve: raw.serve, targets: raw.targets };
+    approachCache.set(dk, a);
+  }
+  return a;
+}
+
+const exitOf = (a: ReturnType<typeof approachOf>, next: Leg): number => a.exits.findIndex(e => e.seg === next.seg && e.fwd === next.fwd);
+
+/** The lanes of the current leg that lead where the car goes next, and are open at this point. */
+function wantedLanes(c: Car): number[] | null {
+  const leg = c.legs[c.li], next = c.legs[c.li + 1];
+  if (!next || c.vehicle === 8 || ringArc[leg.seg]) return null;
+  const a = approachOf(leg), e = exitOf(a, next);
+  if (e < 0) return null;
+  const n = legLanes(leg), out: number[] = [];
+  for (let l = 0; l < n; l++) if (a.serve[l]?.includes(e)) out.push(l);
+  return out.length ? out : null;
+}
+
+/** Pick the lane to take on the next leg, if not picked yet: of those its lane may turn into, the one with most room. */
+function chooseNext(c: Car): void {
+  if (c.nextLane >= 0) return;
+  const leg = c.legs[c.li], next = c.legs[c.li + 1];
+  if (!next) return;
+  if (c.vehicle === 8 || ringArc[next.seg]) { c.nextLane = 0; return; }
+  const a = approachOf(leg), e = exitOf(a, next), n = legLanes(next);
+  let options = e >= 0 ? a.targets(c.lane, e).filter(l => l >= 0 && l < n) : [];
+  if (!options.length) options = [Math.min(n - 1, c.lane)];
+  let best = options[0], room = -Infinity;
+  for (const l of options) {
+    const r = laneTail[laneKey(next.seg, next.fwd, l)] - next.p0;
+    if (r > room + 0.05) { room = r; best = l; }
+  }
+  c.nextLane = best;
+}
+
+/** Whether lane `lane` of the car's leg is open at full width at progress p (not still opening or already closing). */
+function laneOpen(leg: Leg, lane: number, p: number): boolean {
+  const k = (leg.seg * 2 + (leg.fwd ? 0 : 1)) * MAXL + lane;
+  return p >= laneFromTab[k] && p <= laneToTab[k] - LC_DIST;
+}
+
+/** Cars that moved into a lane during this step, so two cars do not both take the same gap. */
+const laneJoin = new Map<number, number[]>();
+
+/** Is there a gap for car `c` alongside in lane `lane`? */
+function gapIn(c: Car, slot: number, lane: number): boolean {
+  const leg = c.legs[c.li], key = laneKey(leg.seg, leg.fwd, lane), len = vehicleLength(c.vehicle);
+  const gap = GAP[segs[leg.seg].kind];
+  const check = (other: number): boolean => {
+    if (other === slot) return true;
+    const o = slots[other];
+    if (!o) return true;
+    const ol = o.legs[o.li];
+    if (ol.seg !== leg.seg || ol.fwd !== leg.fwd) return true;
+    const d = o.p - c.p, half = (len + vehicleLength(o.vehicle)) / 2;
+    if (d >= 0) return d > Math.max(gap, half + 0.06) + 0.1;
+    return -d > half + (o.stuck > 0.3 ? 0.25 : 0.5);
+  };
+  for (const other of laneCars[key]) if (!check(other)) return false;
+  for (const other of laneJoin.get(key) ?? []) if (!check(other)) return false;
+  return true;
+}
+
+/**
+ * Change lanes when the car is in a lane that does not lead where it is going (mandatory, tried
+ * often), or when it could get past a slow or stopped car ahead in another lane that also leads
+ * there (overtaking, now and then). The car switches queues at once and slides across as it drives.
+ */
+function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck: boolean): void {
+  if (c.chT >= 0 || simTime < c.lcCool || c.vehicle === 8 || c.working) return;
+  const leg = c.legs[c.li];
+  if (ringArc[leg.seg] || !c.legs[c.li + 1]) return;
+  const n = legLanes(leg);
+  if (n < 2) return;
+  const want = wantedLanes(c);
+  const ok = (l: number): boolean => l >= 0 && l < n && laneOpen(leg, l, c.p) && (!want || want.includes(l));
+  const closing = c.p > laneToTab[(leg.seg * 2 + (leg.fwd ? 0 : 1)) * MAXL + c.lane] - LC_DIST * 2.5;
+  let target = -1, mandatory = false;
+  if ((want && !want.includes(c.lane)) || closing) {
+    mandatory = true;
+    // Step one lane towards the nearest lane that goes the right way.
+    const goals = want ?? Array.from({ length: n }, (_, l) => l).filter(l => l !== c.lane);
+    const goal = goals.reduce((b, l) => Math.abs(l - c.lane) < Math.abs(b - c.lane) ? l : b, goals[0]);
+    target = c.lane + Math.sign(goal - c.lane);
+    if (!(target >= 0 && target < n && laneOpen(leg, target, c.p))) target = -1;
+  } else if (leaderGap < 1.2 && leaderStuck) {
+    // Try the neighbour with the longer clear run ahead.
+    let room = leaderGap + 1.5;
+    for (const l of [c.lane - 1, c.lane + 1]) {
+      if (!ok(l)) continue;
+      let ahead = Infinity;
+      for (const other of laneCars[laneKey(leg.seg, leg.fwd, l)]) { const o = slots[other]; if (o && o.p > c.p && o.p - c.p < ahead) ahead = o.p - c.p; }
+      if (ahead > room) { room = ahead; target = l; }
+    }
+  }
+  if (target < 0 || !gapIn(c, slot, target)) { c.lcCool = simTime + (mandatory ? 0.25 : 2); return; }
+  c.chFrom = latOf(c, c.li, c.p);
+  c.chP = c.p; c.chT = simTime; c.chLane = c.lane;
+  c.lane = target; c.nextLane = -1;
+  c.lcCool = simTime + (mandatory ? 0.4 : 3);
+  const key = laneKey(leg.seg, leg.fwd, target);
+  const list = laneJoin.get(key);
+  if (list) list.push(slot); else laneJoin.set(key, [slot]);
+}
+
+// ---- junction boxes: several cars at once, when their paths do not cross ------------------------------
+/**
+ * The path a movement takes through a node, as the poses a car making it would actually occupy: along
+ * its lane from the stop line, round the same corner curve the cars drive, and on into its lane on
+ * the far side. Sampled finely enough that two bodies cannot slip between samples.
+ */
+function movementPath(inSeg: number, inFwd: boolean, inLane: number, outSeg: number, outFwd: boolean, outLane: number, node: number): VehiclePose[] {
+  const id = `${inSeg}:${+inFwd}:${inLane}>${outSeg}:${+outFwd}:${outLane}`;
+  let path = movePaths.get(id);
+  if (path) return path;
+  const a: Leg = { seg: inSeg, fwd: inFwd, p0: 0, p1: segs[inSeg].len }, b: Leg = { seg: outSeg, fwd: outFwd, p0: 0, p1: segs[outSeg].len };
+  const setback = Math.max(STOP_SETBACK, nodeHalf[node] + 0.45);
+  const back = Math.min(a.p1 * 0.5, setback), on = Math.min(b.p1 * 0.5, setback);
+  // A stand-in car on this movement, so the corner is drawn by the very code that moves real cars.
+  const ghost = { legs: [a, b], li: 0, p: 0, vehicle: 1, lane: inLane, nextLane: outLane, prevLane: inLane, chT: -1, chFrom: 0, chP: 0 } as unknown as Car;
+  path = [];
+  const STEP = 0.12;
+  for (let p = a.p1 - back; p < a.p1; p += STEP) { ghost.li = 0; path.push(vehiclePose(ghost, 0, p)); }
+  ghost.prevLane = inLane; ghost.lane = outLane;
+  for (let p = 0; p <= on; p += STEP) { ghost.li = 1; path.push(vehiclePose(ghost, 1, p)); }
+  movePaths.set(id, path);
+  return path;
+}
+
+/** The movement car `c` is about to make through the node at the end of its leg. */
+function movementOf(c: Car, node: number): { inKey: number; path: VehiclePose[]; id: string } {
+  const leg = c.legs[c.li], next = c.legs[c.li + 1];
+  chooseNext(c);
+  const path = movementPath(leg.seg, leg.fwd, c.lane, next.seg, next.fwd, c.nextLane, node);
+  return { inKey: laneKey(leg.seg, leg.fwd, c.lane), path, id: `${laneKey(leg.seg, leg.fwd, c.lane)}>${laneKey(next.seg, next.fwd, c.nextLane)}` };
+}
+
+/** Whether two movements through a node cross or come too close. Two cars from the same lane just follow. */
+function conflicts(m: ReturnType<typeof movementOf>, o: ReturnType<typeof movementOf>): boolean {
+  if (m.inKey === o.inKey) return false;
+  const id = m.id < o.id ? `${m.id}|${o.id}` : `${o.id}|${m.id}`;
+  let hit = moveConflicts.get(id);
+  if (hit === undefined) {
+    // The bodies, a longest-vehicle's length and a little margin, overlap anywhere along the two paths.
+    hit = false;
+    for (const p of m.path) {
+      for (const q of o.path) {
+        if (Math.abs(p.x - q.x) > 0.9 || Math.abs(p.z - q.z) > 0.9) continue;
+        if (vehiclesOverlap({ ...p, type: 3 }, { ...q, type: 3 }, 0.03)) { hit = true; break; }
+      }
+      if (hit) break;
+    }
+    moveConflicts.set(id, hit);
+  }
+  return hit;
+}
+
+/** The movement a car inside (or waiting for) a box is making, while it is still on the leg before it. */
+function heldMovement(slot: number, node: number): ReturnType<typeof movementOf> | null {
+  const o = slots[slot];
+  if (!o) return null;
+  // Inside the box and already over the node: its movement is the one from the leg it entered from.
+  const li = o.box === node ? o.boxLi : o.li;
+  const leg = o.legs[li], next = o.legs[li + 1];
+  if (!leg || !next || legEndNode(leg) !== node) return null;
+  const lane = li === o.li ? o.lane : o.prevLane, out = li === o.li ? (o.nextLane >= 0 ? o.nextLane : 0) : o.lane;
+  return { inKey: laneKey(leg.seg, leg.fwd, lane), path: movementPath(leg.seg, leg.fwd, lane, next.seg, next.fwd, out, node), id: `${laneKey(leg.seg, leg.fwd, lane)}>${laneKey(next.seg, next.fwd, out)}` };
+}
+
+function leaveBox(slot: number): void {
+  const c = slots[slot];
+  if (!c || c.box < 0) return;
+  const list = boxCars[c.box];
+  const k = list ? list.indexOf(slot) : -1;
+  if (k >= 0) list.splice(k, 1);
+  c.box = -1;
 }
 
 /**
@@ -903,10 +1179,10 @@ function vehiclePose(c: Car, li: number, p: number, slot: number): VehiclePose {
  */
 function ringApproaching(node: number): boolean {
   for (const key of ringIn[node]) {
-    const len = segs[key >> 1].len;
+    const len = segs[dirKeyOf(key) >> 1].len;
     for (const slot of laneCars[key]) {
       const c = slots[slot];
-      if (c && c.stuck < 0.5 && c.legs[c.li].seg === key >> 1 && c.p > len - RING_GAP) return true;
+      if (c && c.stuck < 0.5 && c.legs[c.li].seg === dirKeyOf(key) >> 1 && c.p > len - RING_GAP) return true;
     }
     // Cars that crossed into the arc during this step are not in its lane list yet.
     if (laneFresh[key] < 1e8 && laneFresh[key] > len - RING_GAP) return true;
@@ -918,11 +1194,12 @@ function stepCars(dt: number): void {
   for (const lane of laneCars) lane.length = 0;
   laneTail.fill(1e9);
   laneFresh.fill(1e9);
+  laneJoin.clear();
   for (let s = 0; s < MAX_CARS; s++) {
     const c = slots[s];
     if (!c) continue;
     const leg = c.legs[c.li];
-    const key = leg.seg * 2 + (leg.fwd ? 0 : 1);
+    const key = laneKey(leg.seg, leg.fwd, c.lane);
     laneCars[key].push(s);
     if (c.p < laneTail[key]) laneTail[key] = c.p;
   }
@@ -933,8 +1210,8 @@ function stepCars(dt: number): void {
     const lane = laneCars[key];
     if (!lane.length) continue;
     lane.sort((a, b) => slots[b]!.p - slots[a]!.p);
-    let leaderP = Infinity, leaderLength = 0.34;
-    const playerP = playerLanes.get(key);
+    let leaderP = Infinity, leaderLength = 0.34, leaderStuck = false;
+    const playerP = playerLanes.get(dirKeyOf(key));
     for (const slot of lane) {
       const c = slots[slot]!;
       // The player's car (or the player on foot) in this lane: traffic behind stops for it.
@@ -945,7 +1222,7 @@ function stepCars(dt: number): void {
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
       if (c.crash !== undefined && incidents.crashes.has(c.crash)) {
-        leaderP = c.p; leaderLength = vehicleLength(c.vehicle); speedN[leg.seg]++; continue;
+        leaderP = c.p; leaderLength = vehicleLength(c.vehicle); leaderStuck = true; speedN[leg.seg]++; continue;
       }
       c.crash = undefined;
       if (c.working && c.mission) {
@@ -957,15 +1234,22 @@ function stepCars(dt: number): void {
           else if (c.mission.kind === 'garbage') collectGarbage(c.mission.tile);
           else if (c.mission.crash !== undefined) incidents.crashes.delete(c.mission.crash);
           freeCar(slot);
-        } else { leaderP = c.p; leaderLength = vehicleLength(c.vehicle); }
+        } else { leaderP = c.p; leaderLength = vehicleLength(c.vehicle); leaderStuck = true; }
         continue;
       }
 
-      // Release a junction lock once clear of the box.
+      // Release a junction lock, or leave the box, once clear of it.
       if (c.lock >= 0 && c.li > c.lockLi && c.p > Math.min(0.8, seg.len * 0.5)) {
         if (lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
         c.lock = -1;
       }
+      if (c.box >= 0 && c.li > c.boxLi && c.p > Math.min(0.8, seg.len * 0.5)) leaveBox(slot);
+      // A finished lane change; one that has been stuck for a while goes back to where it was.
+      if (c.chT >= 0) {
+        if (Math.max((c.p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME) >= 1) c.chT = -1;
+        else if (c.stuck > 3) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
+      }
+      considerLaneChange(c, slot, leaderP - c.p, leaderStuck);
 
       let maxP = leaderP - gap;
       const final = c.li === c.legs.length - 1;
@@ -984,10 +1268,10 @@ function stepCars(dt: number): void {
         const stopP = span > Math.max(1.8, setback * 2) ? legEnd - setback : leg.p0 + span * 0.5;
         const pastStop = c.p > stopP + 1e-3;
         const next = c.legs[c.li + 1];
-        const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
-        // Room on the far side, measured from where this car will actually land: enough to stand behind
-        // the longest vehicle that could already be there. A fixed clearance measured from the link start
-        // is wrong once a leg starts partway along a roundabout arc, and too coarse on short links.
+        chooseNext(c);
+        const nextKey = laneKey(next.seg, next.fwd, c.nextLane);
+        // Room on the far side, in the lane it will take, measured from where this car will actually land:
+        // enough to stand behind the longest vehicle that could already be there.
         const clear = Math.max(GAP[segs[next.seg].kind], (vehicleLength(c.vehicle) + vehicleLength(3)) / 2 + 0.06);
         let canGo = laneTail[nextKey] - next.p0 > Math.min(clear, (next.p1 - next.p0) * 0.6);
         const type = nodeType[node];
@@ -999,6 +1283,11 @@ function stepCars(dt: number): void {
         if (type === J_STOP && !pastStop && c.stopAt !== node) {
           if (c.p >= stopP - 0.25 && c.stuck >= STOP_WAIT) c.stopAt = node;
           else canGo = false;
+        }
+        // In a lane that does not go its way: hold at the line a while for a chance to move over.
+        if (type !== J_PLAIN && type !== J_RING && !pastStop && c.p >= stopP - 0.3) {
+          const want = wantedLanes(c);
+          if (want && !want.includes(c.lane) && c.laneWait < 8) { c.laneWait += dt; canGo = false; }
         }
         // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
         // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
@@ -1013,7 +1302,7 @@ function stepCars(dt: number): void {
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
         }
         if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
-        if (type !== J_PLAIN && c.lock !== node) {
+        if (type === J_RING && c.lock !== node) {
           const front = leaderP === Infinity;
           const owner = lockOwner[node];
           const holder = owner >= 0 && owner !== slot ? slots[owner] : null;
@@ -1029,7 +1318,7 @@ function stepCars(dt: number): void {
             const yielding = ringArc[leg.seg] && !ringArc[hLeg.seg] && owner !== ringClaim[node] && holder.p <= holder.lockStop + 1e-3;
             if (stale || yielding) { holder.lock = -1; lockOwner[node] = -1; }
           }
-          const booked = type === J_RING && ringClaim[node] >= 0 && ringClaim[node] !== slot;
+          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot;
           if (canGo && front && !booked && c.p >= stopP - 0.3 && lockOwner[node] < 0) {
             // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
             // before the previous one is released, and overwriting leaked that lock forever.
@@ -1038,10 +1327,30 @@ function stepCars(dt: number): void {
             c.lockLi = c.li;
             c.lockStop = stopP;
             lockOwner[node] = slot;
-            if (type === J_RING && ringClaim[node] === slot) ringClaim[node] = -1;
+            if (ringClaim[node] === slot) ringClaim[node] = -1;
           } else {
             canGo = false;
           }
+        } else if (type !== J_PLAIN && c.box !== node) {
+          // Any number of cars may be in the box at once, as long as their paths through it do not cross.
+          const front = leaderP === Infinity;
+          const atLine = front && c.p >= stopP - 0.3;
+          const list = boxCars[node];
+          for (let k = list.length - 1; k >= 0; k--) { const o = slots[list[k]]; if (!o || o.box !== node) list.splice(k, 1); }
+          const waiting = boxWait[node];
+          if (waiting >= 0 && (waiting === slot ? false : !slots[waiting] || slots[waiting]!.box === node || legEndNode(slots[waiting]!.legs[slots[waiting]!.li]) !== node)) boxWait[node] = -1;
+          if (canGo && atLine) {
+            const mine = movementOf(c, node);
+            let blocked = false;
+            for (const other of list) { const m = heldMovement(other, node); if (m && conflicts(mine, m)) { blocked = true; break; } }
+            // Whoever has waited longest has booked the box: nothing that would cut across it goes first.
+            if (!blocked && boxWait[node] >= 0 && boxWait[node] !== slot) { const m = heldMovement(boxWait[node], node); if (m && conflicts(mine, m)) blocked = true; }
+            if (!blocked) {
+              c.box = node; c.boxLi = c.li; list.push(slot);
+              if (boxWait[node] === slot) boxWait[node] = -1;
+            } else canGo = false;
+          } else canGo = false;
+          if (!canGo && atLine && c.stuck > 4 && boxWait[node] < 0) boxWait[node] = slot;
         }
         if (!canGo) maxP = Math.min(maxP, pastStop ? legEnd - 0.02 : stopP);
       }
@@ -1049,7 +1358,13 @@ function stepCars(dt: number): void {
       const travel = c.p + v * dt;
       let newP = Math.min(travel, maxP, legEnd);
       if (newP < c.p) newP = c.p;
-      const target = vehiclePose(c, c.li, newP, slot);
+      const target = vehiclePose(c, c.li, newP);
+      // Held up mid lane change, a car still finishes sliding across where it stands, rather than
+      // straddling two lanes and blocking both.
+      if (c.chT >= 0 && newP > c.p && !trafficSpace.canMove(slot, target)) {
+        const aside = vehiclePose(c, c.li, c.p);
+        if (trafficSpace.canMove(slot, aside)) trafficSpace.set(slot, aside);
+      }
       if (!trafficSpace.canMove(slot, target)) newP = c.p;
       else trafficSpace.set(slot, target);
       const moved = newP - c.p;
@@ -1057,7 +1372,7 @@ function stepCars(dt: number): void {
       speedN[leg.seg]++;
       if (moved < 1e-4) c.stuck += dt; else c.stuck = 0;
       c.p = newP;
-      leaderP = newP; leaderLength = vehicleLength(c.vehicle);
+      leaderP = newP; leaderLength = vehicleLength(c.vehicle); leaderStuck = c.stuck > 0.3;
 
       if (final) {
         if (c.p >= leg.p1 - 1e-3) {
@@ -1069,24 +1384,26 @@ function stepCars(dt: number): void {
             freeCar(slot); leaderP = Infinity; }
         }
       } else if (c.p >= legEnd - 1e-4) {
-        // Carry the unused travel into the next link. Polyline links meet with a small kink, so the exact
-        // start of the next link can sit a hair behind and to the side of where this one ended; on a
-        // roundabout the follower is close enough that this one pose was blocked, and the leader then
-        // waited on the car waiting behind it forever.
+        // Carry the unused travel into the next link, in the lane chosen for it. Polyline links meet
+        // with a small kink, so the exact start of the next link can sit a hair behind and to the side
+        // of where this one ended; on a roundabout the follower is close enough that this one pose was
+        // blocked, and the leader then waited on the car waiting behind it forever.
         const next = c.legs[c.li + 1];
-        const nextKey = next.seg * 2 + (next.fwd ? 0 : 1);
+        chooseNext(c);
+        const nextKey = laneKey(next.seg, next.fwd, c.nextLane);
         const nextSeg = segs[next.seg];
         const carry = Math.max(0, Math.min(travel - legEnd, laneTail[nextKey] - next.p0 - GAP[nextSeg.kind], next.p1 - next.p0));
         for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
-          const target = vehiclePose(c, c.li + 1, nextP, slot);
+          const target = vehiclePose(c, c.li + 1, nextP);
           if (!trafficSpace.canMove(slot, target)) continue;
           c.li++;
           c.p = nextP;
           c.stuck = 0;
+          c.prevLane = c.lane; c.lane = c.nextLane; c.nextLane = -1; c.chT = -1; c.laneWait = 0;
           trafficSpace.set(slot, target);
           if (c.p < laneTail[nextKey]) laneTail[nextKey] = c.p;
           if (c.p < laneFresh[nextKey]) laneFresh[nextKey] = c.p;
-          leaderP = Infinity;
+          leaderP = Infinity; leaderStuck = false;
           break;
         }
       }
@@ -1115,7 +1432,7 @@ function writeFrame(): void {
     const c = slots[s];
     const o = s * 4;
     if (!c) continue;
-    const world = trafficSpace.poses.get(s) ?? vehiclePose(c, c.li, c.p, s);
+    const world = trafficSpace.poses.get(s) ?? vehiclePose(c, c.li, c.p);
     out[o] = world.x - half;
     out[o + 1] = world.z - half;
     out[o + 2] = world.angle;
@@ -1864,7 +2181,15 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         const id = segs[c.legs[c.li].seg].id;
         (lanes[id] ??= [])[carLane(c)] = ((lanes[id] ??= [])[carLane(c)] ?? 0) + 1;
       }
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes });
+      // Of the cars near a junction's stop line, how many are in a lane that goes their way.
+      let near = 0, right = 0;
+      for (const c of slots) {
+        if (!c || c.li >= c.legs.length - 1) continue;
+        const leg = c.legs[c.li], want = wantedLanes(c);
+        if (!want || nodeType[legEndNode(leg)] === J_PLAIN || leg.p1 - c.p > 1.6) continue;
+        near++; if (want.includes(c.lane)) right++;
+      }
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right });
       break;
     }
     case 'warm': {

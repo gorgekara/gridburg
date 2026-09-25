@@ -56,7 +56,7 @@ function crossing(net, seconds, every = 0.4, turnShare = 0.4) {
   const angle = (arm) => { const s = net.segs.get(arm.seg); const o = net.nodes.get(s.a === centre.id ? s.b : s.a); return Math.atan2(o.z - centre.z, o.x - centre.x); };
   a.sort((p, q) => angle(p) - angle(q));
   const before = ask([]), start = before.arrived, startGaveUp = before.gaveUp;
-  let t = 0, next = 0;
+  let t = 0, next = 0, near = 0, right = 0;
   for (let i = 0; i < seconds * C.SIM_HZ; i++) {
     clock();
     t += 1 / C.SIM_HZ;
@@ -67,11 +67,12 @@ function crossing(net, seconds, every = 0.4, turnShare = 0.4) {
         const to = a[(k + (r < turnShare / 2 ? 1 : r < turnShare ? 3 : 2)) % a.length];
         return { a: from.seg, as: from.far, b: to.seg, bs: to.far };
       });
-      ask(trips);
+      const r = ask(trips);
+      near += r.nearLine; right += r.rightLane;
     }
   }
   const end = ask([]);
-  return { arrived: end.arrived - start, gaveUp: end.gaveUp - startGaveUp, cars: end.cars, lanes: end.lanes };
+  return { arrived: end.arrived - start, gaveUp: end.gaveUp - startGaveUp, cars: end.cars, lanes: end.lanes, rightShare: near ? right / near : 1 };
 }
 
 function cross(kind) {
@@ -81,9 +82,31 @@ function cross(kind) {
   return net;
 }
 
+let failures = 0, checks = 0;
+function test(name, run) {
+  try { run(); checks++; console.log(`✓ ${name}`); }
+  catch (error) { failures++; console.error(`✗ ${name}\n${error.stack}`); }
+}
+// Before real lanes (one car in a junction at a time, lanes fixed by slot) these crossings managed
+// 235 trips on streets and 286 on avenues in 150 s.
 const street = crossing(cross(N.KIND_ROAD), 150);
 const avenue = crossing(cross(N.KIND_AVENUE), 150);
 console.log(`  street crossing: ${street.arrived} trips in 150 s, ${street.gaveUp} gave up`);
-console.log(`  avenue crossing: ${avenue.arrived} trips in 150 s, ${avenue.gaveUp} gave up`);
-console.log(`  avenue lanes in use: ${JSON.stringify(avenue.lanes)}`);
-// Baseline before real lanes (single-car junction lock, slot-fixed lanes): street 235, avenue 286.
+console.log(`  avenue crossing: ${avenue.arrived} trips in 150 s, ${avenue.gaveUp} gave up, ${Math.round(avenue.rightShare * 100)}% in the right lane at the line`);
+test('an avenue crossing carries at least half as much again as with one car in the box at a time', () => {
+  assert.ok(avenue.arrived >= 1.5 * 286, `${avenue.arrived} trips`);
+  assert.ok(avenue.gaveUp <= avenue.arrived * 0.1, `${avenue.gaveUp} gave up`);
+});
+test('a street crossing is no worse than before', () => {
+  assert.ok(street.arrived >= 0.9 * 235, `${street.arrived} trips`);
+  assert.ok(street.gaveUp <= street.arrived * 0.1, `${street.gaveUp} gave up`);
+});
+test('both lanes of an avenue carry traffic', () => {
+  for (const [id, counts] of Object.entries(avenue.lanes)) assert.ok((counts[0] ?? 0) > 0 && (counts[1] ?? 0) > 0, `segment ${id}: ${counts}`);
+});
+test('cars reach a lane that goes their way before the stop line', () => {
+  assert.ok(avenue.rightShare >= 0.9, `${Math.round(avenue.rightShare * 100)}%`);
+});
+
+console.log(`${checks} lane traffic checks passed; ${failures} failed`);
+if (failures) process.exit(1);
