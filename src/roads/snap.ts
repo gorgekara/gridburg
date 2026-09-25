@@ -1,6 +1,7 @@
 import { GRID } from '../constants';
 import { Network } from './network';
 import type { RSeg } from './network';
+import { isFlat, levelY } from './structures';
 import { gridPoint } from '../placement';
 
 type Pt = { x: number; z: number };
@@ -21,6 +22,8 @@ export interface SnapCtx {
   excludeSegs?: Set<number>;
   /** Widens the guide catch when zoomed out, so it feels the same size on screen (1 = close up). */
   reach?: number;
+  /** The level being drawn at: only nodes at it, and level roads at its height, can be joined. */
+  level?: number;
 }
 /** A dashed line to draw while a guide is in use, from where it comes to where it caught. */
 export interface Guide { ax: number; az: number; bx: number; bz: number }
@@ -106,6 +109,7 @@ function joinAt(net: Network, p: Pt, ctx: SnapCtx): Snapped | null {
   let node = null, nd = JOIN_NODE;
   for (const n of net.nodes.values()) {
     if (ctx.excludeNodes?.has(n.id) || !net.degree(n.id)) continue;
+    if (ctx.level !== undefined && (n.level ?? 0) !== ctx.level) continue;
     const d = Math.hypot(n.x - p.x, n.z - p.z);
     if (d < nd) { nd = d; node = n; }
   }
@@ -116,7 +120,7 @@ function joinAt(net: Network, p: Pt, ctx: SnapCtx): Snapped | null {
     if (p.x < seg.minX - JOIN_ROAD || p.x > seg.maxX + JOIN_ROAD || p.z < seg.minZ - JOIN_ROAD || p.z > seg.maxZ + JOIN_ROAD) continue;
     const r = Network.nearestOn(seg, p.x, p.z);
     if (r.dist >= JOIN_ROAD || (hit && r.dist >= hit.dist)) continue;
-    if (seg.structure && r.s > 0.9 && seg.len - r.s > 0.9) continue;
+    if (ctx.level !== undefined ? !isFlat(seg) || Math.abs((seg.ya ?? 0) - levelY(ctx.level)) > 0.25 : seg.structure && r.s > 0.9 && seg.len - r.s > 0.9) continue;
     hit = { seg, x: r.x, z: r.z, dist: r.dist };
   }
   return hit ? { x: hit.x, z: hit.z, label: 'Connect', guides: [], seg: hit.seg.id } : null;

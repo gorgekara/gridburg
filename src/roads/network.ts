@@ -1,6 +1,7 @@
 import { GRID } from '../constants';
 import { canAddLanes, laneLimits, clampLanes, roadHalf } from './lanes';
 import { renameSeg, flipSeg, clonePlan } from './signals';
+import { levelY, structureFor, isLegacySpan, isFlat, roadHeight } from './structures';
 import type { SignalPlan } from './signals';
 
 export const KIND_ROAD = 0;
@@ -65,6 +66,8 @@ export interface RNode {
   stop: boolean; // an all-way stop: every approach halts before entering
   /** A signal plan the player has set; absent means the default for the junction. */
   signal?: SignalPlan;
+  /** How high the node is: −1 a tunnel, 0 (or absent) the ground, 1 to 3 levels above it. */
+  level?: number;
 }
 
 export interface RSeg {
@@ -83,6 +86,8 @@ export interface RSeg {
   addR?: number;
   addL?: number;
   // derived
+  /** Heights of the two ends, from their nodes' levels. */
+  ya?: number; yb?: number;
   n: number; // number of polyline pieces
   pts: Float32Array; // (n+1) x,z pairs, uniform in t
   cum: Float32Array; // cumulative arc length per sample
@@ -218,10 +223,14 @@ export class Network {
     const b = this.nodes.get(s.b)!;
     const sm = sampleCurve({ ax: a.x, az: a.z, cx: s.cx, cz: s.cz, bx: b.x, bz: b.z });
     Object.assign(s, sm);
+    s.ya = levelY(a.level ?? 0);
+    s.yb = levelY(b.level ?? 0);
   }
 
   addSeg(a: number, b: number, cx: number, cz: number, kind: number, oneway = false, fixed = false, minLen = 0.4, structure: 0 | 1 | 2 = 0): RSeg | null {
     if (a === b || !this.nodes.has(a) || !this.nodes.has(b)) return null;
+    // Between levels, what the road is follows from its ends: elevated, tunnel, or on the ground.
+    structure = structureFor(this.nodes.get(a)!.level ?? 0, this.nodes.get(b)!.level ?? 0) || structure;
     for (const id of this.adj.get(a)!) {
       const o = this.segs.get(id)!;
       if ((o.a === b || o.b === b) && Math.hypot(o.cx - cx, o.cz - cz) < 0.6) return null;
@@ -376,12 +385,14 @@ export class Network {
   /** Split a segment at parameter t. Returns the new node and the two child segments. */
   splitSeg(segId: number, t: number): { node: RNode; left: RSeg | null; right: RSeg | null } {
     const s = this.segs.get(segId)!;
-    if (s.structure) throw new Error('Bridges and tunnels connect only at their ends');
+    if (!isFlat(s)) throw new Error('Bridges, tunnels and ramps connect only at their ends');
     const a = this.nodes.get(s.a)!;
     const b = this.nodes.get(s.b)!;
     const [l, r] = splitCurve({ ax: a.x, az: a.z, cx: s.cx, cz: s.cz, bx: b.x, bz: b.z }, t);
     const node = this.addNode(l.bx, l.bz);
     node.ring = false;
+    // A flat road is at one level all along: the new node is at it too.
+    if (a.level) node.level = a.level;
     this.removeSegKeepNodes(segId);
     const left = this.addSeg(s.a, node.id, l.cx, l.cz, s.kind, s.oneway, s.fixed, 0.05);
     const right = this.addSeg(node.id, s.b, r.cx, r.cz, s.kind, s.oneway, s.fixed, 0.05);
@@ -414,20 +425,42 @@ export class Network {
     return this.splitSeg(segId, t).node.id;
   }
 
-  /** Find or create the node a stroke endpoint should attach to. */
-  resolveEndpoint(x: number, z: number): number {
-    const n = this.nearestNode(x, z, 0.9);
-    if (n) return n.id;
-    const hit = this.nearestSeg(x, z, 0.8);
-    if (hit && !hit.seg.structure) return this.splitOrSnap(hit.seg.id, hit.t);
-    return this.addNode(x, z).id;
+  /**
+   * Find or create the node a stroke endpoint at `level` attaches to: a node at that level, or a
+   * point on a flat road at that height; otherwise a new node there. Roads at other heights, and the
+   * middles of ramps and old-style bridges and tunnels, are passed over or under.
+   */
+  resolveEndpoint(x: number, z: number, level = 0): number {
+    let node: RNode | null = null, nd = 0.9;
+    for (const n of this.nodes.values()) {
+      if ((n.level ?? 0) !== level) continue;
+      const d = Math.hypot(n.x - x, n.z - z);
+      if (d < nd) { nd = d; node = n; }
+    }
+    if (node) return node.id;
+    const y = levelY(level);
+    let hit: { seg: RSeg; t: number; dist: number } | null = null;
+    for (const seg of this.segs.values()) {
+      if (x < seg.minX - 0.8 || x > seg.maxX + 0.8 || z < seg.minZ - 0.8 || z > seg.maxZ + 0.8) continue;
+      if (!isFlat(seg) || Math.abs((seg.ya ?? 0) - y) > 0.25) continue;
+      const r = Network.nearestOn(seg, x, z);
+      if (r.dist < 0.8 && (!hit || r.dist < hit.dist)) hit = { seg, t: r.t, dist: r.dist };
+    }
+    if (hit) return this.splitOrSnap(hit.seg.id, hit.t);
+    const n = this.addNode(x, z);
+    if (level) n.level = level;
+    return n.id;
   }
 
   /** Earliest crossing of a sampled curve with any existing segment, ignoring touches near its ends. */
   private firstCrossing(c: Curve, sm: Sampled, ends?: [number, number]): { t: number; segId: number; tSeg: number } | null {
     let best: { t: number; segId: number; tSeg: number } | null = null;
+    // How high the new road is along its length, from the levels of the nodes it runs between.
+    const la = ends ? this.nodes.get(ends[0])?.level ?? 0 : 0, lb = ends ? this.nodes.get(ends[1])?.level ?? 0 : 0;
+    const mine = { structure: structureFor(la, lb), len: sm.len, ya: levelY(la), yb: levelY(lb) };
+    const flat = la === lb;
     for (const seg of this.segs.values()) {
-      if (seg.structure) continue;
+      if (isLegacySpan(seg)) continue;
       // A road already joining the same two nodes lies along this one; it is not a crossing.
       if (ends && ((seg.a === ends[0] && seg.b === ends[1]) || (seg.a === ends[1] && seg.b === ends[0]))) continue;
       if (sm.maxX < seg.minX || sm.minX > seg.maxX || sm.maxZ < seg.minZ || sm.minZ > seg.maxZ) continue;
@@ -440,7 +473,10 @@ export class Network {
           const px = ax + (bx - ax) * r[0];
           const pz = az + (bz - az) * r[0];
           if (Math.hypot(px - c.ax, pz - c.az) < 0.7 || Math.hypot(px - c.bx, pz - c.bz) < 0.7) continue;
-          if (!best || t < best.t) best = { t, segId: seg.id, tSeg: (j + r[1]) / seg.n };
+          // Only roads at one height, both level there, meet; the rest pass over or under each other.
+          const tSeg = (j + r[1]) / seg.n;
+          if (Math.abs(roadHeight(mine, t * sm.len) - roadHeight(seg, tSeg * seg.len)) > 0.25 || !flat || !isFlat(seg)) continue;
+          if (!best || t < best.t) best = { t, segId: seg.id, tSeg };
         }
       }
     }
@@ -451,13 +487,13 @@ export class Network {
    * Insert a road along guide points. Endpoints snap to existing nodes and segments,
    * and every crossing with an existing road becomes a junction. Returns new segment ids.
    */
-  insertPath(points: { x: number; z: number }[], kind: number, oneway = false, structure: 0 | 1 | 2 = 0, clampToMap = true): number[] {
+  insertPath(points: { x: number; z: number }[], kind: number, oneway = false, structure: 0 | 1 | 2 = 0, clampToMap = true, levels: [number, number] = [0, 0]): number[] {
     const added: number[] = [];
     if (points.length < 2) return added;
     // A player's road stays on the map; the map's own motorway and interchange run outside it.
     const pts = points.map((p) => clampToMap ? { x: Math.max(0.3, Math.min(GRID - 0.3, p.x)), z: Math.max(0.3, Math.min(GRID - 0.3, p.z)) } : { x: p.x, z: p.z });
-    const startId = this.resolveEndpoint(pts[0].x, pts[0].z);
-    const endId = this.resolveEndpoint(pts[pts.length - 1].x, pts[pts.length - 1].z);
+    const startId = this.resolveEndpoint(pts[0].x, pts[0].z, levels[0]);
+    const endId = this.resolveEndpoint(pts[pts.length - 1].x, pts[pts.length - 1].z, levels[1]);
     const sn = this.nodes.get(startId)!;
     const en = this.nodes.get(endId)!;
     pts[0] = { x: sn.x, z: sn.z };
@@ -468,7 +504,7 @@ export class Network {
     for (let k = 0; k < pieces.length; k++) {
       const c = pieces[k];
       const lastPiece = k === pieces.length - 1;
-      const toId = lastPiece ? endId : this.resolveEndpoint(c.bx, c.bz);
+      const toId = lastPiece ? endId : this.resolveEndpoint(c.bx, c.bz, levels[0]);
       added.push(...this.layCurve(fromId, toId, c, kind, oneway, structure));
       fromId = toId;
     }
@@ -485,7 +521,10 @@ export class Network {
     let c: Curve = { ...curve, ax: fn.x, az: fn.z, bx: tn.x, bz: tn.z };
     for (let guard = 0; guard < 40; guard++) {
       const sm = sampleCurve(c);
-      const hit = structure ? null : this.firstCrossing(c, sm, [fromId, toId]);
+      // An old-style bridge or tunnel span crosses without junctions; roads between levels meet
+      // whatever they cross at their own height on the flat.
+      const legacy = structure !== 0 && !fn.level && !tn.level;
+      const hit = legacy ? null : this.firstCrossing(c, sm, [fromId, toId]);
       if (!hit || !this.segs.has(hit.segId)) {
         const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway, false, 0.4, structure);
         if (s) added.push(s.id);
@@ -540,14 +579,14 @@ export class Network {
     let target: RNode | null = null, td = 0.9;
     for (const n of this.nodes.values()) {
       const d = Math.hypot(n.x - x, n.z - z);
-      if (n.id !== id && d < td) { td = d; target = n; }
+      if (n.id !== id && d < td && (n.level ?? 0) === (node.level ?? 0)) { td = d; target = n; }
     }
     // Dropped on the middle of another road, the node joins it there, as a drawn road would.
     if (!target) {
       const own = new Set(segs.map((s) => s.id));
       let hit: Hit | null = null;
       for (const seg of this.segs.values()) {
-        if (own.has(seg.id) || seg.structure) continue;
+        if (own.has(seg.id) || !isFlat(seg) || Math.abs((seg.ya ?? 0) - levelY(node.level ?? 0)) > 0.25) continue;
         const r = Network.nearestOn(seg, x, z);
         if (r.dist < 0.8 && (!hit || r.dist < hit.dist)) hit = { seg, ...r };
       }
@@ -567,7 +606,7 @@ export class Network {
       const c = chordAbs(an, bn, rel);
       // Merged onto a road that already runs the same way between the same nodes: the two become one.
       if (this.segsAt(a).some((o) => (o.a === b || o.b === b) && Math.hypot(o.cx - c.x, o.cz - c.z) < 0.6)) continue;
-      const ids = s.structure
+      const ids = isLegacySpan(s)
         ? [this.addSeg(a, b, c.x, c.z, s.kind, s.oneway, false, 0.4, s.structure)?.id].filter((v): v is number => v !== undefined)
         : this.layCurve(a, b, { ax: an.x, az: an.z, cx: c.x, cz: c.z, bx: bn.x, bz: bn.z }, s.kind, s.oneway);
       for (const sid of ids) this.carryOver(s, sid);
@@ -582,7 +621,7 @@ export class Network {
   bendSeg(id: number, cx: number, cz: number): number[] | null {
     const s = this.segs.get(id);
     if (!s || !this.editable(s)) return null;
-    if (s.structure) {
+    if (isLegacySpan(s)) {
       s.cx = cx; s.cz = cz;
       this.resample(s);
       this.version++;
@@ -614,7 +653,7 @@ export class Network {
     const r = this.range(s, s0, s1);
     if (!r) return false;
     if (r.whole) { this.removeSeg(id); return true; }
-    if (s.structure) return false;
+    if (!isFlat(s)) return false;
     this.removeSeg(this.isolate(id, r.s0, r.s1));
     return true;
   }
@@ -629,7 +668,7 @@ export class Network {
     const r = this.range(s, s0, s1);
     if (!r) return null;
     let target = id;
-    if (!r.whole && !s.structure) {
+    if (!r.whole && isFlat(s)) {
       if (isOneWayKind(kind)) return null;
       target = this.isolate(id, r.s0, r.s1);
     }
@@ -656,7 +695,7 @@ export class Network {
     if (next < (side > 0 ? lim.minR : lim.minL) || next > (side > 0 ? lim.maxR : lim.maxL)) return null;
     const r = this.range(s, s0, s1);
     if (!r) return null;
-    const target = r.whole || s.structure ? id : this.isolate(id, r.s0, r.s1);
+    const target = r.whole || !isFlat(s) ? id : this.isolate(id, r.s0, r.s1);
     const seg = this.segs.get(target)!;
     if (next) seg[key] = next; else delete seg[key];
     this.version++;
@@ -833,7 +872,9 @@ export class Network {
   toPlain(): PlainNet {
     const nodes: number[][] = [];
     for (const n of this.nodes.values()) {
-      nodes.push([n.id, n.x, n.z, (n.light ? 1 : 0) | (n.ring ? 2 : 0) | (n.fixed ? 4 : 0) | (n.entry ? 8 : 0) | (n.stop ? 16 : 0)]);
+      // Bits 5–7: the level, 0 for the ground, 1–3 above it, 4 for a tunnel.
+      const lv = n.level ?? 0, code = lv > 0 ? lv : lv < 0 ? 4 : 0;
+      nodes.push([n.id, n.x, n.z, (n.light ? 1 : 0) | (n.ring ? 2 : 0) | (n.fixed ? 4 : 0) | (n.entry ? 8 : 0) | (n.stop ? 16 : 0) | (code << 5)]);
     }
     const segs: number[][] = [];
     for (const s of this.segs.values()) {
@@ -853,7 +894,8 @@ export class Network {
   static fromPlain(p: PlainNet): Network {
     const net = new Network();
     for (const [id, x, z, f] of p.nodes) {
-      net.nodes.set(id, { id, x, z, light: !!(f & 1), ring: !!(f & 2), fixed: !!(f & 4), entry: !!(f & 8), stop: !!(f & 16) });
+      const code = (f >> 5) & 7, level = code === 4 ? -1 : code <= 3 ? code : 0;
+      net.nodes.set(id, { id, x, z, light: !!(f & 1), ring: !!(f & 2), fixed: !!(f & 4), entry: !!(f & 8), stop: !!(f & 16), ...(level ? { level } : {}) });
       net.adj.set(id, []);
     }
     for (const [id, a, b, cx, cz, f, lanes] of p.segs) {

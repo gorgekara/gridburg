@@ -310,6 +310,7 @@ function applyNetwork(p: EditPayload): void {
   const oldLens = segs.map((s) => s.len);
   const oldNodeIds = nodeIds;
   const oldA = segs.map((s) => s.a);
+  const oldYa = segs.map((s) => s.ya), oldYb = segs.map((s) => s.yb);
 
   serial = p.serial;
   const nodeIndex = new Map<number, number>();
@@ -430,7 +431,7 @@ function applyNetwork(p: EditPayload): void {
     const ni = segIndex.get(s.id);
     if (ni === undefined) return;
     const ns = newSegs[ni];
-    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i] || ns.kind !== s.kind || ns.oneway !== s.oneway || ns.structure !== s.structure || ns.cx !== s.cx || ns.cz !== s.cz || (ns.addR ?? 0) !== (s.addR ?? 0) || (ns.addL ?? 0) !== (s.addL ?? 0)) return;
+    if (Math.abs(ns.len - oldLens[i]) > 1e-3 || ns.a !== oldA[i] || ns.kind !== s.kind || ns.oneway !== s.oneway || ns.structure !== s.structure || ns.cx !== s.cx || ns.cz !== s.cz || (ns.addR ?? 0) !== (s.addR ?? 0) || (ns.addL ?? 0) !== (s.addL ?? 0) || (ns.ya ?? 0) !== (oldYa[i] ?? 0) || (ns.yb ?? 0) !== (oldYb[i] ?? 0)) return;
     remap[i] = ni;
     newCong[ni] = segCong[i];
   });
