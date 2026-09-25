@@ -9,7 +9,7 @@ import type { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import type { Raster } from '../roads/raster';
 import type { Terrain } from '../terrain';
-import { lotScale } from '../placement';
+import { lotScaleAt } from '../roads/raster';
 import { VARIANTS } from './buildingGeo';
 import type { VisualDetail } from './detail';
 import { isGardenTile } from './verges';
@@ -1176,7 +1176,7 @@ class ChunkBuilder {
     const { raster } = this.src;
     const tx = raster.lotX[i], tz = raster.lotZ[i];
     const yaw = raster.accSeg[i] >= 0 ? raster.face[i] : 0;
-    return { x: tx - HALF, z: tz - HALF, yaw, scale: lotScale(yaw) };
+    return { x: tx - HALF, z: tz - HALF, yaw, scale: raster.accSeg[i] >= 0 ? lotScaleAt(raster, i) : 1 };
   }
 
   private lot(i: number): void {

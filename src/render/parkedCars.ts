@@ -3,6 +3,7 @@ import { sideHalf, roadHalf } from '../roads/lanes';
 import { GRID, N_TILES, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
+import { lotScaleAt } from '../roads/raster';
 import { VARIANTS } from './buildingGeo';
 import { parkingStalls } from './parkingGeo';
 import { KIND_AVENUE, KIND_ROAD } from '../roads/network';
@@ -98,7 +99,7 @@ export class ParkedCarLayer {
           cx = raster.lotX[i]; cz = raster.lotZ[i];
           facing = turn ? turn * Math.PI / 2 : raster.accSeg[i] >= 0 ? raster.face[i] : 0;
         }
-        const cos = Math.cos(facing), sin = Math.sin(facing), k = spec.footprint ? 1 : lotScale(facing);
+        const cos = Math.cos(facing), sin = Math.sin(facing), k = spec.footprint ? 1 : facing === raster.face[i] ? lotScaleAt(raster, i) : lotScale(facing);
         parkingStalls(w, d).forEach((raw, n) => {
           const stall = { ...raw, x: raw.x * k, z: raw.z * k };
           const id = i * 211 + n, h = tileHash(id);
@@ -118,7 +119,7 @@ export class ParkedCarLayer {
       if (kerb > 0.75 || kerb < 0.45) continue;
       const facing = raster.face[i], cos = Math.cos(facing), sin = Math.sin(facing);
       // On an angled road the house is shrunk into its cell, so its drive tucks in beside it too.
-      const k = lotScale(facing), back = DRIVE_BACK * k;
+      const k = lotScaleAt(raster, i), back = DRIVE_BACK * k;
       const at = (x: number, z: number): [number, number] => [lx - half + x * k * cos + z * sin, lz - half - x * k * sin + z * cos];
       const [mx, mz] = at(DRIVE_X, (back + kerb) / 2);
       obj.position.set(mx, 0, mz); obj.rotation.set(0, facing, 0); obj.scale.set(1, 1, kerb - back); obj.updateMatrix();

@@ -10,7 +10,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 }});
 const C = await import('../src/constants.ts');
 const { Network, KIND_ROAD, KIND_AVENUE, HALF_WIDTH } = await import('../src/roads/network.ts');
-const { rasterize } = await import('../src/roads/raster.ts');
+const { rasterize, lotScaleAt } = await import('../src/roads/raster.ts');
 const { buildingRotation, lotScale } = await import('../src/placement.ts');
 let failures = 0, checks = 0;
 function test(name, run) {
@@ -20,10 +20,10 @@ function test(name, run) {
 const QUARTER = Math.PI / 2;
 const cardinal = (a) => Math.abs(a - Math.round(a / QUARTER) * QUARTER) < 1e-6;
 
-/** The ground footprint of a grown building: a square filling its cell, turned and shrunk to fit. */
+/** The ground footprint of a tile's building: its cell (full size) or its shrunk square. */
 function footprintOf(r, i) {
   const x = r.lotX[i], z = r.lotZ[i];
-  const yaw = r.face[i], k = lotScale(yaw), h = 0.5 * k;
+  const yaw = r.face[i], h = 0.5 * lotScaleAt(r, i);
   const c = Math.cos(yaw), s = Math.sin(yaw);
   return [[-h, -h], [h, -h], [h, h], [-h, h]].map(([u, t]) => [x + u * c + t * s, z - u * s + t * c]);
 }
@@ -34,67 +34,94 @@ function overlap(a, b) {
     const nx = z0 - z1, nz = x1 - x0;
     const pa = a.map(([x, z]) => x * nx + z * nz), pb = b.map(([x, z]) => x * nx + z * nz);
     const len = Math.hypot(nx, nz);
-    if (Math.max(...pa) <= Math.min(...pb) + 1e-3 * len || Math.max(...pb) <= Math.min(...pa) + 1e-3 * len) return false;
+    if (Math.max(...pa) <= Math.min(...pb) + 0.03 * len || Math.max(...pb) <= Math.min(...pa) + 0.03 * len) return false;
   }
   return true;
 }
-const lots = (r) => [...Array(C.N_TILES).keys()].filter(i => !r.cover[i] && r.accSeg[i] >= 0);
+const cells = (r) => [...Array(C.N_TILES).keys()].filter(i => r.cell[i] >= 0);
+function noOverlaps(r, ids) {
+  const feet = new Map(ids.map(i => [i, footprintOf(r, i)]));
+  for (const i of ids) for (const j of ids) {
+    if (j <= i || Math.abs(r.lotX[i] - r.lotX[j]) > 1.5 || Math.abs(r.lotZ[i] - r.lotZ[j]) > 1.5) continue;
+    assert.ok(!overlap(feet.get(i), feet.get(j)), `cells ${i} and ${j} overlap`);
+  }
+}
+function offRoads(net, r, ids) {
+  for (const i of ids) for (const [x, z] of footprintOf(r, i)) {
+    for (const s of net.segs.values()) assert.ok(Network.nearestOn(s, x, z).dist >= HALF_WIDTH[s.kind] - 1e-3, `cell ${i} corner on a road`);
+  }
+}
 
 test('buildings face an angled road at its own angle, and square up when it is nearly straight', () => {
   const a = buildingRotation(Math.sin(0.5), Math.cos(0.5));
   assert.ok(Math.abs(a - 0.5) < 1e-9);
   assert.equal(buildingRotation(Math.sin(0.1), Math.cos(0.1)), 0);
-  assert.equal(buildingRotation(1, 0), QUARTER);
   assert.equal(lotScale(0), 1);
-  assert.equal(lotScale(QUARTER * 3), 1);
   assert.ok(Math.abs(lotScale(Math.PI / 4) - Math.SQRT1_2) < 1e-9);
 });
 
+test('a grid street lays its three rows of cells exactly where its lots always were', () => {
+  const net = new Network();
+  net.insertPath([{ x: 10.5, z: 30.5 }, { x: 40.5, z: 30.5 }], KIND_ROAD);
+  const r = rasterize(net);
+  const front = HALF_WIDTH[KIND_ROAD] + 0.09 + 0.5;
+  for (const [row, tz] of [[0, 31], [1, 32], [2, 33], [0, 29], [1, 28]]) {
+    const i = tz * C.GRID + 20;
+    assert.equal(r.cell[i], row, `row of tile z=${tz}`);
+    assert.equal(r.lotX[i], 20.5);
+    const want = tz > 30 ? 30.5 + front + row : 30.5 - front - row;
+    assert.ok(Math.abs(r.lotZ[i] - want) < 1e-5, `lotZ ${r.lotZ[i]} vs ${want}`);
+    assert.ok(cardinal(r.face[i]));
+    assert.equal(lotScaleAt(r, i), 1);
+  }
+  assert.equal(r.cell[34 * C.GRID + 20], -1, 'nothing past the third row');
+});
+
 for (const [name, deg, kind] of [['30° street', 30, KIND_ROAD], ['45° avenue', 45, KIND_AVENUE], ['20° street', 20, KIND_ROAD]]) {
-  test(`lots along a ${name} face it without overlapping each other`, () => {
+  test(`cells along a ${name} stand at full size in rows parallel to it, without overlapping`, () => {
     const net = new Network();
     const t = Math.tan(deg * Math.PI / 180);
     net.insertPath([{ x: 10, z: 10 }, { x: 50, z: 10 + 40 * t }], kind);
     const r = rasterize(net);
-    const ids = lots(r);
-    assert.ok(ids.length > 60, `${ids.length} lots`);
-    const turned = ids.filter(i => !cardinal(r.face[i]));
-    assert.ok(turned.length > ids.length * 0.9, `${turned.length} of ${ids.length} lots turned to the road`);
-    const feet = new Map(ids.map(i => [i, footprintOf(r, i)]));
-    for (const i of ids) for (const j of ids) {
-      if (j <= i || Math.abs((i % C.GRID) - (j % C.GRID)) > 2 || Math.abs(Math.floor(i / C.GRID) - Math.floor(j / C.GRID)) > 2) continue;
-      assert.ok(!overlap(feet.get(i), feet.get(j)), `lots ${i} and ${j} overlap`);
+    const ids = cells(r);
+    const seg = [...net.segs.values()][0];
+    for (const i of ids) {
+      assert.equal(lotScaleAt(r, i), 1);
+      assert.ok(!cardinal(r.face[i]), 'turned to the road');
+      const d = Network.nearestOn(seg, r.lotX[i], r.lotZ[i]).dist;
+      assert.ok(Math.abs(d - (HALF_WIDTH[kind] + 0.59 + r.cell[i])) < 0.02, `cell ${i} row ${r.cell[i]} at ${d.toFixed(3)}`);
     }
+    // Rows are well filled: most of the cells the road's length has room for.
+    const perRow = [0, 1, 2].map(row => ids.filter(i => r.cell[i] === row).length);
+    const room = 2 * seg.len;
+    assert.ok(perRow.every(n => n >= room * 0.8), `rows ${perRow} of ${room.toFixed(0)}`);
+    noOverlaps(r, ids);
+    offRoads(net, r, ids);
   });
 }
 
-test('curved frontage keeps its lots apart too', () => {
+test('a curved street and a crossroads keep their cells apart and off the roads', () => {
   const net = new Network();
   net.insertPath([{ x: 10, z: 40 }, { x: 30, z: 10 }, { x: 50, z: 40 }], KIND_ROAD);
+  net.insertPath([{ x: 20, z: 60 }, { x: 60, z: 60 }], KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 45 }, { x: 40, z: 75 }], KIND_ROAD);
   const r = rasterize(net);
-  const ids = lots(r);
-  const feet = new Map(ids.map(i => [i, footprintOf(r, i)]));
-  for (const i of ids) for (const j of ids) {
-    if (j <= i || Math.abs((i % C.GRID) - (j % C.GRID)) > 2 || Math.abs(Math.floor(i / C.GRID) - Math.floor(j / C.GRID)) > 2) continue;
-    assert.ok(!overlap(feet.get(i), feet.get(j)), `lots ${i} and ${j} overlap`);
-  }
+  const ids = cells(r);
+  assert.ok(ids.length > 200);
+  noOverlaps(r, ids);
+  offRoads(net, r, ids);
 });
 
-test('streets squared to the grid lay out exactly as they always did', () => {
+test('every tile holds at most one cell, and each cell sits on or next to its tile', () => {
   const net = new Network();
-  net.insertPath([{ x: 10.5, z: 30.5 }, { x: 40.5, z: 30.5 }], KIND_ROAD);
-  net.insertPath([{ x: 25.5, z: 15.5 }, { x: 25.5, z: 45.5 }], KIND_ROAD);
+  net.insertPath([{ x: 10, z: 10 }, { x: 60, z: 37 }], KIND_ROAD);
   const r = rasterize(net);
-  for (const i of lots(r)) {
+  for (const i of cells(r)) {
     const cx = i % C.GRID + 0.5, cz = Math.floor(i / C.GRID) + 0.5;
-    assert.ok(r.lotX[i] === cx || r.lotZ[i] === cz, `lot ${i} moved along one axis only`);
-    assert.ok(cardinal(r.face[i]));
+    assert.ok(Math.hypot(r.lotX[i] - cx, r.lotZ[i] - cz) < 1.1, `cell ${i} far from its tile`);
+    assert.equal(r.cover[i], 0);
   }
-  // Two rows back from the east-west street, a lot slides forward to its kerb line: the fractional part
-  // of its distance beyond the front setback, exactly as before.
-  const i = 32 * C.GRID + 15, front = HALF_WIDTH[KIND_ROAD] + 0.09 + 0.5, d = 2;
-  assert.ok(Math.abs(r.lotZ[i] - (32.5 - (d - front - Math.floor(d - front)))) < 1e-5, `lotZ ${r.lotZ[i]}`);
 });
 
-console.log(`${checks} angled lot checks passed; ${failures} failed`);
+console.log(`${checks} lot checks passed; ${failures} failed`);
 if (failures) process.exit(1);

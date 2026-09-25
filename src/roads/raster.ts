@@ -1,8 +1,8 @@
 import { roadHeight } from './structures';
 import { GRID, N_TILES } from '../constants';
-import { ROAD_FRONTAGE } from './network';
-import type { Network } from './network';
-import { buildingRotation } from '../placement';
+import { ROAD_FRONTAGE, Network } from './network';
+import type { RSeg } from './network';
+import { buildingRotation, lotScale } from '../placement';
 import { laneTapers, edgeAt, roadHalf } from './lanes';
 
 /** tan 10°: a road within this of an axis lays its lots out on the grid, as roads always did. */
@@ -26,7 +26,19 @@ export interface Raster {
   lotZ: Float32Array;
   /** Which way the building on each lot faces: squared to the grid beside straight roads, turned to angled ones. */
   face: Float32Array;
+  /**
+   * Which row back from its road a tile's zone cell is in (0 at the kerb, up to 2), or −1 for a tile
+   * with no cell. A cell is a road-aligned square the tile's building stands in at full size.
+   */
+  cell: Int8Array;
 }
+
+/** How many rows of zone cells a road carries on each side. */
+export const CELL_ROWS = 3;
+const KERB_GAP = 0.09;
+
+/** How much a tile's building shrinks: not at all in a road-aligned cell, enough to fit its tile otherwise. */
+export const lotScaleAt = (r: Raster, i: number): number => r.cell[i] >= 0 ? 1 : lotScale(r.face[i]);
 
 /** Project the road network onto the tile grid: which tiles are paved and which can reach a road. */
 export function rasterize(net: Network): Raster {
@@ -138,5 +150,119 @@ export function rasterize(net: Network): Raster {
     const dx = accX[i] - lotX[i], dz = accZ[i] - lotZ[i];
     face[i] = onGrid(i) ? Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) * (Math.PI / 2) : buildingRotation(dx, dz);
   }
-  return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face };
+  const cell = layCells(net, tapers, cover, accSeg, accS, accX, accZ, lotX, lotZ, face);
+  return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face, cell };
+}
+
+/**
+ * Zone cells along the roads, Cities: Skylines-style: on each side of every road with frontage,
+ * rows of unit squares parallel to its kerb, as many as fit without touching a road or each other,
+ * each matched to one tile. Row 0 is laid everywhere first, so the row at the kerb wins wherever
+ * cells compete (at junctions, on the inside of curves). Beside a road squared to the grid the cells
+ * land on the tile centres, so grid streets lay out as they always have. A matched tile's lot, facing
+ * and road access become its cell's.
+ */
+function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Uint8Array, accSeg: Int32Array, accS: Float32Array, accX: Float32Array, accZ: Float32Array, lotX: Float32Array, lotZ: Float32Array, face: Float32Array): Int8Array {
+  const cell = new Int8Array(N_TILES).fill(-1);
+  const segs = [...net.segs.values()].filter(s => ROAD_FRONTAGE[s.kind] !== false && !s.structure);
+  const all = [...net.segs.values()];
+  const rings = net.roundabouts();
+  const kept: { x: number; z: number; ax: number; az: number }[] = [];
+  const buckets = new Map<number, number[]>();
+  const bucketOf = (x: number, z: number): number => Math.floor(x) * 97 + Math.floor(z);
+  const pose = { x: 0, z: 0, tx: 0, tz: 0 };
+  // Roads by the tiles their surface can reach, so a point is only tested against roads near it.
+  const near: RSeg[][] = Array.from({ length: N_TILES }, () => []);
+  for (const o of all) {
+    // Far enough that a cell centre well clear of every road in its tile's list really is clear.
+    const reach = roadHalf(o) + 0.85;
+    for (let tz = Math.max(0, Math.floor(o.minZ - reach)); tz <= Math.min(GRID - 1, Math.floor(o.maxZ + reach)); tz++)
+      for (let tx = Math.max(0, Math.floor(o.minX - reach)); tx <= Math.min(GRID - 1, Math.floor(o.maxX + reach)); tx++) near[tz * GRID + tx].push(o);
+  }
+  // A point of a cell may not lie on any road's surface or a roundabout island.
+  // How far a point is from the nearest road surface or roundabout island (negative: on it).
+  const clearance = (x: number, z: number): number => {
+    if (x < 0 || z < 0 || x >= GRID || z >= GRID) return -1;
+    let gap = Infinity;
+    for (const o of near[Math.floor(z) * GRID + Math.floor(x)]) {
+      const hit = Network.nearestOn(o, x, z);
+      if (o.structure === 2 && Math.abs(roadHeight(o, hit.s)) > 0.8) continue;
+      gap = Math.min(gap, hit.dist - roadHalf(o) - 0.05);
+    }
+    for (const rb of rings) gap = Math.min(gap, Math.hypot(x - rb.x, z - rb.z) - rb.r);
+    return gap;
+  };
+  const onRoad = (x: number, z: number): boolean => clearance(x, z) < 0;
+  // Two unit squares, given their centres and along-road directions, overlap by more than a hair.
+  const overlaps = (x: number, z: number, ax: number, az: number): boolean => {
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      for (const k of buckets.get(bucketOf(x + dx, z + dz)) ?? []) {
+        const o = kept[k];
+        if (Math.hypot(o.x - x, o.z - z) >= 1.42) continue;
+        const axes = [[ax, az], [-az, ax], [o.ax, o.az], [-o.az, o.ax]];
+        const ox = o.x - x, oz = o.z - z;
+        const apart = axes.some(([ux, uz]) => {
+          const extent = (vx: number, vz: number): number => 0.5 * (Math.abs(vx * ux + vz * uz) + Math.abs(-vz * ux + vx * uz));
+          return Math.abs(ox * ux + oz * uz) >= extent(ax, az) + extent(o.ax, o.az) - 0.02;
+        });
+        if (!apart) return true;
+      }
+    }
+    return false;
+  };
+  for (let row = 0; row < CELL_ROWS; row++) {
+    for (const seg of segs) {
+      const a = net.nodes.get(seg.a)!, b = net.nodes.get(seg.b)!;
+      const cx = b.x - a.x, cz = b.z - a.z, chord = Math.hypot(cx, cz) || 1;
+      // Squared to the grid: phase the cells so their centres fall on tile centres along the road.
+      const alongX = Math.abs(cz) <= Math.abs(cx) * NEAR_AXIS, alongZ = Math.abs(cx) <= Math.abs(cz) * NEAR_AXIS;
+      const onGridRoad = (alongX || alongZ) && seg.len < chord * 1.02;
+      let s0 = 0.5;
+      if (onGridRoad) {
+        const start = alongX ? a.x : a.z, sign = Math.sign(alongX ? cx : cz) || 1;
+        s0 = ((((0.5 - start) * sign) % 1) + 1) % 1;
+      }
+      for (const side of [1, -1]) {
+        for (let s = s0; s <= seg.len + 1e-6; s += 1) {
+          Network.poseAt(seg, s, pose);
+          const ox = -pose.tz * side, oz = pose.tx * side; // outwards, away from the road
+          const off = edgeAt(seg, side, s, tapers) + KERB_GAP + 0.5 + row;
+          const x = pose.x + ox * off, z = pose.z + oz * off;
+          const ax = pose.tx, az = pose.tz;
+          // A centre well clear of every road leaves no corner on one either.
+          const gap = clearance(x, z);
+          let clear = gap >= 0;
+          for (const [u, v] of [[0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5]]) {
+            if (!clear || gap > 0.72) break;
+            if (onRoad(x + ax * u + ox * v, z + az * u + oz * v)) clear = false;
+          }
+          if (!clear || overlaps(x, z, ax, az)) continue;
+          // The tile it stands on, or failing that the nearest free one next to it.
+          const fx = Math.floor(x), fz = Math.floor(z);
+          // On a turned lattice two cells can share a tile and another tile stays free, so a cell
+          // may take a free tile a little way off; the simulation's fields are smooth at that scale.
+          let tile = -1, best = 1.1;
+          for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+            const tx = fx + dx, tz = fz + dz;
+            if (tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) continue;
+            const t = tz * GRID + tx;
+            if (cover[t] || cell[t] >= 0) continue;
+            const d = dx === 0 && dz === 0 ? -1 : Math.hypot(tx + 0.5 - x, tz + 0.5 - z);
+            if (d < best) { best = d; tile = t; }
+          }
+          if (tile < 0) continue;
+          cell[tile] = row;
+          lotX[tile] = x; lotZ[tile] = z;
+          const yaw = Math.atan2(-ox, -oz);
+          face[tile] = onGridRoad ? Math.round(yaw / (Math.PI / 2)) * (Math.PI / 2) : yaw;
+          accSeg[tile] = seg.id; accS[tile] = s; accX[tile] = pose.x; accZ[tile] = pose.z;
+          const k = kept.push({ x, z, ax, az }) - 1;
+          const key = bucketOf(x, z);
+          const list = buckets.get(key);
+          if (list) list.push(k); else buckets.set(key, [k]);
+        }
+      }
+    }
+  }
+  return cell;
 }

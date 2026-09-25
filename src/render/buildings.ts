@@ -95,7 +95,19 @@ export class BuildingLayer {
     this.zones.visible = false;
     this.zones.frustumCulled = false;
     this.group.add(this.zones);
+    // Every empty zone cell along the roads, faintly, so the zone tools show where there is to paint.
+    const cellGeo = new THREE.PlaneGeometry(0.9, 0.9);
+    cellGeo.rotateX(-Math.PI / 2);
+    this.cells = new THREE.InstancedMesh(cellGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false }), N_TILES);
+    this.cells.position.y = 0.018;
+    this.cells.count = 0;
+    this.cells.visible = false;
+    this.cells.frustumCulled = false;
+    this.group.add(this.cells);
   }
+
+  /** The faint outline of every empty zone cell, shown with the zone overlay. */
+  private cells: THREE.InstancedMesh;
 
   /** The walls of a zone building's model, for the street detail to hang things on. */
   body(kind: number, level: number, variant: number): Body | null {
@@ -121,15 +133,22 @@ export class BuildingLayer {
     }
   }
 
-  showZones(show: boolean): void { this.zones.visible = show; }
+  showZones(show: boolean): void { this.zones.visible = show; this.cells.visible = show; }
 
   rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
-    let nz = 0;
+    let nz = 0, nc = 0;
     for (let i = 0; i < N_TILES; i++) {
       const k = kind[i];
+      // An empty cell: outlined, turned to its road, unless it stands in the river.
+      if (!k && raster.cell[i] >= 0 && !water?.[i]) {
+        pos.set(raster.lotX[i] - GRID / 2, 0, raster.lotZ[i] - GRID / 2);
+        q.setFromAxisAngle(yAxis, raster.face[i]);
+        m4.compose(pos, q, one);
+        this.cells.setMatrixAt(nc++, m4);
+      }
       if (k === T_PATH && parkPathMask?.[i]) continue;
       const zone = isZone(k);
       if (!zone && !isService(k)) continue;
@@ -139,7 +158,8 @@ export class BuildingLayer {
       const tz = multi || isDecoration(k) ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
       pos.set(tx - half, 0, tz - half);
       if (zone) {
-        q.identity();
+        // A zone painted in a cell is shown in the cell, turned to its road.
+        if (raster.cell[i] >= 0) q.setFromAxisAngle(yAxis, raster.face[i]); else q.identity();
         m4.compose(pos, q, one);
         this.zones.setMatrixAt(nz, m4);
         this.zones.setColorAt(nz, col.setHex(ZONE_COLOR[k]));
@@ -184,7 +204,8 @@ export class BuildingLayer {
         m4.multiply(pivot.makeTranslation(-(w - 1) / 2, 0, -(d - 1) / 2));
       } else {
         // Turned to an angled road, a building shrinks across the ground to stay inside its cell.
-        const k = lotScale(facing);
+        // In its road-aligned cell a building stands full size; on a bare tile it shrinks to fit.
+        const k = raster.cell[i] >= 0 && facing === raster.face[i] ? 1 : lotScale(facing);
         m4.compose(pos, q, k === 1 ? one : lotSize.set(k, 1, k));
       }
       mesh.setMatrixAt(n, m4);
@@ -197,6 +218,8 @@ export class BuildingLayer {
       mesh.boundingSphere = null; // Recompute lazily for picking after buildings move or grow.
     }
     this.zones.count = nz;
+    this.cells.count = nc;
+    this.cells.instanceMatrix.needsUpdate = true;
     this.zones.instanceMatrix.needsUpdate = true;
     if (this.zones.instanceColor) this.zones.instanceColor.needsUpdate = true;
     this.rotors.count = Math.min(512, this.rotorSites.length);
