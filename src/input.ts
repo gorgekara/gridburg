@@ -3,7 +3,8 @@ import { sideHalf, canAddLanes, clampLanes } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
-import { structurePlan, roadHeight, approachProblem, levelProblem, levelY, structureFor, LEVEL_H, MIN_LEVEL, MAX_LEVEL, STRUCTURE_COST } from './roads/structures';
+import { structurePlan, roadHeight, approachProblem, levelProblem, levelY, structureFor, isFlat, LEVEL_H, MIN_LEVEL, MAX_LEVEL, STRUCTURE_COST } from './roads/structures';
+import type { RNode } from './roads/network';
 import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
@@ -318,7 +319,7 @@ export class Input {
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
     if (side) this.reach = side.distanceTo(this.hit) / 0.5;
-    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut', 'addlane'].includes(this.tool)) {
+    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut', 'addlane', 'light', 'stopsign'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
     }
@@ -359,6 +360,33 @@ export class Input {
   private levelOfSeg(id: number): number {
     const y = this.game.net.segs.get(id)?.ya ?? 0;
     return y < 0 ? -1 : Math.round(y / LEVEL_H);
+  }
+
+  /** Whether a road point would join a road there: a node at its level, or a level road at its height, as insertPath joins them. */
+  private meetsRoad(p: P): boolean {
+    const net = this.game.net, level = p.level ?? 0, y = levelY(level);
+    for (const n of net.nodes.values()) if ((n.level ?? 0) === level && net.degree(n.id) && Math.hypot(n.x - p.x, n.z - p.z) < 0.9) return true;
+    for (const s of net.segs.values()) {
+      if (!isFlat(s) || Math.abs((s.ya ?? 0) - y) > 0.25) continue;
+      if (Network.nearestOn(s, p.x, p.z).dist < 0.8) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The node nearest a click, and where junctions are stacked, the one at the height that was clicked
+   * (when the click landed on a road surface and so has a height).
+   */
+  private nodeNear(p: P, radius: number): RNode | null {
+    const net = this.game.net;
+    let best: RNode | null = null, score = Infinity;
+    for (const n of net.nodes.values()) {
+      const d = Math.hypot(n.x - p.x, n.z - p.z);
+      if (d >= radius) continue;
+      const s = d + (p.y !== undefined ? Math.abs(Math.max(0, levelY(n.level ?? 0)) - p.y) * 4 : 0);
+      if (s < score) { score = s; best = n; }
+    }
+    return best;
   }
 
   /** The levels a path runs between: its start point's, and the end's. */
@@ -646,7 +674,7 @@ export class Input {
     if (problem) { this.onToast?.(problem); return; }
     if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
     // Joined another road (at its own height), so this road is finished.
-    const joins = this.tool === 'parkpath' ? this.onRoad(end) : this.lastSnap?.node !== undefined || this.lastSnap?.seg !== undefined;
+    const joins = this.tool === 'parkpath' ? this.onRoad(end) : this.meetsRoad(end);
     if (this.tool === 'parkpath') {
       if (g.addParkPaths(buildPieces(path))) g.flush();
     } else {
@@ -758,7 +786,7 @@ export class Input {
     let op: EditOp | null = null;
     let mid: P = { x: p.x, z: p.z };
     if (this.tool === 'edit') {
-      const node = net.nearestNode(p.x, p.z, 0.9);
+      const node = this.nodeNear(p, 0.9);
       if (node && net.degree(node.id)) {
         const why = moveBlocked(net, node.id);
         if (why) { this.onToast?.(why); return; }
@@ -803,7 +831,7 @@ export class Input {
     if (!this.editDragged(ed, e)) return;
     if (op.type === 'move') {
       const own = new Set(net.segsAt(op.node).map(s => s.id));
-      const t = this.snap(p, { excludeNodes: new Set([op.node]), excludeSegs: own });
+      const t = this.snap(p, { excludeNodes: new Set([op.node]), excludeSegs: own, level: net.nodes.get(op.node)?.level ?? 0 });
       op.x = t.x; op.z = t.z;
     } else if (op.type === 'bend') {
       this.lastSnap = null;
@@ -966,7 +994,7 @@ export class Input {
     } else if (this.tool === 'light') {
       // With the editor open, a click on one of its arrows edits that movement.
       if (this.onSignalClick?.(p)) return;
-      const n = net.nearestNode(p.x, p.z, 1.4);
+      const n = this.nodeNear(p, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Traffic lights go on junctions of three or more roads'); return; }
       if (n.ring) { this.onToast?.('Roundabouts do not need lights'); return; }
       // A signalised junction opens in the editor; the signal is taken away from there.
@@ -979,7 +1007,7 @@ export class Input {
       g.flush();
       this.onSignalEdit?.(n.id);
     } else if (this.tool === 'stopsign') {
-      const n = net.nearestNode(p.x, p.z, 1.4);
+      const n = this.nodeNear(p, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Stop signs go on junctions of three or more roads'); return; }
       if (n.ring) { this.onToast?.('Roundabouts already give way'); return; }
       if (!n.stop && !g.canAfford(COST_STOP)) { this.onToast?.('Not enough money'); return; }
@@ -1123,7 +1151,7 @@ export class Input {
       label = this.tool !== 'parkpath' && this.lastSnap?.label ? `${this.lastSnap.label} · Click to start` : 'Click to start';
       if (this.tool !== 'parkpath') { label = `${levelName(s.level ?? 0)} · ${label}`; hy = Math.max(0, levelY(s.level ?? 0)); }
     } else if (this.tool === 'light' || this.tool === 'stopsign') {
-      const n = this.game.net.nearestNode(p.x, p.z, 1.4);
+      const n = this.nodeNear(p, 1.4);
       const sign = this.tool === 'stopsign';
       if (n && this.game.net.degree(n.id) >= 3 && !n.ring) {
         hx = n.x; hz = n.z; size = 1.4;
@@ -1131,7 +1159,7 @@ export class Input {
       } else { size = 0.5; color = BAD; }
     } else if (this.tool === 'edit') {
       const net = this.game.net;
-      const n = net.nearestNode(p.x, p.z, 0.9);
+      const n = this.nodeNear(p, 0.9);
       const h = n && net.degree(n.id) ? null : this.roadHit(p, 0.9);
       if (n && net.degree(n.id)) {
         hx = n.x; hz = n.z; size = 0.9;

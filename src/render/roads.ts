@@ -203,7 +203,8 @@ export class RoadLayer {
       const ma = tunnelMouth(s, 0), mb = tunnelMouth(s, 1);
       if (ma !== null) ends.push([0, Math.min(s.len / 2, ma + 0.45)]);
       if (mb !== null) ends.push([s.len - Math.min(s.len / 2, mb + 0.45), s.len]);
-      b.heightAt = (x, z) => Math.max(-0.5, roadHeight(s, Network.nearestOn(s, x + half, z + half).s));
+      // An old tunnel's approach is level up to its portal; one between levels eases down to its mouth.
+      b.heightAt = s.ya || s.yb ? (x, z) => Math.max(-0.12, roadHeight(s, Network.nearestOn(s, x + half, z + half).s)) : null;
       for (const [from, to] of ends) {
         const steps = Math.max(2, Math.ceil((to - from) / 0.3));
         const pts = new Float32Array((steps + 1) * 2);

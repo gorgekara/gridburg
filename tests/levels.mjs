@@ -115,6 +115,28 @@ test('binary saves keep node levels, including tunnels', () => {
   assert.ok(tunnel && close(ST.roadHeight(tunnel, 2), -1.8));
 });
 
+test('a ground road may run under an elevated junction', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD, false, 0, true, [2, 2]);
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD, false, 0, true, [2, 2]);
+  const path = [{ x: 30, z: 30 }, { x: 50, z: 50 }];
+  assert.equal(ST.levelProblem(net, dry, path, KIND_ROAD, 0, 0), null);
+  assert.equal(ST.approachProblem(net, path), null);
+});
+
+const { planEdit } = await import('../src/roadEdit.ts');
+test('editing decks and ramps checks them by their levels, not as old bridges', () => {
+  const g = new Game();
+  g.terrain.water.fill(0); g.terrain.shore.fill(0); g.stats.money = 1e6;
+  g.net.insertPath([{ x: 20, z: 30 }, { x: 25, z: 30 }], KIND_ROAD, false, 0, true, [1, 1]);
+  g.net.insertPath([{ x: 25, z: 30 }, { x: 35, z: 30 }], KIND_ROAD, false, 0, true, [1, 0]);
+  g.flush();
+  const end = g.net.nearestNode(20, 30, 0.05);
+  assert.equal(planEdit(g, { type: 'move', node: end.id, x: 19, z: 31 }).problem, null, 'a short deck can move');
+  const foot = g.net.nearestNode(35, 30, 0.05);
+  assert.match(planEdit(g, { type: 'move', node: foot.id, x: 27, z: 30 }).problem ?? '', /4 cells per level/);
+});
+
 const { StructureLayer } = await import('../src/render/structures.ts');
 /** Every vertex of the structure layer's solids, in map coordinates. */
 function solidPoints(layer) {

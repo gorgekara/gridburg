@@ -204,5 +204,34 @@ test('an adaptive signal gives the busy road more of the green', () => {
   assert.ok(adaptiveRun > fixedRun * 1.1, `${fixedRun} -> ${adaptiveRun}`);
 });
 
+// ---- stacked levels ------------------------------------------------------------------------------
+/** A level-1 flyover west to east, with ramps down at each end, over a ground road north to south. */
+function stacked() {
+  const net = new Network();
+  net.insertPath([{ x: 40, z: 16 }, { x: 40, z: 64 }], N.KIND_ROAD);
+  net.insertPath([{ x: 14, z: 40 }, { x: 26, z: 40 }], N.KIND_ROAD, false, 0, true, [0, 1]);
+  net.insertPath([{ x: 26, z: 40 }, { x: 54, z: 40 }], N.KIND_ROAD, false, 0, true, [1, 1]);
+  net.insertPath([{ x: 54, z: 40 }, { x: 66, z: 40 }], N.KIND_ROAD, false, 0, true, [1, 0]);
+  load(net);
+  const byEnd = (x, z) => { const n = net.nearestNode(x, z, 0.1); const s = net.segsAt(n.id)[0]; return { seg: s.id, s: s.a === n.id ? 0.6 : s.len - 0.6 }; };
+  const w = byEnd(14, 40), e = byEnd(66, 40), n = byEnd(40, 16), so = byEnd(40, 64);
+  const before = ask([]).trips, gave = ask([]).gaveUp;
+  let t = 0, next = 0;
+  for (let i = 0; i < 90 * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    if (t >= next) { next += 0.5; ask([{ a: w.seg, as: w.s, b: e.seg, bs: e.s }, { a: n.seg, as: n.s, b: so.seg, bs: so.s }]); }
+  }
+  const end = ask([]);
+  const got = (a, b) => (end.trips[`${a.seg}>${b.seg}`] ?? 0) - (before[`${a.seg}>${b.seg}`] ?? 0);
+  return { over: got(w, e), under: got(n, so), gaveUp: end.gaveUp - gave, junctions: [...net.nodes.values()].filter(q => net.degree(q.id) >= 3).length };
+}
+const stack = stacked();
+console.log(`  flyover: ${stack.over} trips over, ${stack.under} under, ${stack.gaveUp} gave up`);
+test('traffic flows over and under a flyover without meeting', () => {
+  assert.equal(stack.junctions, 0);
+  assert.ok(stack.over > 60 && stack.under > 60, JSON.stringify(stack));
+  assert.equal(stack.gaveUp, 0);
+});
+
 console.log(`${checks} lane traffic checks passed; ${failures} failed`);
 if (failures) process.exit(1);

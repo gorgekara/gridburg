@@ -2,7 +2,7 @@ import { N_TILES, ROAD_COST, isService, isZone } from './constants';
 import { Network, measurePath, isOneWayKind } from './roads/network';
 import { canAddLanes, laneLimits, DEFAULT_LANES } from './roads/lanes';
 import type { PlainNet, RSeg } from './roads/network';
-import { STRUCTURE_COST, structurePlan, approachProblem } from './roads/structures';
+import { STRUCTURE_COST, structurePlan, approachProblem, levelProblem, isLegacySpan } from './roads/structures';
 import { rasterize } from './roads/raster';
 import type { Game } from './game';
 
@@ -111,7 +111,7 @@ function shapeProblem(game: EditHost, net: Network, segs: RSeg[]): string | null
   for (const s of segs) {
     const a = net.nodes.get(s.a)!, b = net.nodes.get(s.b)!;
     const path = [{ x: a.x, z: a.z }, { x: s.cx, z: s.cz }, { x: b.x, z: b.z }];
-    if (s.structure) {
+    if (isLegacySpan(s)) {
       const rest = Network.fromPlain(net.toPlain());
       rest.removeSeg(s.id);
       const plan = structurePlan(rest, game.terrain, game.kind, path, s.kind, s.structure);
@@ -119,6 +119,15 @@ function shapeProblem(game: EditHost, net: Network, segs: RSeg[]): string | null
       continue;
     }
     if (measurePath(path, game.hillMask).wet > 0) return 'Roads cannot climb raised ground: lower it first';
+    const la = a.level ?? 0, lb = b.level ?? 0;
+    if (la || lb) {
+      // Between levels: ramp length, clearance and height all come from the road's own levels.
+      const rest = Network.fromPlain(net.toPlain());
+      rest.removeSeg(s.id);
+      const problem = levelProblem(rest, game.terrain, path, s.kind, la, lb);
+      if (problem) return problem;
+      continue;
+    }
     if (measurePath(path, game.terrain.water).wet > 0) return 'Keep the road out of the river, or draw a bridge';
     const clash = approachProblem(net, path);
     if (clash) return clash;

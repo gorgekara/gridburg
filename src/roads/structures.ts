@@ -104,7 +104,7 @@ export function approachProblem(net: Network, points: { x: number; z: number }[]
   for (const c of buildPieces(points)) {
     const sm = sampleCurve(c);
     for (const seg of net.segs.values()) {
-      if (!seg.structure) continue;
+      if (!isLegacySpan(seg)) continue; // roads between levels are checked by levelProblem
       for (let i = 0; i <= sm.n; i++) {
         const hit = Network.nearestOn(seg, sm.pts[i * 2], sm.pts[i * 2 + 1]);
         if (hit.s < 0.9 || seg.len - hit.s < 0.9) {
@@ -127,7 +127,7 @@ export function tunnelMouth(seg: RSeg, end: 0 | 1): number | null {
   if (isLegacySpan(seg)) return Math.min(PORTAL_AT, seg.len / 2);
   const y0 = end ? seg.yb ?? 0 : seg.ya ?? 0;
   if (y0 < 0) return null;
-  for (let d = 0; d <= seg.len; d += 0.1) if (roadHeight(seg, end ? seg.len - d : d) < -0.45) return d;
+  for (let d = 0; d <= seg.len; d += 0.1) if (roadHeight(seg, end ? seg.len - d : d) < -0.12) return d;
   return null;
 }
 
