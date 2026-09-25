@@ -80,6 +80,8 @@ export class Game {
   segCong: Uint8Array = new Uint8Array(0);
   carIdsPrev: Uint32Array = new Uint32Array(MAX_CARS);
   carIdsNext: Uint32Array = new Uint32Array(MAX_CARS);
+  /** Every signal's phase clock from the latest frame: node id, phase, time into it, green length. */
+  signalClocks: Float32Array | null = null;
   carsPrev: Float32Array = new Float32Array(MAX_CARS * 4);
   carsNext: Float32Array = new Float32Array(MAX_CARS * 4);
   prevTime = 0;
@@ -125,6 +127,7 @@ export class Game {
         this.onNotice?.(m.message);
       } else if (m.type === 'frame') {
         this.carIdsPrev = this.carIdsNext; this.carIdsNext = m.carIds;
+        this.signalClocks = m.signals;
         this.carsPrev = this.carsNext;
         this.carsNext = m.cars;
         this.prevTime = this.nextTime;

@@ -3,13 +3,15 @@ import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2, isCarriageway, signalPhase } from '../roads/network';
+import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2, isCarriageway } from '../roads/network';
 import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from './crossings';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
+import { planFor, movements, stateIn, fixedClock } from '../roads/signals';
+import type { SignalPlan, SignalState } from '../roads/signals';
 
 /** Each side's edge at every sample of a segment, following any taper. */
 function edges(s: RSeg, tapers: Tapers, extra = 0): { left: Float32Array; right: Float32Array } {
@@ -52,7 +54,8 @@ export class RoadLayer {
   readonly poles: THREE.InstancedMesh;
   private lamps: THREE.InstancedMesh;
   readonly stopSigns: THREE.InstancedMesh;
-  private lampInfo: { node: number; group: number }[] = [];
+  /** Each signal head: its junction, the plan it runs, and the movements of the approach it faces. */
+  private lampInfo: { node: number; plan: SignalPlan; keys: string[] }[] = [];
   private ranges = new Map<number, [number, number]>();
   private builtNet: Network | null = null;
   private builtVersion = -1;
@@ -422,7 +425,7 @@ export class RoadLayer {
     q.identity();
     for (const node of net.nodes.values()) {
       if (!node.light || net.degree(node.id) < 3) continue;
-      const groups = net.lightGroups(node.id);
+      const plan = planFor(net, node.id), moves = movements(net, node.id);
       for (const s of net.segsAt(node.id)) {
         if (n >= MAX_LAMPS) break;
         const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
@@ -436,7 +439,8 @@ export class RoadLayer {
           v3.y = (0.84 - lens * 0.12) * 0.72; m4.compose(v3, q, one);
           this.lamps.setMatrixAt(n * 3 + lens, m4);
         }
-        this.lampInfo.push({ node: node.id, group: groups.get(s.id) ?? 0 });
+        const fwd = s.b === node.id;
+        this.lampInfo.push({ node: node.id, plan, keys: moves.filter(m => m.inSeg === s.id && m.inFwd === fwd).map(m => m.key) });
         n++;
       }
     }
@@ -447,10 +451,21 @@ export class RoadLayer {
     this.updateLights(0);
   }
 
-  updateLights(simTime: number): void {
+  /**
+   * Light each signal head from its junction's clock (node id, phase, time and green length, four
+   * numbers per signal, as the simulation sends them), or from the fixed timeline until it has.
+   * A head shows the most permissive state of the movements it controls.
+   */
+  updateLights(simTime: number, clocks?: Float32Array | null): void {
+    const clock = new Map<number, { phase: number; t: number; len: number }>();
+    if (clocks) for (let k = 0; k + 3 < clocks.length; k += 4) clock.set(clocks[k], { phase: clocks[k + 1], t: clocks[k + 2], len: clocks[k + 3] });
+    const rank: Record<SignalState, number> = { red: 0, amber: 1, yield: 2, green: 3 };
     for (let i = 0; i < this.lampInfo.length; i++) {
       const l = this.lampInfo[i];
-      const phase = signalPhase(simTime, l.node, l.group);
+      const c = clock.get(l.node) ?? fixedClock(l.plan, simTime + l.node * 3.7);
+      let best: SignalState = 'red';
+      for (const key of l.keys) { const st = stateIn(l.plan, c.phase, c.t, c.len, key); if (rank[st] > rank[best]) best = st; }
+      const phase = best === 'yield' ? 'green' : best;
       this.lamps.setColorAt(i * 3, phase === 'red' ? LAMP_RED : LAMP_OFF);
       this.lamps.setColorAt(i * 3 + 1, phase === 'amber' ? LAMP_AMBER : LAMP_OFF);
       this.lamps.setColorAt(i * 3 + 2, phase === 'green' ? LAMP_GREEN : LAMP_OFF);

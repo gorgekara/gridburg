@@ -480,7 +480,7 @@ const W = await import('../src/sim/water.ts');
 const { footprint, footprintSize, siteOwners } = await import('../src/sites.ts');
 const { entrancePlan, entrySite } = await import('../src/roads/entries.ts');
 const { railPath } = await import('../src/roads/rail.ts');
-const { signalPhase, isGreen } = await import('../src/roads/network.ts');
+const { stateIn, fixedClock } = await import('../src/roads/signals.ts');
 const { vehicleGeometry } = await import('../src/render/cars.ts');
 
 test('new zones and transport services survive save/load with reserved footprints', () => {
@@ -514,9 +514,11 @@ test('office and transport geometry is finite and fits its declared footprint', 
   assert.ok(counts.size >= 3);
 });
 test('signals expose an amber interval while the simulation stops approaching cars', () => {
-  for (let t = 0; t < 18; t += 0.1) assert.ok(!(isGreen(t, 0, 0) && isGreen(t, 0, 1)));
-  assert.equal(signalPhase(8.5, 0, 0), 'amber'); assert.equal(isGreen(8.5, 0, 0), false);
-  assert.equal(signalPhase(17.5, 0, 1), 'amber'); assert.equal(signalPhase(9, 0, 1), 'green');
+  const plan = { phases: [{ green: 8, moves: { a: 1 } }, { green: 8, moves: { b: 1 } }] };
+  const at = (t, key) => { const c = fixedClock(plan, t); return stateIn(plan, c.phase, c.t, c.len, key); };
+  for (let t = 0; t < 18; t += 0.1) assert.ok(!(at(t, 'a') === 'green' && at(t, 'b') === 'green'));
+  assert.equal(at(8.5, 'a'), 'amber'); assert.equal(at(8.5, 'b'), 'red');
+  assert.equal(at(17.5, 'b'), 'amber'); assert.equal(at(9.5, 'b'), 'green');
 });
 test('automatic transit needs two operating stops with a return route and both trip catchments', () => {
   const kind = new Uint8Array(C.N_TILES), a = C.idx(10, 10), b = C.idx(35, 10);

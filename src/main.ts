@@ -589,7 +589,7 @@ game.onState = () => {
 };
 game.onFrame = () => {
   if (showTraffic) roads.tint(game.segOrder, game.segCong);
-  roads.updateLights(game.simTime);
+  roads.updateLights(game.simTime, game.signalClocks);
 };
 /** Water tiles worth a random ripple: the river, and whatever it has spilled onto. */
 let wetTiles: number[] = [];

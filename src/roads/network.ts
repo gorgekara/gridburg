@@ -53,7 +53,6 @@ export const RING_SIZES = [
 export type RingSize = typeof RING_SIZES[number]['id'];
 // A ramp widens into a one-way highway and back; the rest walk the ordinary order.
 export const nextRoadKind = (kind: number): number => kind === KIND_RAMP ? KIND_HIGHWAY2 : kind === KIND_HIGHWAY2 ? KIND_MOTORWAY : kind === KIND_MOTORWAY ? KIND_RAMP : UPGRADE_ORDER[(UPGRADE_ORDER.indexOf(kind) + 1) % UPGRADE_ORDER.length];
-export const LIGHT_CYCLE = 18;
 
 export interface RNode {
   id: number;
@@ -825,29 +824,6 @@ export class Network {
     return true;
   }
 
-  // ---- traffic lights ---------------------------------------------------------------
-  /** Which of the two signal phases each incident segment belongs to, grouped by road axis. */
-  lightGroups(nodeId: number): Map<number, number> {
-    const out = new Map<number, number>();
-    const node = this.nodes.get(nodeId)!;
-    const segs = this.segsAt(nodeId).slice().sort((p, q) => p.id - q.id);
-    const angles = segs.map((s) => {
-      const atA = s.a === nodeId;
-      const i = atA ? 1 : s.n - 1;
-      return Math.atan2(s.pts[i * 2 + 1] - node.z, s.pts[i * 2] - node.x);
-    });
-    let zero = 0;
-    segs.forEach((s, k) => {
-      let d = Math.abs(angles[k] - angles[0]) % Math.PI;
-      if (d > Math.PI / 2) d = Math.PI - d;
-      const g = d < Math.PI / 4 ? 0 : 1;
-      if (g === 0) zero++;
-      out.set(s.id, g);
-    });
-    if (zero === segs.length) segs.forEach((s, k) => out.set(s.id, k % 2));
-    return out;
-  }
-
   // ---- (de)serialization --------------------------------------------------------------
   toPlain(): PlainNet {
     const nodes: number[][] = [];
@@ -923,17 +899,6 @@ export class Network {
     for (const n of this.nodes.values()) if (n.entry) return n;
     return null;
   }
-}
-
-export function signalPhase(simTime: number, nodeId: number, group: number): 'red' | 'amber' | 'green' {
-  const t = ((simTime + nodeId * 3.7) % LIGHT_CYCLE + LIGHT_CYCLE) % LIGHT_CYCLE;
-  if (group === 0) return t < 8 ? 'green' : t < 9 ? 'amber' : 'red';
-  return t >= 9 && t < 17 ? 'green' : t >= 17 && t < 18 ? 'amber' : 'red';
-}
-
-/** Is the signal green for this phase group at this node and time? */
-export function isGreen(simTime: number, nodeId: number, group: number): boolean {
-  return signalPhase(simTime, nodeId, group) === 'green';
 }
 
 /** Total length of a guide path once smoothed, plus the part of it that is over water. */

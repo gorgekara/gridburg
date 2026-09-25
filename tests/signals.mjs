@@ -119,5 +119,29 @@ test('binary saves keep a junction\'s plan', () => {
   assert.ok(S.planFits(back, n2.id, n2.signal));
 });
 
+const { RoadLayer } = await import('../src/render/roads.ts');
+const THREE = await import('three');
+const { generateTerrain } = await import('../src/terrain.ts');
+test('signal heads show their own approach\'s state from the junction\'s clock', () => {
+  const j = junction(['W', 'E', 'N', 'S']);
+  const layer = new RoadLayer();
+  const terrain = generateTerrain(3); terrain.water.fill(0);
+  layer.rebuild(j.net, terrain);
+  const plan = S.planFor(j.net, j.node.id);
+  // Which phase lets the west arm go straight on.
+  const ewPhase = plan.phases.findIndex(p => Object.keys(p.moves).some(k => j.name(k) === 'W>E'));
+  layer.updateLights(0, new Float32Array([j.node.id, ewPhase, 2, 8]));
+  const colours = layer.lampInfo.map((l, i) => {
+    const c = new THREE.Color();
+    layer.lamps.getColorAt(i * 3 + 2, c);
+    return { arm: j.name(l.keys[0]).split('>')[0], green: c.g > 0.5 };
+  });
+  for (const { arm, green } of colours) assert.equal(green, arm === 'W' || arm === 'E', `${arm} head`);
+  // In the amber at the end of that phase, nobody shows green.
+  layer.updateLights(0, new Float32Array([j.node.id, ewPhase, 8.5, 8]));
+  const any = layer.lampInfo.some((_, i) => { const c = new THREE.Color(); layer.lamps.getColorAt(i * 3 + 2, c); return c.g > 0.5; });
+  assert.equal(any, false);
+});
+
 console.log(`${checks} signal checks passed; ${failures} failed`);
 if (failures) process.exit(1);
