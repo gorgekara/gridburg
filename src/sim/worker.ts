@@ -462,7 +462,8 @@ function applyNetwork(p: EditPayload): void {
         const upFwd = up.b === startNode;
         if (lanesFor(net, up, upFwd)) {
           const fed = new Set(matchLanes(net, up, upFwd, s, fwd));
-          for (let l = 0; l < n; l++) if (!fed.has(l)) laneFromTab[dk * MAXL + l] = tl;
+          // A new lane can be taken once it has opened out halfway.
+          for (let l = 0; l < n; l++) if (!fed.has(l)) laneFromTab[dk * MAXL + l] = tl * 0.5;
         }
       }
       if (net.degree(endNode) === 2) {
@@ -1002,15 +1003,35 @@ function approachOf(l: Leg): NonNullable<ReturnType<typeof approachCache.get>> {
 
 const exitOf = (a: ReturnType<typeof approachOf>, next: Leg): number => a.exits.findIndex(e => e.seg === next.seg && e.fwd === next.fwd);
 
-/** The lanes of the current leg that lead where the car goes next, and are open at this point. */
-function wantedLanes(c: Car): number[] | null {
-  const leg = c.legs[c.li], next = c.legs[c.li + 1];
-  if (!next || c.vehicle === 8 || ringArc[leg.seg]) return null;
+/**
+ * The lanes of leg `li` that lead where the car goes next. Where the next node only joins two roads
+ * (a lane opening or closing, a change of road), it looks on through to the turn after it: a driver
+ * heading for a turn pocket just beyond gets into the lane beside it beforehand, not on the pocket's
+ * few metres.
+ */
+function wantedOn(c: Car, li: number, depth = 0): number[] | null {
+  const leg = c.legs[li], next = c.legs[li + 1];
+  if (!leg || !next || ringArc[leg.seg]) return null;
   const a = approachOf(leg), e = exitOf(a, next);
   if (e < 0) return null;
   const n = legLanes(leg), out: number[] = [];
   for (let l = 0; l < n; l++) if (a.serve[l]?.includes(e)) out.push(l);
-  return out.length ? out : null;
+  if (!out.length) return null;
+  const node = legEndNode(leg);
+  if (depth < 3 && nodeType[node] === J_PLAIN && a.exits.length === 1 && c.legs[li + 2]) {
+    const ahead = wantedOn(c, li + 1, depth + 1);
+    if (ahead) {
+      // Of the lanes that carry on, those landing closest to a lane that goes the right way.
+      const dist = (l: number): number => Math.min(...a.targets(l, e).map(t => Math.min(...ahead.map(w => Math.abs(w - t)))));
+      const best = Math.min(...out.map(dist));
+      return out.filter(l => dist(l) === best);
+    }
+  }
+  return out;
+}
+
+function wantedLanes(c: Car): number[] | null {
+  return c.vehicle === 8 ? null : wantedOn(c, c.li);
 }
 
 /** Pick the lane to take on the next leg, if not picked yet: of those its lane may turn into, the one with most room. */
