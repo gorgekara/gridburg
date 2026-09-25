@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { sideHalf, roadHalf } from '../roads/lanes';
 import { GRID, N_TILES, T_BUS, tileHash } from '../constants';
-import { HALF_WIDTH, KIND_AVENUE, isMotorway } from '../roads/network';
+import { KIND_AVENUE, isMotorway } from '../roads/network';
 import { Network } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 import { Builder } from './buildingGeo';
@@ -106,9 +107,10 @@ export class StreetFurnitureLayer {
     };
     for (const seg of net.segs.values()) {
       if (seg.structure || isMotorway(seg.kind)) continue;
-      const off = HALF_WIDTH[seg.kind] + 0.078;
+      const offOf = (side: number): number => sideHalf(seg, side) + 0.078;
       const gap = seg.kind === KIND_AVENUE ? 0.55 : 0.8;
       for (const side of [-1, 1]) {
+        const off = offOf(side);
         // Leave the corners clear, where the pavements meet at the junction.
         for (let s = 0.7, n = 0; s < seg.len - 0.7; s += gap, n++) {
           const h = tileHash(seg.id * 131 + n * 17 + (side > 0 ? 7 : 0));
@@ -130,7 +132,7 @@ export class StreetFurnitureLayer {
       if (!seg) continue;
       // On the stop's side of its street, sliding along it away from a junction until the kerb is
       // clear of every other road, or no shelter at all.
-      const back = HALF_WIDTH[seg.kind] + 0.08, at = Network.nearestOn(seg, raster.accX[i], raster.accZ[i]).s;
+      const back = roadHalf(seg) + 0.08, at = Network.nearestOn(seg, raster.accX[i], raster.accZ[i]).s;
       for (const shift of [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]) {
         const s = at + shift;
         if (s < 0.2 || s > seg.len - 0.2) continue;

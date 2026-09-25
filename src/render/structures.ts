@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { Network, HALF_WIDTH } from '../roads/network';
+import { roadHalf } from '../roads/lanes';
+import { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { roadHeight, PORTAL_AT } from '../roads/structures';
 import { Builder } from './buildingGeo';
@@ -29,7 +30,7 @@ const PIER_SPACING = 4;
  * lamp posts, twin-column piers with pier caps, and retaining-wall embankments under the ramps.
  */
 function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Builder): void {
-  const hw = HALF_WIDTH[seg.kind], W = hw + 0.28, len = seg.len;
+  const hw = roadHalf(seg), W = hw + 0.28, len = seg.len;
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const steps = Math.max(8, Math.ceil(len / 0.35));
   const path: (SweepPoint & { d: number })[] = [];
@@ -72,7 +73,7 @@ function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Buil
     if (beamBottom < 0.15) continue;
     const feet = [-1, 1].map(side => ({ x: pose.x + rx * colAcross * side, z: pose.z + rz * colAcross * side }));
     // Never stand a pier on a road that passes underneath.
-    if (feet.some(f => surface.some(s => Network.nearestOn(s, f.x, f.z).dist < HALF_WIDTH[s.kind] + 0.4))) continue;
+    if (feet.some(f => surface.some(s => Network.nearestOn(s, f.x, f.z).dist < roadHalf(s) + 0.4))) continue;
     const x = pose.x - OFFSET, z = pose.z - OFFSET, reach = W - 0.12;
     sweep.sweep(straightPath(x - rx * reach, h, z - rz * reach, x + rx * reach, h, z + rz * reach),
       [[-0.13, DECK_BOTTOM - BEAM_DEPTH], [0.13, DECK_BOTTOM - BEAM_DEPTH], [0.17, DECK_BOTTOM], [-0.17, DECK_BOTTOM]], PIER, { capColor: BAND });
@@ -103,7 +104,7 @@ function buildBridge(seg: RSeg, surface: RSeg[], sweep: SweepBuilder, cols: Buil
  * the portal runs back over the bore. Heights are box bases, which is what Builder.box expects.
  */
 function buildPortals(seg: RSeg, material: THREE.Material): THREE.Mesh[] {
-  const hw = HALF_WIDTH[seg.kind], pose = { x: 0, z: 0, tx: 0, tz: 0 }, out: THREE.Mesh[] = [];
+  const hw = roadHalf(seg), pose = { x: 0, z: 0, tx: 0, tz: 0 }, out: THREE.Mesh[] = [];
   const clear = 0.72; // headroom inside the mouth
   const wall = 0.2, span = hw + 0.14; // inner face of each side wall
   for (const end of [0, seg.len]) {
@@ -204,7 +205,7 @@ export class StructureLayer {
         }
         // The ground above the bore: one dark band the whole way between the portals, with paler
         // ticks along it, so the route is legible without opening the underground view.
-        const hw = HALF_WIDTH[seg.kind];
+        const hw = roadHalf(seg);
         const step = 0.4;
         // Start past the portal mouth: the ramps are real road, and the band belongs over the bore.
         const from = PORTAL_AT + 0.9, to = seg.len - from;

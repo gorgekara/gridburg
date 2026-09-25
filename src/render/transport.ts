@@ -1,4 +1,5 @@
 import { airportRunway } from '../airports';
+import { roadHalf } from '../roads/lanes';
 import { T_TROLLEY } from '../constants';
 import * as THREE from 'three';
 import { GRID, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT } from '../constants';
@@ -6,7 +7,7 @@ import { transitNetwork } from '../sim/transit';
 import { railPath, railTrack, intercityTrack, PLATFORM_LENGTH } from '../roads/rail';
 import type { TrackPoint } from '../roads/rail';
 import type { Raster } from '../roads/raster';
-import { Network, HALF_WIDTH } from '../roads/network';
+import { Network } from '../roads/network';
 import { Builder } from './buildingGeo';
 
 // Palette (matches the concrete and service buildings).
@@ -318,11 +319,11 @@ export class TransportLayer {
     const portal = (i: number): boolean => {
       const p = track[i], hit = net.nearestSeg(p.x, p.z, 0.1);
       if (!hit) return false;
-      const f = frameAt(p), off = HALF_WIDTH[hit.seg.kind] + 0.17;
+      const f = frameAt(p), off = roadHalf(hit.seg) + 0.17;
       for (const u of [-off, off]) {
         const [x, , z] = place(f, u, 0, 0);
         for (const seg of net.segs.values()) {
-          const m = HALF_WIDTH[seg.kind] + 0.1;
+          const m = roadHalf(seg) + 0.1;
           if (x < seg.minX - m || x > seg.maxX + m || z < seg.minZ - m || z > seg.maxZ + m) continue;
           if (Network.nearestOn(seg, x, z).dist < m) return false;
         }

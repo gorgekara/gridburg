@@ -1,6 +1,7 @@
 import { roadHeight } from '../roads/structures';
+import { sideHalf } from '../roads/lanes';
 import * as THREE from 'three';
-import { HALF_WIDTH, KIND_RAMP, Network } from '../roads/network';
+import { KIND_RAMP, Network } from '../roads/network';
 
 /** Instanced lamps and soft pools avoid hundreds of real-time point lights. */
 export class StreetlightLayer {
@@ -34,7 +35,7 @@ export class StreetlightLayer {
       for (let i = 1; i <= seg.n && count < 3000; i++) {
         if (seg.cum[i] < next || seg.cum[i] > seg.cum[seg.n] - 1.5) continue;
         const dx = seg.pts[i * 2] - seg.pts[(i - 1) * 2], dz = seg.pts[i * 2 + 1] - seg.pts[(i - 1) * 2 + 1], len = Math.hypot(dx, dz) || 1;
-        const offset = HALF_WIDTH[seg.kind] + 0.035;
+        const offset = sideHalf(seg, 1) + 0.035;
         const px = seg.pts[i * 2] - dz / len * offset, pz = seg.pts[i * 2 + 1] + dx / len * offset;
         // Where two roads run close or merge at a shallow angle, this kerb can lie on the other
         // carriageway: try the next point along instead of planting a pole in the traffic.

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { sideHalf, roadHalf } from '../roads/lanes';
 import { GRID } from '../constants';
-import { Network, HALF_WIDTH, canAddBikeLane } from '../roads/network';
+import { Network, canAddBikeLane } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import { MeshBuilder } from './meshBuilder';
 
@@ -31,8 +32,8 @@ export class BikeLaneLayer {
     const pose = { x: 0, z: 0, tx: 0, tz: 0 };
     const trim = (s: RSeg, id: number): number => {
       if (net.degree(id) <= 1) return 0.25;
-      let width = HALF_WIDTH[s.kind];
-      for (const other of net.segsAt(id)) width = Math.max(width, HALF_WIDTH[other.kind]);
+      let width = roadHalf(s);
+      for (const other of net.segsAt(id)) width = Math.max(width, roadHalf(other));
       // Stop before intersection paving/crosswalks; no implied priority across junctions.
       return width + 0.85;
     };
@@ -47,7 +48,7 @@ export class BikeLaneLayer {
         pts.push(pose.x - half, pose.z - half);
       }
       for (const side of [-1, 1]) {
-        const offset = side * (HALF_WIDTH[s.kind] + BIKE_TRACK_OFFSET);
+        const offset = side * (sideHalf(s, side) + BIKE_TRACK_OFFSET);
         b.ribbon(pts, count, BIKE_TRACK_HALF, 0.051, GREEN, offset);
         b.ribbon(pts, count, 0.002, 0.054, WHITE, offset - side * 0.021);
         // Repeated compact bicycle pictograms: two wheels, frame and handlebars.

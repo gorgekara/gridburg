@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import { sideHalf, roadHalf } from '../roads/lanes';
 import { GRID, N_TILES, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
 import { VARIANTS } from './buildingGeo';
 import { parkingStalls } from './parkingGeo';
-import { HALF_WIDTH, KIND_AVENUE, KIND_ROAD } from '../roads/network';
+import { KIND_AVENUE, KIND_ROAD } from '../roads/network';
 import { Network } from '../roads/network';
 import { vehicleColor, vehicleGeometry } from './cars';
 import { sample } from './pedestrians';
@@ -113,7 +114,7 @@ export class ParkedCarLayer {
       if (!seg) continue;
       const lx = raster.lotX[i], lz = raster.lotZ[i], dx = raster.accX[i] - lx, dz = raster.accZ[i] - lz;
       // The kerb, measured forward from the middle of the lot: only houses right on the street get a drive.
-      const kerb = Math.hypot(dx, dz) - HALF_WIDTH[seg.kind];
+      const kerb = Math.hypot(dx, dz) - roadHalf(seg);
       if (kerb > 0.75 || kerb < 0.45) continue;
       const facing = raster.face[i], cos = Math.cos(facing), sin = Math.sin(facing);
       // On an angled road the house is shrunk into its cell, so its drive tucks in beside it too.
@@ -139,13 +140,14 @@ export class ParkedCarLayer {
       if (seg.structure || (seg.kind !== KIND_ROAD && seg.kind !== KIND_AVENUE)) continue;
       // Nor on a roundabout, nor over a kerbside bike track.
       if (seg.bike || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
-      const off = HALF_WIDTH[seg.kind] + PARK_INSET;
+      const offOf = (side: number): number => sideHalf(seg, side) + PARK_INSET;
       // Stay back from each end by more than the widest road crossing there.
-      const clear = (node: number): number => CLEAR + Math.max(0, ...net.segsAt(node).filter(o => o.id !== seg.id).map(o => HALF_WIDTH[o.kind]));
+      const clear = (node: number): number => CLEAR + Math.max(0, ...net.segsAt(node).filter(o => o.id !== seg.id).map(o => roadHalf(o)));
       // ...and behind the zebra crossing, where there is one.
       const zebra = crossings.get(seg.id) ?? [0, 0];
       const from = Math.max(clear(seg.a), zebra[0] + 0.4), to = seg.len - Math.max(clear(seg.b), zebra[1] + 0.4);
       for (const side of [-1, 1]) {
+        const off = offOf(side);
         for (let s = from, n = 0; s < to; s += SLOT, n++) {
           const id = seg.id * 4099 + n * 2 + (side > 0 ? 1 : 0);
           const h = tileHash(id);

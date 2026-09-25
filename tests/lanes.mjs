@@ -192,5 +192,45 @@ test('binary saves keep lanes, and old saves load with none', () => {
   assert.ok([...loaded.segs.values()].filter(q => q.fixed).every(q => !q.addR && !q.addL));
 });
 
+const { RoadLayer } = await import('../src/render/roads.ts');
+const { rasterize } = await import('../src/roads/raster.ts');
+const { generateTerrain } = await import('../src/terrain.ts');
+const terrain = generateTerrain(3); terrain.water.fill(0);
+/** The asphalt of one segment as drawn: how far it reaches either side of z = 30 (world z −10). */
+function asphaltSpan(net, seg) {
+  const layer = new RoadLayer();
+  layer.rebuild(net, terrain);
+  const [a, b] = layer.ranges.get(seg.id), pos = layer.mesh.geometry.attributes.position;
+  let lo = Infinity, hi = -Infinity;
+  for (let v = a; v < b; v++) { lo = Math.min(lo, pos.getZ(v) + 10); hi = Math.max(hi, pos.getZ(v) + 10); }
+  return [-lo, hi];
+}
+
+test('a default avenue is drawn as wide as ever; a widened one reaches out on its own side only', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 30 }, { x: 40, z: 30 }], KIND_AVENUE);
+  const seg = [...net.segs.values()][0];
+  const rightIsSouth = net.nodes.get(seg.b).x > net.nodes.get(seg.a).x;
+  const [l0, r0] = asphaltSpan(net, seg);
+  assert.ok(close(l0, 0.86, 1e-3) && close(r0, 0.86, 1e-3), `${l0} ${r0}`);
+  if (rightIsSouth) seg.addR = 1; else seg.addL = 1;
+  net.version++;
+  const [l1, r1] = asphaltSpan(net, seg);
+  assert.ok(close(l1, 0.86, 1e-3) && close(r1, 1.29, 1e-3), `${l1} ${r1}`);
+});
+
+test('the raster paves the widened side and leaves the other alone', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20.5, z: 30.5 }, { x: 40.5, z: 30.5 }], KIND_AVENUE);
+  const seg = [...net.segs.values()][0];
+  const before = rasterize(net).cover;
+  if (net.nodes.get(seg.b).x > net.nodes.get(seg.a).x) seg.addR = 2; else seg.addL = 2;
+  const after = rasterize(net).cover;
+  const at = (x, z) => z * 80 + x;
+  assert.equal(before[at(30, 32)], 0);
+  assert.equal(after[at(30, 32)], 1, 'south of the road is paved now');
+  assert.equal(after[at(30, 28)], before[at(30, 28)], 'north is as it was');
+});
+
 console.log(`${checks} lane checks passed; ${failures} failed`);
 if (failures) process.exit(1);

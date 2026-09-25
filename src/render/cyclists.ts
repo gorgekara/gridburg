@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { sideHalf } from '../roads/lanes';
 import { GRID } from '../constants';
-import { HALF_WIDTH } from '../roads/network';
+
 import type { Network, RSeg } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 import { BIKE_TRACK_OFFSET } from './bikeLanes';
@@ -65,7 +66,7 @@ export class CyclistLayer {
       r.s += r.side * r.speed * dt;
       if (r.s > r.seg.len - 0.3 || r.s < 0.3) { r.side = -r.side; r.s = Math.max(0.3, Math.min(r.seg.len - 0.3, r.s)); }
       const at = sample(r.seg, r.s);
-      const off = HALF_WIDTH[r.seg.kind] + BIKE_TRACK_OFFSET;
+      const off = sideHalf(r.seg, r.side) + BIKE_TRACK_OFFSET;
       obj.position.set(at.x - at.tz * off * r.side - half, roadHeight(r.seg, r.s) + 0.045, at.z + at.tx * off * r.side - half);
       obj.rotation.set(0, Math.atan2(at.tx * r.side, at.tz * r.side), 0);
       obj.updateMatrix();

@@ -1,4 +1,5 @@
 import { GRID } from '../constants';
+import { roadHalf } from './lanes';
 import { Network, HALF_WIDTH, buildPieces, sampleCurve } from './network';
 import type { RSeg } from './network';
 import type { Terrain } from '../terrain';
@@ -62,7 +63,7 @@ export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, 
     if (distance < 1.8 || sm.len - distance < 1.8) continue;
     for (const seg of net.segs.values()) {
       const hit = Network.nearestOn(seg, x, z);
-      if (hit.dist < HALF_WIDTH[seg.kind] + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'The approaches need more clearance from crossing roads';
+      if (hit.dist < roadHalf(seg) + HALF_WIDTH[roadKind] + 0.1 && Math.abs(y - roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'The approaches need more clearance from crossing roads';
     }
   }
   const copy = Network.fromPlain(net.toPlain());
@@ -82,10 +83,10 @@ export function approachProblem(net: Network, points: { x: number; z: number }[]
       for (let i = 0; i <= sm.n; i++) {
         const hit = Network.nearestOn(seg, sm.pts[i * 2], sm.pts[i * 2 + 1]);
         if (hit.s < 0.9 || seg.len - hit.s < 0.9) {
-          if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && sm.cum[i] > 1.5 && sm.len - sm.cum[i] > 1.5) return 'End the road at the bridge or tunnel entrance to connect it';
+          if (hit.dist < roadHalf(seg) + 0.5 && sm.cum[i] > 1.5 && sm.len - sm.cum[i] > 1.5) return 'End the road at the bridge or tunnel entrance to connect it';
           continue;
         }
-        if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'Keep surface roads clear of the approach ramps';
+        if (hit.dist < roadHalf(seg) + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'Keep surface roads clear of the approach ramps';
       }
     }
   }

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { sideHalf } from '../roads/lanes';
 import { GRID } from '../constants';
-import { HALF_WIDTH, isMotorway } from '../roads/network';
+import { isMotorway } from '../roads/network';
 import type { Network, RSeg } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 
@@ -194,7 +195,7 @@ export class PedestrianLayer {
       }
       const at = sample(p.seg, Math.max(0, Math.min(p.seg.len, p.s)));
       // The outer half of the pavement: parked cars take the kerb side.
-      const off = HALF_WIDTH[p.seg.kind] + 0.066;
+      const off = sideHalf(p.seg, p.side) + 0.066;
       // Right of travel along a → b is (-tz, tx) in this map's axes.
       const x = at.x - at.tz * off * p.side - half, z = at.z + at.tx * off * p.side - half;
       const y = roadHeight(p.seg, p.s) + CURB_TOP;

@@ -1,4 +1,5 @@
 import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
+import { sideHalf } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
@@ -811,7 +812,7 @@ export class Input {
         pts.push(pose.x - half, pose.z - half);
         if (d >= to) break;
       }
-      if (pts.length >= 4) b.ribbon(pts, pts.length / 2, HALF_WIDTH[seg.kind], 0.1, color);
+      if (pts.length >= 4) b.band(pts, pts.length / 2, sideHalf(seg, -1), sideHalf(seg, 1), 0.1, color);
     };
     if (op.type === 'cut') {
       const seg = this.game.net.segs.get(op.seg);

@@ -1,9 +1,10 @@
 import * as THREE from 'three';
+import { sideHalf, roadHalf } from '../roads/lanes';
 import {
   GRID, idx, inBounds, tileHash, isService, isZone, SERVICES,
   T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE, T_PARK,
 } from '../constants';
-import { HALF_WIDTH, KIND_LANE, KIND_ROAD, KIND_AVENUE, isMotorway } from '../roads/network';
+import { KIND_LANE, KIND_ROAD, KIND_AVENUE, isMotorway } from '../roads/network';
 import type { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import type { Raster } from '../roads/raster';
@@ -445,13 +446,13 @@ class ChunkBuilder {
     const { net } = this.src;
     if (net.degree(node) < 2) return 0.08;
     let hw = 0;
-    for (const s of net.segsAt(node)) if (s.id !== seg.id) hw = Math.max(hw, HALF_WIDTH[s.kind]);
+    for (const s of net.segsAt(node)) if (s.id !== seg.id) hw = Math.max(hw, roadHalf(s));
     return hw + KERB + 0.12;
   }
 
   private road(seg: RSeg): void {
     const kit = this.kit, rnd = this.rnd, fine = this.fine;
-    const hw = HALF_WIDTH[seg.kind], motor = isMotorway(seg.kind);
+    const hw = roadHalf(seg), motor = isMotorway(seg.kind);
     const gapA = this.endGap(seg, seg.a), gapB = seg.len - this.endGap(seg, seg.b);
     const at = (s: number) => sampleSeg(seg, s);
     const segHash = tileHash(seg.id * 977 + 13);
@@ -464,6 +465,7 @@ class ChunkBuilder {
         const yaw = Math.atan2(p.tx, p.tz);
         for (const side of [-1, 1]) {
           const nx = -p.tz * side, nz = p.tx * side;
+          const hw = sideHalf(seg, side);
           const mid = hw + KERB / 2;
           kit.jitter = 0;
           kit.at(p.x + nx * mid - HALF, PAVE + 0.0006, p.z + nz * mid - HALF, yaw).quad(0, 0, 0, KERB, 0.003, 0x9c998f);
@@ -524,7 +526,7 @@ class ChunkBuilder {
     if (!motor) for (let s = Math.max(gapA, 0.5) + segHash; s < gapB; s += 1.15) {
       const p = at(s);
       if (!this.inside(p.x, p.z)) continue;
-      const side = Math.floor(s) % 2 ? 1 : -1, off = hw - 0.016;
+      const side = Math.floor(s) % 2 ? 1 : -1, off = sideHalf(seg, side) - 0.016;
       const x = p.x - p.tz * off * side - HALF, z = p.z + p.tx * off * side - HALF;
       kit.jitter = 0;
       kit.at(x, ASPHALT_TOP + 0.0009, z, Math.atan2(p.tx, p.tz)).quad(0, 0, 0, 0.024, 0.05, 0x26282c);
@@ -536,12 +538,12 @@ class ChunkBuilder {
     // Kerbside furniture of the road itself: signs, meters, poles and wires.
     const { kind, level } = this.src;
     const frontage = (p: { x: number; z: number; tx: number; tz: number }, side: number): number => {
-      const d = hw + KERB + 0.4, tx = Math.floor(p.x - p.tz * d * side), tz = Math.floor(p.z + p.tx * d * side);
+      const d = sideHalf(seg, side) + KERB + 0.4, tx = Math.floor(p.x - p.tz * d * side), tz = Math.floor(p.z + p.tx * d * side);
       if (!inBounds(tx, tz)) return -1;
       const i = idx(tx, tz);
       return level[i] > 0 || !isZone(kind[i]) ? kind[i] : -1;
     };
-    const kerbAt = (p: { x: number; z: number; tx: number; tz: number }, side: number, off = hw + 0.022) => ({
+    const kerbAt = (p: { x: number; z: number; tx: number; tz: number }, side: number, off = sideHalf(seg, side) + 0.022) => ({
       x: p.x - p.tz * off * side - HALF, z: p.z + p.tx * off * side - HALF, face: Math.atan2(p.tz * side, -p.tx * side),
     });
 
@@ -563,7 +565,7 @@ class ChunkBuilder {
         const k = frontage(p, side);
         if (k !== T_COM && k !== T_OFFICE) continue;
         if (tileHash(Math.floor(s * 10) * 31 + seg.id * 7 + (side + 1)) < 0.45) continue;
-        const m = kerbAt(p, side, hw + 0.018);
+        const m = kerbAt(p, side, sideHalf(seg, side) + 0.018);
         kit.jitter = 0;
         kit.at(m.x, PAVE, m.z, m.face);
         kit.box(0, 0, 0, 0.005, 0.07, 0.005, POLE);
@@ -579,7 +581,7 @@ class ChunkBuilder {
       if (!this.inside(p.x, p.z)) continue;
       const side = rnd() < 0.5 ? -1 : 1;
       if (frontage(p, side) !== T_COM) continue;
-      const k = kerbAt(p, side, hw + KERB + 0.07);
+      const k = kerbAt(p, side, sideHalf(seg, side) + KERB + 0.07);
       if (this.src.net.onRoad(k.x + HALF, k.z + HALF, seg.id, 0.04)) continue;
       this.kiosk(k.x, k.z, k.face, rnd);
     }
@@ -591,7 +593,7 @@ class ChunkBuilder {
       for (let s = Math.max(gapA, 0.3); s < gapB; s += 1.25) {
         const p = at(s), k = frontage(p, side);
         if (k !== T_RES && k !== T_FARM && k !== 0) continue;
-        posts.push(kerbAt(p, side, hw + 0.03));
+        posts.push(kerbAt(p, side, sideHalf(seg, side) + 0.03));
       }
       const top = 0.36;
       posts.forEach((q, i) => {
@@ -726,7 +728,7 @@ class ChunkBuilder {
     let bx = a.x + b.x, bz = a.z + b.z;
     const bl = Math.hypot(bx, bz);
     if (bl < 0.2) { bx = -a.z; bz = a.x; } else { bx /= bl; bz /= bl; }
-    const hw = Math.max(HALF_WIDTH[arms[0].kind], HALF_WIDTH[arms[1].kind]);
+    const hw = Math.max(roadHalf(arms[0]), roadHalf(arms[1]));
     const r = (hw + KERB * 0.7) * 1.414;
     const x = n.x + bx * r, z = n.z + bz * r;
     if (net.onRoad(x, z, -1, 0.01)) return;

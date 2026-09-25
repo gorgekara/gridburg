@@ -43,6 +43,31 @@ export class MeshBuilder {
     return [start, this.vertexCount];
   }
 
+  /**
+   * A strip along a polyline between two sideways offsets, `left` to the left of travel and `right`
+   * to the right, either fixed or per point: a road wider on one side, or narrowing into a taper.
+   */
+  band(pts: ArrayLike<number>, count: number, left: number | ArrayLike<number>, right: number | ArrayLike<number>, y: number, color: number): [number, number] {
+    this.c.setHex(color);
+    const start = this.vertexCount;
+    for (let i = 0; i < count; i++) {
+      const x = pts[i * 2], z = pts[i * 2 + 1];
+      const i0 = Math.max(0, i - 1), i1 = Math.min(count - 1, i + 1);
+      let tx = pts[i1 * 2] - pts[i0 * 2], tz = pts[i1 * 2 + 1] - pts[i0 * 2 + 1];
+      const l = Math.hypot(tx, tz) || 1;
+      tx /= l; tz /= l;
+      const rx = -tz, rz = tx;
+      const lo = typeof left === 'number' ? left : left[i], hi = typeof right === 'number' ? right : right[i];
+      this.vert(x - rx * lo, y, z - rz * lo);
+      this.vert(x + rx * hi, y, z + rz * hi);
+      if (i > 0) {
+        const a = start + (i - 1) * 2;
+        this.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    return [start, this.vertexCount];
+  }
+
   disc(x: number, z: number, r: number, y: number, color: number, segments = 18): void {
     this.c.setHex(color);
     const center = this.vert(x, y, z);

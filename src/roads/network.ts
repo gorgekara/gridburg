@@ -1,5 +1,5 @@
 import { GRID } from '../constants';
-import { canAddLanes, laneLimits, clampLanes } from './lanes';
+import { canAddLanes, laneLimits, clampLanes, roadHalf } from './lanes';
 
 export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
@@ -331,7 +331,7 @@ export class Network {
   onRoad(x: number, z: number, except = -1, margin = 0.1): boolean {
     for (const o of this.segs.values()) {
       if (o.id === except || o.structure === 2) continue;
-      const reach = HALF_WIDTH[o.kind] + margin;
+      const reach = roadHalf(o) + margin;
       if (x < o.minX - reach || x > o.maxX + reach || z < o.minZ - reach || z > o.maxZ + reach) continue;
       if (Network.nearestOn(o, x, z).dist < reach) return true;
     }

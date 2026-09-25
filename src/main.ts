@@ -1,4 +1,5 @@
 import { ParkPathLayer } from './render/parkPaths';
+import { roadHalf } from './roads/lanes';
 import { TrolleyWireLayer } from './render/trolleyWires';
 import { BikeLaneLayer } from './render/bikeLanes';
 import * as THREE from 'three';
@@ -296,7 +297,7 @@ function deckAt(x: number, z: number, y: number): number | null {
   let best: number | null = null;
   for (const seg of game.net.segs.values()) {
     if (seg.structure === 2) continue;
-    const reach = HALF_WIDTH[seg.kind] + 0.12;
+    const reach = roadHalf(seg) + 0.12;
     if (tx < seg.minX - reach || tx > seg.maxX + reach || tz < seg.minZ - reach || tz > seg.maxZ + reach) continue;
     const hit = Network.nearestOn(seg, tx, tz);
     if (hit.dist > reach) continue;

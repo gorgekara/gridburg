@@ -1,4 +1,5 @@
 import { Network, HALF_WIDTH, KIND_HIGHWAY, isMotorway } from './network';
+import { roadHalf } from './lanes';
 import type { RSeg } from './network';
 import type { Raster } from './raster';
 import { GRID, SERVICES, T_STATION } from '../constants';
@@ -23,7 +24,7 @@ function corridor(net: Network, raster: Raster, a: number, b: number): { pts: Co
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const append = (seg: RSeg, from: number, to: number): void => {
     const steps = Math.max(1, Math.ceil(Math.abs(to - from) / 0.4));
-    const hw = HALF_WIDTH[seg.kind] ?? HALF_WIDTH[0];
+    const hw = seg ? roadHalf(seg) : HALF_WIDTH[0];
     for (let i = 0; i <= steps; i++) {
       Network.poseAt(seg, from + (to - from) * i / steps, pose);
       const last = pts.at(-1);
@@ -228,7 +229,7 @@ function trackToGate(net: Network, raster: Raster, station: number, gate: { x: n
     // Inside the map the run must stay off every highway, ramp and carriageway but the one it follows.
     if (clean && d <= toGate) for (const seg of net.segs.values()) {
       if (!isMotorway(seg.kind) || seg.id === entrance?.seg.id) continue;
-      if (Network.nearestOn(seg, x, z).dist < HALF_WIDTH[seg.kind] + 0.6) { clean = false; break; }
+      if (Network.nearestOn(seg, x, z).dist < roadHalf(seg) + 0.6) { clean = false; break; }
     }
   }
   for (let i = first; i < track.length; i++) {

@@ -1,8 +1,9 @@
 import { roadHeight } from './structures';
 import { GRID, N_TILES } from '../constants';
-import { HALF_WIDTH, ROAD_FRONTAGE } from './network';
+import { ROAD_FRONTAGE } from './network';
 import type { Network } from './network';
 import { buildingRotation } from '../placement';
+import { laneTapers, edgeAt, roadHalf } from './lanes';
 
 /** tan 10°: a road within this of an axis lays its lots out on the grid, as roads always did. */
 const NEAR_AXIS = Math.tan((10 * Math.PI) / 180);
@@ -39,11 +40,13 @@ export function rasterize(net: Network): Raster {
   const accTx = new Float32Array(N_TILES), accTz = new Float32Array(N_TILES);
   const best = new Float32Array(N_TILES).fill(1e9);
 
+  const tapers = laneTapers(net);
   for (const seg of net.segs.values()) {
-    const hw = HALF_WIDTH[seg.kind];
+    // A road with lanes added on one side is wider there: search out to the wider side.
+    const widest = roadHalf(seg);
     // An expressway is a barrier, not an address: it paves its tiles but gives nothing frontage.
     const frontage = ROAD_FRONTAGE[seg.kind] !== false;
-    const reach = hw + (frontage ? ACCESS_DEPTH : 0);
+    const reach = widest + (frontage ? ACCESS_DEPTH : 0);
     for (let i = 0; i < seg.n; i++) {
       const x0 = seg.pts[i * 2], z0 = seg.pts[i * 2 + 1];
       const x1 = seg.pts[i * 2 + 2], z1 = seg.pts[i * 2 + 3];
@@ -62,10 +65,13 @@ export function rasterize(net: Network): Raster {
           const d = Math.hypot(px - qx, pz - qz);
           const t = tz * GRID + tx;
           const distance = seg.cum[i] + (seg.cum[i + 1] - seg.cum[i]) * u;
+          // The edge on the tile's own side of the road, following any taper.
+          const side = (px - qx) * -dz + (pz - qz) * dx > 0 ? 1 : -1;
+          const hw = edgeAt(seg, side, distance, tapers);
           if (seg.structure === 2 && Math.abs(roadHeight(seg, distance)) > 0.8) continue;
           if (d < hw + 0.42) cover[t] = 1;
           if (seg.structure || !frontage) continue;
-          if (d < reach && d < best[t]) {
+          if (d < hw + ACCESS_DEPTH && d < best[t]) {
             best[t] = d;
             accSeg[t] = seg.id;
             accS[t] = seg.cum[i] + (seg.cum[i + 1] - seg.cum[i]) * u;

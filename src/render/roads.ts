@@ -8,6 +8,20 @@ import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from './crossings';
+import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
+import type { Tapers } from '../roads/lanes';
+
+/** Each side's edge at every sample of a segment, following any taper. */
+function edges(s: RSeg, tapers: Tapers, extra = 0): { left: Float32Array; right: Float32Array } {
+  const left = new Float32Array(s.n + 1), right = new Float32Array(s.n + 1);
+  for (let i = 0; i <= s.n; i++) {
+    right[i] = edgeAt(s, 1, s.cum[i], tapers) + extra;
+    left[i] = edgeAt(s, -1, s.cum[i], tapers) + extra;
+  }
+  return { left, right };
+}
+/** Whether a segment's lanes differ from its kind's, so its markings come from its own lane layout. */
+const customLanes = (s: RSeg, tapers: Tapers): boolean => !!(s.addR || s.addL) || tapers.has(s.id);
 
 const ASPHALT = 0x4c4d55;
 const CURB = 0xb9b6ad;
@@ -116,6 +130,7 @@ export class RoadLayer {
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
+    const tapers = laneTapers(net);
     const half = GRID / 2;
     this.ranges.clear();
     const world = (pts: Float32Array, count: number): Float32Array => {
@@ -132,9 +147,10 @@ export class RoadLayer {
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
-      const hw = HALF_WIDTH[s.kind];
+      const hw = roadHalf(s);
       const pts = world(s.pts, s.n + 1);
-      b.ribbon(pts, s.n + 1, hw + 0.09, 0.03, CURB);
+      const kerb = edges(s, tapers, 0.09);
+      b.band(pts, s.n + 1, kerb.left, kerb.right, 0.03, CURB);
       // Bridges get a solid swept deck in StructureLayer; only a surface road over water keeps the
       // flat deck and rails here.
       let runStart = -1;
@@ -159,21 +175,22 @@ export class RoadLayer {
       // The kerb disc only has to close the notch where two arms of a bend meet; a big disc under a
       // narrow street meeting a wide avenue used to bulge out past the street's own kerbs.
       let hw = Infinity;
-      for (const s of net.segsAt(n.id)) hw = Math.min(hw, HALF_WIDTH[s.kind]);
+      for (const s of net.segsAt(n.id)) hw = Math.min(hw, nodeEdge(s, n.id, tapers, Math.min));
       if (Number.isFinite(hw)) b.disc(n.x - half, n.z - half, hw + 0.09, 0.031, CURB);
     }
     for (const s of net.segs.values()) {
       if (s.structure === 2) continue;
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
       const pts = world(s.pts, s.n + 1);
-      this.ranges.set(s.id, b.ribbon(pts, s.n + 1, HALF_WIDTH[s.kind], 0.045, ASPHALT));
+      const e = edges(s, tapers);
+      this.ranges.set(s.id, b.band(pts, s.n + 1, e.left, e.right, 0.045, ASPHALT));
     }
     b.heightAt = null;
     // A tunnel's approaches are ordinary street up to the portal, so draw them as such, running a
     // little way into the mouth where the dark bore takes over.
     for (const s of net.segs.values()) {
       if (s.structure !== 2) continue;
-      const hw = HALF_WIDTH[s.kind], reach = Math.min(s.len / 2, PORTAL_AT + 0.45);
+      const reach = Math.min(s.len / 2, PORTAL_AT + 0.45);
       for (const [from, to] of [[0, reach], [s.len - reach, s.len]]) {
         const steps = Math.max(2, Math.ceil((to - from) / 0.3));
         const pts = new Float32Array((steps + 1) * 2);
@@ -182,18 +199,18 @@ export class RoadLayer {
           pts[k * 2] = pose.x - half;
           pts[k * 2 + 1] = pose.z - half;
         }
-        b.ribbon(pts, steps + 1, hw + 0.09, 0.03, CURB);
-        b.ribbon(pts, steps + 1, hw, 0.045, ASPHALT);
+        b.band(pts, steps + 1, sideHalf(s, -1) + 0.09, sideHalf(s, 1) + 0.09, 0.03, CURB);
+        b.band(pts, steps + 1, sideHalf(s, -1), sideHalf(s, 1), 0.045, ASPHALT);
         if (s.kind !== KIND_LANE) b.ribbon(pts, steps + 1, 0.022, 0.056, s.kind === KIND_ROAD ? DASH : LINE);
       }
     }
     for (const n of net.nodes.values()) {
       let hw = 0;
-      for (const s of net.segsAt(n.id)) hw = Math.max(hw, HALF_WIDTH[s.kind]);
+      for (const s of net.segsAt(n.id)) hw = Math.max(hw, nodeEdge(s, n.id, tapers, Math.max));
       if (hw > 0) b.disc(n.x - half, n.z - half, hw, 0.046, ASPHALT);
     }
     roundaboutFlares(net, b);
-    junctionFillets(net, b);
+    junctionFillets(net, b, tapers);
     rampGores(net, b);
 
     // All island details share one geometry and material, independent of roundabout count.
@@ -255,6 +272,7 @@ export class RoadLayer {
       const from = trimA;
       const to = s.len - trimB;
       if (to - from < 0.5) continue;
+      if (customLanes(s, tapers)) { laneMarkings(net, s, from, to, tapers, b); continue; }
       const avenue = s.kind === KIND_AVENUE, highway = s.kind === KIND_HIGHWAY, lane = s.kind === KIND_LANE;
       const wide = avenue || highway;
       // Lane lines sit between carriageway lanes: two each way on an avenue, three on an expressway.
@@ -321,17 +339,18 @@ export class RoadLayer {
     }
 
     b.heightAt = null;
+    turnArrows(net, b, crossings);
     // Crossings belong to ordinary junctions, whether signalized or uncontrolled.
     for (const [id, ends] of crossings) {
       const seg = net.segs.get(id)!;
       for (let end = 0; end < 2; end++) {
         if (!ends[end]) continue;
         Network.poseAt(seg, end === 0 ? ends[end] : seg.len - ends[end], pose);
-        const hw = HALF_WIDTH[seg.kind], x = pose.x - half, z = pose.z - half;
-        const stripes = Math.max(2, Math.floor((hw * 2 - 0.12) / 0.18));
-        const spacing = (hw * 2 - 0.12) / stripes;
+        const hwR = sideHalf(seg, 1), hwL = sideHalf(seg, -1), x = pose.x - half, z = pose.z - half;
+        const stripes = Math.max(2, Math.floor((hwR + hwL - 0.12) / 0.18));
+        const spacing = (hwR + hwL - 0.12) / stripes;
         for (let i = 0; i < stripes; i++) {
-          const across = (i - (stripes - 1) / 2) * spacing;
+          const across = (i - (stripes - 1) / 2) * spacing + (hwR - hwL) / 2;
           const px = x - pose.tz * across, pz = z + pose.tx * across;
           b.ribbon([px - pose.tx * 0.17, pz - pose.tz * 0.17, px + pose.tx * 0.17, pz + pose.tz * 0.17], 2, spacing * 0.28, 0.06, WHITE);
         }
@@ -385,7 +404,7 @@ export class RoadLayer {
       for (const seg of net.segsAt(node.id)) {
         if (signCount >= MAX_LAMPS) break;
         // On the verge just back from the crossing road, never on it.
-        const spot = net.vergeSpot(seg, node.id, HALF_WIDTH[seg.kind] + 0.2, Math.min(1.0, seg.len * 0.4));
+        const spot = net.vergeSpot(seg, node.id, sideHalf(seg, seg.b === node.id ? 1 : -1) + 0.2, Math.min(1.0, seg.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
         v3.set(spot.x - half, 0, spot.z - half);
@@ -406,7 +425,7 @@ export class RoadLayer {
       const groups = net.lightGroups(node.id);
       for (const s of net.segsAt(node.id)) {
         if (n >= MAX_LAMPS) break;
-        const spot = net.vergeSpot(s, node.id, HALF_WIDTH[s.kind] + 0.16, Math.min(1.0, s.len * 0.4));
+        const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
         v3.set(spot.x - half, 0, spot.z - half);
@@ -588,7 +607,113 @@ function rampTrims(net: Network): Map<number, [number, number]> {
  * Curved kerb corners at every junction and bend: where two arms meet at an angle, the wedge between
  * their kerbs is paved and the corner rounded off, instead of two square road ends poking into a disc.
  */
-function junctionFillets(net: Network, b: MeshBuilder): void {
+/** A segment's edge on one side, or the other, where it meets a node: `pick` chooses between them. */
+function nodeEdge(s: RSeg, node: number, tapers: Tapers, pick: (a: number, b: number) => number): number {
+  const d = s.a === node ? 0 : s.len;
+  return pick(edgeAt(s, 1, d, tapers), edgeAt(s, -1, d, tapers));
+}
+
+/**
+ * Markings for a road whose lanes were added or taken away, laid out from its own lanes: the centre
+ * line of its kind, a dashed line between lanes running the same way, edge lines that follow the
+ * kerb into any taper, and arrows in each lane of a one-way road. Lane lines stop where a lane is
+ * still opening out or closing up.
+ */
+function laneMarkings(net: Network, s: RSeg, from: number, to: number, tapers: Tapers, b: MeshBuilder): void {
+  const half = GRID / 2;
+  const strip = (s0: number, s1: number, halfW: number, off: (d: number) => number, color: number): void => {
+    const steps = Math.max(1, Math.ceil((s1 - s0) / 0.35));
+    const arr = new Float32Array((steps + 1) * 2), lo = new Float32Array(steps + 1), hi = new Float32Array(steps + 1);
+    for (let k = 0; k <= steps; k++) {
+      const d = s0 + ((s1 - s0) * k) / steps;
+      Network.poseAt(s, d, pose);
+      arr[k * 2] = pose.x - half;
+      arr[k * 2 + 1] = pose.z - half;
+      const o = off(d);
+      lo[k] = halfW - o; hi[k] = o + halfW;
+    }
+    b.band(arr, steps + 1, lo, hi, 0.056, color);
+  };
+  const t = tapers.get(s.id), len = taperLength(s);
+  const tapA = t && (!Number.isNaN(t[0]) || !Number.isNaN(t[1])) ? len : 0;
+  const tapB = t && (!Number.isNaN(t[2]) || !Number.isNaN(t[3])) ? len : 0;
+  const lf = Math.max(from, tapA), lt = Math.min(to, s.len - tapB);
+  const dashes = (off: number): void => { for (let d = lf; d + 0.5 < lt; d += 1.1) strip(d, d + 0.5, 0.018, () => off, WHITE); };
+  // Lines between neighbouring lanes going the same way, in the a→b frame.
+  for (const fwd of [true, false]) {
+    const n = lanesFor(net, s, fwd);
+    for (let k = 1; k < n; k++) {
+      const between = (laneCentre(net, s, fwd, k - 1) + laneCentre(net, s, fwd, k)) / 2;
+      dashes(fwd ? between : -between);
+    }
+  }
+  const highway = isCarriageway(s.kind) || s.kind === KIND_RAMP;
+  const wide = s.kind === KIND_AVENUE || s.kind === KIND_HIGHWAY;
+  if (s.calm) {
+    const hw = roadHalf(s);
+    for (let d = from + 0.4; d + 0.25 < to; d += 1.5) for (const off of [-hw * 0.55, 0, hw * 0.55]) strip(d, d + 0.25, hw * 0.3, () => off, WHITE);
+  }
+  if (highway || wide) {
+    // Edge lines, following the kerb in and out of a taper.
+    const inset = highway ? 0.06 : 0.07;
+    strip(from, to, 0.02, (d) => edgeAt(s, 1, d, tapers) - inset, WHITE);
+    strip(from, to, 0.02, (d) => -(edgeAt(s, -1, d, tapers) - inset), highway && s.kind !== KIND_RAMP ? LINE : WHITE);
+  }
+  if (!oneWay(s)) {
+    if (wide) {
+      const divider = s.kind === KIND_HIGHWAY ? 0.1 : 0.07;
+      strip(from, to, 0.022, () => -divider, LINE);
+      strip(from, to, 0.022, () => divider, LINE);
+    } else {
+      for (let d = from; d + 0.3 < to; d += 0.8) strip(d, d + 0.3, 0.022, () => 0, DASH);
+    }
+  } else {
+    // An arrow in every lane, sparser on a highway.
+    const n = lanesFor(net, s, true);
+    for (let d = from + 1.2; d < to - 0.4; d += highway ? 7 : 4.5) {
+      Network.poseAt(s, d, pose);
+      for (let i = 0; i < n; i++) {
+        const l = laneCentre(net, s, true, i);
+        b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.12, 0.057, WHITE);
+      }
+    }
+  }
+}
+
+/**
+ * Turn arrows painted in each lane of an approach to a junction, a little before the stop line: one
+ * arrow for each way that lane may go, bent towards its turn, so a driver (and the player) can see
+ * which lane to be in. Only where there is more than one lane to choose from.
+ */
+function turnArrows(net: Network, b: MeshBuilder, crossings: Map<number, [number, number]>): void {
+  const half = GRID / 2;
+  for (const node of net.nodes.values()) {
+    if (node.ring || net.degree(node.id) < 3) continue;
+    for (const s of net.segsAt(node.id)) {
+      if (s.structure) continue;
+      const fwd = s.b === node.id;
+      if (oneWay(s) && !fwd) continue;
+      const n = lanesFor(net, s, fwd);
+      if (n < 2) continue;
+      const back = (crossings.get(s.id)?.[fwd ? 1 : 0] ?? 0.9) + 0.95;
+      if (back > s.len * 0.6) continue;
+      const a = approachLanes(net, node.id, s, fwd);
+      Network.poseAt(s, fwd ? s.len - back : back, pose);
+      const tx = fwd ? pose.tx : -pose.tx, tz = fwd ? pose.tz : -pose.tz;
+      for (let i = 0; i < n; i++) {
+        const off = laneCentre(net, s, fwd, i), x = pose.x - tz * off - half, z = pose.z + tx * off - half;
+        for (const e of a.serve[i]) {
+          const angle = a.exits[e].angle, bend = angle > 0.35 ? 0.65 : angle < -0.35 ? -0.65 : 0;
+          const c = Math.cos(bend), sn = Math.sin(bend);
+          // Turned towards the right of travel for a positive bend.
+          b.arrow(x, z, tx * c - tz * sn, tz * c + tx * sn, 0.11, 0.058, WHITE);
+        }
+      }
+    }
+  }
+}
+
+function junctionFillets(net: Network, b: MeshBuilder, tapers: Tapers): void {
   const half = GRID / 2;
   const curve = new Float32Array(11 * 2);
   const kp = { x: 0, z: 0, tx: 0, tz: 0 };
@@ -597,18 +722,22 @@ function junctionFillets(net: Network, b: MeshBuilder): void {
     const arms = net.segsAt(n.id);
     if (arms.length < 2) continue;
     /** A point on an arm's left (+1) or right (-1) kerb `d` along it from the node, with the kerb's direction away from the node. */
-    const kerbAt = (arm: { s: RSeg; hw: number }, side: number, d: number): { x: number; z: number; tx: number; tz: number } => {
+    const kerbAt = (arm: { s: RSeg; hwP: number; hwM: number }, side: number, d: number): { x: number; z: number; tx: number; tz: number } => {
       const fromA = arm.s.a === n.id, at = Math.max(0, Math.min(arm.s.len, fromA ? d : arm.s.len - d));
       Network.poseAt(arm.s, at, kp);
       const tx = fromA ? kp.tx : -kp.tx, tz = fromA ? kp.tz : -kp.tz;
-      return { x: kp.x - tz * arm.hw * side, z: kp.z + tx * arm.hw * side, tx, tz };
+      const hw = side > 0 ? arm.hwP : arm.hwM;
+      return { x: kp.x - tz * hw * side, z: kp.z + tx * hw * side, tx, tz };
     };
     // Each arm's direction away from the node, from its first polyline piece.
     const dirs = arms.map(s => {
       const fromA = s.a === n.id, k = fromA ? 1 : s.n - 1, e = fromA ? 0 : s.n;
       let ux = s.pts[k * 2] - s.pts[e * 2], uz = s.pts[k * 2 + 1] - s.pts[e * 2 + 1];
       const l = Math.hypot(ux, uz) || 1;
-      return { s, ux: ux / l, uz: uz / l, angle: Math.atan2(uz / l, ux / l), hw: HALF_WIDTH[s.kind] };
+      // Each kerb's own distance from the centre line: +1 is to the right of the direction away from the node.
+      const at = fromA ? 0 : s.len;
+      const hwP = edgeAt(s, fromA ? 1 : -1, at, tapers), hwM = edgeAt(s, fromA ? -1 : 1, at, tapers);
+      return { s, ux: ux / l, uz: uz / l, angle: Math.atan2(uz / l, ux / l), hwP, hwM, hw: Math.max(hwP, hwM) };
     }).sort((p, q) => p.angle - q.angle);
     for (let i = 0; i < dirs.length; i++) {
       const A = dirs[i], B = dirs[(i + 1) % dirs.length];
@@ -617,10 +746,10 @@ function junctionFillets(net: Network, b: MeshBuilder): void {
       // Only real corners: not the straight-through side of a T, nor a slip road's shallow merge.
       if (gap < 0.35 || gap > 2.95) continue;
       // The kerb of A that faces B, and the kerb of B that faces A.
-      const leftA = { x: n.x - A.uz * A.hw, z: n.z + A.ux * A.hw }, rightA = { x: n.x + A.uz * A.hw, z: n.z - A.ux * A.hw };
+      const leftA = { x: n.x - A.uz * A.hwP, z: n.z + A.ux * A.hwP }, rightA = { x: n.x + A.uz * A.hwM, z: n.z - A.ux * A.hwM };
       // Which of A's kerbs faces B: the one further along B's direction.
       const facingA = (leftA.x - n.x) * B.ux + (leftA.z - n.z) * B.uz > (rightA.x - n.x) * B.ux + (rightA.z - n.z) * B.uz ? leftA : rightA;
-      const leftB = { x: n.x - B.uz * B.hw, z: n.z + B.ux * B.hw }, rightB = { x: n.x + B.uz * B.hw, z: n.z - B.ux * B.hw };
+      const leftB = { x: n.x - B.uz * B.hwP, z: n.z + B.ux * B.hwP }, rightB = { x: n.x + B.uz * B.hwM, z: n.z - B.ux * B.hwM };
       const facingB = (leftB.x - n.x) * A.ux + (leftB.z - n.z) * A.uz > (rightB.x - n.x) * A.ux + (rightB.z - n.z) * A.uz ? leftB : rightB;
       // Corner: where the two kerb lines cross.
       const det = A.ux * -B.uz - A.uz * -B.ux;

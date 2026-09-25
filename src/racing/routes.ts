@@ -1,5 +1,6 @@
 import { GRID } from '../constants';
-import { HALF_WIDTH, isMotorway } from '../roads/network';
+import { roadHalf } from '../roads/lanes';
+import { isMotorway } from '../roads/network';
 import type { Network, RSeg } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 
@@ -171,7 +172,7 @@ function racingLine(xs: Float32Array, zs: Float32Array, cum: Float32Array, loop:
 function barriersFor(net: Network, steps: Step[], loop: boolean): Barrier[] {
   const onRoute = new Set(steps.map(s => s.seg.id));
   const out: Barrier[] = [];
-  const width = Math.max(...steps.map(s => HALF_WIDTH[s.seg.kind]));
+  const width = Math.max(...steps.map(s => roadHalf(s.seg)));
   steps.forEach((step, k) => {
     if (!loop && k === steps.length - 1) return;
     const node = step.to, n = net.nodes.get(node);
@@ -187,7 +188,7 @@ function barriersFor(net: Network, steps: Step[], loop: boolean): Barrier[] {
       const d = Math.min(arm.len * 0.6, width + 0.55);
       const s = out1 ? d : arm.len - d, ix = Math.min(arm.n, Math.round(s / arm.len * arm.n));
       const x = arm.pts[ix * 2] - GRID / 2, z = arm.pts[ix * 2 + 1] - GRID / 2;
-      out.push({ x, z, yaw: Math.atan2(dx / dl, dz / dl), width: HALF_WIDTH[arm.kind] * 2 + 0.25, y: roadHeight(arm, s), arrow });
+      out.push({ x, z, yaw: Math.atan2(dx / dl, dz / dl), width: roadHalf(arm) * 2 + 0.25, y: roadHeight(arm, s), arrow });
     }
   });
   return out;
@@ -223,7 +224,7 @@ function build(kind: RaceKind, name: string, steps: Step[], net: Network, loop: 
     id: `${kind}-${steps[0].from}-${steps[steps.length - 1].to}-${Math.round(length)}`, kind, name,
     xs: Float32Array.from(xs), zs: Float32Array.from(zs), ys: Float32Array.from(ys), cum, length, laps, loop,
     ...racingLine(Float32Array.from(xs), Float32Array.from(zs), cum, loop),
-    barriers: barriersFor(net, steps, loop), width: Math.max(...steps.map(s => HALF_WIDTH[s.seg.kind])),
+    barriers: barriersFor(net, steps, loop), width: Math.max(...steps.map(s => roadHalf(s.seg))),
     reward, rivals, target: Math.round(total * 180 / 100) * 100,
   };
 }
