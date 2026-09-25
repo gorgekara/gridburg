@@ -24,7 +24,7 @@ through a resolve hook (`tests/run.mjs` pattern), run by `npm test`.
 - Undo already exists (`Game.flush` → `undoStack`, Ctrl/Cmd+Z in `main.ts`). Each commit must be a
   single `flush()`.
 - Keys: G toggles grid snap while a road tool is in hand (G still rotates buildings for service tools),
-  holding Alt gives free placement, N selects the Edit tool, H the Cut tool.
+  holding Alt gives free placement, N selects the Edit tool, Z the Cut tool.
 
 ---
 
@@ -71,7 +71,7 @@ setKindRange(id: number, s0: number, s1: number, kind: number): number[] | null
   segments through `layCurve` so new crossings become junctions. Bike and calm flags carry over. A
   node left with no segments is removed. It refuses nodes that are fixed, entry or ring, and nodes
   with any non-editable attached segment.
-- `cutRange`: s0 < 0.5 snaps to the start and len − s1 < 0.5 to the end. A whole-segment cut on a span
+- `cutRange`: s0 < 1 snaps to the start and len − s1 < 1 to the end. A whole-segment cut on a span
   is allowed; a partial one is refused.
 - `setKindRange` gives a span a whole-segment change, and refuses one-way kinds for a partial range.
 

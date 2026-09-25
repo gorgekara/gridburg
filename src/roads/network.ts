@@ -565,8 +565,8 @@ export class Network {
   }
 
   /**
-   * Remove the stretch of a road between arc lengths s0 and s1, leaving dead ends. A cut within half a
-   * cell of an end takes the end with it. Bridges and tunnels only come out whole.
+   * Remove the stretch of a road between arc lengths s0 and s1, leaving dead ends. A cut within a cell
+   * of an end takes the end with it. Bridges and tunnels only come out whole.
    */
   cutRange(id: number, s0: number, s1: number): boolean {
     const s = this.segs.get(id);
@@ -600,11 +600,11 @@ export class Network {
     return [target];
   }
 
-  /** Tidy a requested stretch: ordered, clamped, and swallowing ends closer than half a cell. */
+  /** Tidy a requested stretch: ordered, clamped, and swallowing ends closer than a cell, so no stub is left. */
   private range(s: RSeg, s0: number, s1: number): { s0: number; s1: number; whole: boolean } | null {
     if (s0 > s1) [s0, s1] = [s1, s0];
-    s0 = s0 < 0.5 ? 0 : s0;
-    s1 = s.len - s1 < 0.5 ? s.len : s1;
+    s0 = s0 < 1 ? 0 : s0;
+    s1 = s.len - s1 < 1 ? s.len : s1;
     if (s1 - s0 < 0.3) return null;
     return { s0, s1, whole: s0 === 0 && s1 === s.len };
   }

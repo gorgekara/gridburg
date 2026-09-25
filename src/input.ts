@@ -270,7 +270,7 @@ export class Input {
     if (this.suspended) return;
     if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
     const map: Record<string, Tool> = {
-      i: 'inspect', n: 'edit', h: 'cut', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
+      i: 'inspect', n: 'edit', z: 'cut', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
       '1': 'res', '2': 'com', '3': 'ind', b: 'bulldoze',
     };
     const key = e.key.toLowerCase();
@@ -297,11 +297,18 @@ export class Input {
   };
 
   // ---- picking and snapping --------------------------------------------------------------------
+  /** How many world units about 10 pixels cover under the pointer, over the 0.5 guides catch close up. */
+  private reach = 1;
+
   private pick(e: { clientX: number; clientY: number }): P | null {
     const r = this.canvas.getBoundingClientRect();
+    this.ndc.set(((e.clientX + 10 - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.ndc, this.camera);
+    const side = this.raycaster.ray.intersectPlane(this.plane, this.hit) ? this.hit.clone() : null;
     this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
+    if (side) this.reach = side.distanceTo(this.hit) / 0.5;
     if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
@@ -332,7 +339,7 @@ export class Input {
       for (const path of this.game.parkPaths) for (const end of [{ x: path.ax, z: path.az }, { x: path.bx, z: path.bz }]) if (Math.hypot(end.x - p.x, end.z - p.z) < 0.3) return end;
       return this.gridSnap(p);
     }
-    this.lastSnap = snapPoint(this.game.net, p, { grid: this.gridSnapOn, free: this.free, ...ctx });
+    this.lastSnap = snapPoint(this.game.net, p, { grid: this.gridSnapOn, free: this.free, reach: this.reach, ...ctx });
     return { x: this.lastSnap.x, z: this.lastSnap.z };
   }
 
@@ -751,8 +758,7 @@ export class Input {
   }
 
   /** Whether the pointer has moved far enough since the press to count as a drag. */
-  private editDragged(e: { clientX: number; clientY: number }): boolean {
-    const ed = this.editing!;
+  private editDragged(ed: NonNullable<Input['editing']>, e: { clientX: number; clientY: number }): boolean {
     return ed.op.type === 'move' || ed.op.type === 'bend' || Math.hypot(e.clientX - ed.screen.x, e.clientY - ed.screen.y) > 10;
   }
 
@@ -760,7 +766,7 @@ export class Input {
     const ed = this.editing!;
     const net = this.game.net;
     const op = ed.op;
-    if (!this.editDragged(e)) return;
+    if (!this.editDragged(ed, e)) return;
     if (op.type === 'move') {
       const own = new Set(net.segsAt(op.node).map(s => s.id));
       const t = this.snap(p, { excludeNodes: new Set([op.node]), excludeSegs: own });
@@ -781,7 +787,7 @@ export class Input {
     const ed = this.editing!;
     this.editing = null;
     const p = this.pick(e);
-    if (!this.editDragged(e)) {
+    if (!this.editDragged(ed, e)) {
       // A click: Upgrade widens the whole road as before, Cut removes the whole road.
       if (ed.op.type === 'kind' && p) this.click(p);
       else if (ed.op.type === 'cut') {

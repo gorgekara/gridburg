@@ -73,7 +73,7 @@ const CATEGORIES: Category[] = [
       { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
       { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Drag along a road to change just that stretch. Widening costs the difference; narrowing is free' },
       { id: 'edit', label: 'Edit roads', key: 'N', price: 'Extra length', note: 'Drag points and bends', hint: 'Drag a junction or road end to move it: the roads follow, keep their curves, and join whatever they cross. Drag the middle of a road to bend it. You pay only for road you add' },
-      { id: 'cut', label: 'Cut', key: 'H', price: 'Free', note: 'Remove a road or a stretch', hint: 'Click a road to remove it up to the next junctions, or drag along it to cut out just that stretch. Bridges and tunnels come out whole' },
+      { id: 'cut', label: 'Cut', key: 'Z', price: 'Free', note: 'Remove a road or a stretch', hint: 'Click a road to remove it up to the next junctions, or drag along it to cut out just that stretch. Bridges and tunnels come out whole' },
     ],
   },
   {
@@ -753,7 +753,7 @@ export class Hud {
           <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
           right-click or <b>Esc</b> stops. Crossings become junctions</li>
           <li><b>Snapping</b> — roads go anywhere. Points join nearby roads, catch on dashed guides (straight on, square to a road, parallel) and turn in 15° steps with whole-cell lengths. Hold <b>Alt</b> to place freely, or press <b>G</b> with a road tool for tile-centre grid snap</li>
-          <li><b>Editing</b> — <b>Edit roads (N)</b> drags junctions, ends and bends; <b>Cut (H)</b> removes a road or drags out a stretch; <b>Upgrade</b> drags to widen part of a road. <b>Ctrl+Z</b> undoes</li>
+          <li><b>Editing</b> — <b>Edit roads (N)</b> drags junctions, ends and bends; <b>Cut (Z)</b> removes a road or drags out a stretch; <b>Upgrade</b> drags to widen part of a road. <b>Ctrl+Z</b> undoes</li>
           <li><b>Height</b> — with a road in hand, <b>+</b> raises it to a bridge and <b>−</b> lowers it to a tunnel. Allow 8 cells and clear, dry ends. A road drawn across water becomes a bridge on its own</li>
           <li><b>Four road types</b> — Lane, Road, Avenue and Expressway, in rising order of width, speed and price.
           Nothing can be zoned along an expressway, so feed it with ordinary streets. <b>Upgrade (U)</b> widens a road one step</li>

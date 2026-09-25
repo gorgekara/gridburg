@@ -19,6 +19,8 @@ export interface SnapCtx {
   joins?: boolean;
   excludeNodes?: Set<number>;
   excludeSegs?: Set<number>;
+  /** Widens the guide catch when zoomed out, so it feels the same size on screen (1 = close up). */
+  reach?: number;
 }
 /** A dashed line to draw while a guide is in use, from where it comes to where it caught. */
 export interface Guide { ax: number; az: number; bx: number; bz: number }
@@ -53,13 +55,14 @@ export function snapPoint(net: Network, p: Pt, ctx: SnapCtx = {}): Snapped {
   if (ctx.free) return { x: p.x, z: p.z, label: null, guides: [] };
 
   const lines = guideLines(net, p, ctx);
+  const reach = Math.max(1, Math.min(4, ctx.reach ?? 1));
   // Two guides crossing near the pointer pin it harder than either one.
   let best: { x: number; z: number; d: number; a: Line; b: Line } | null = null;
   for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
     const x = crossing(lines[i], lines[j]);
     if (!x) continue;
     const d = Math.hypot(x.x - p.x, x.z - p.z);
-    if (d < CROSS_CATCH && (!best || d < best.d)) best = { ...x, d, a: lines[i], b: lines[j] };
+    if (d < CROSS_CATCH * reach && (!best || d < best.d)) best = { ...x, d, a: lines[i], b: lines[j] };
   }
   if (best && inMap(best)) return { x: best.x, z: best.z, label: 'Guide ×', guides: [guide(best.a, best), guide(best.b, best)] };
   let one: { x: number; z: number; d: number; line: Line } | null = null;
@@ -68,7 +71,7 @@ export function snapPoint(net: Network, p: Pt, ctx: SnapCtx = {}): Snapped {
     if (line.ray && t < 0.5) continue;
     const x = line.ox + line.dx * t, z = line.oz + line.dz * t;
     const d = Math.hypot(x - p.x, z - p.z);
-    if (d < GUIDE_CATCH && (!one || d < one.d)) one = { x, z, d, line };
+    if (d < GUIDE_CATCH * reach && (!one || d < one.d)) one = { x, z, d, line };
   }
   if (one && inMap(one)) return { x: one.x, z: one.z, label: one.line.label, guides: [guide(one.line, one)] };
 

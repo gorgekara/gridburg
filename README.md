@@ -53,6 +53,19 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
   end) or Smooth (every click continues the road as a flowing curve). Crossings become junctions
   automatically, endpoints snap to existing roads, and roads over water become bridges.
+- **Roads go anywhere, Trafficity-style.** There is no grid to snap to: a point joins a nearby road,
+  otherwise catches on dashed guides drawn out of the roads around it (straight on from a dead end,
+  square to a road, parallel to one from where you started, or where two guides cross), and otherwise
+  turns in 15° steps with whole-cell lengths. The tooltip names the snap along with the price. Hold
+  **Alt** to put a point exactly where the pointer is, or press **G** with a road tool for the old
+  tile-centre snap.
+- **Edit roads after you build them.** **Edit roads (N)** drags a junction or road end somewhere else:
+  the roads on it follow, keep their curves, merge into a node you drop them on and form junctions
+  with whatever they now cross. Drag the middle of a road to bend it. **Cut (Z)** removes a road up to
+  the next junctions on a click, or just the stretch you drag along. **Upgrade** still widens a whole
+  road on a click, and a drag changes only that stretch. Every edit previews live with its price,
+  the buildings it would pave over and anything that stops it (hills, the river, a bridge too short),
+  charges only for road it adds, and comes back with Ctrl+Z.
 - **Four road types.** Lanes ($14/cell, one shared carriageway), streets ($25, two lanes), avenues
   ($180, four lanes) and expressways ($430, six lanes, fastest, but nothing can be zoned along them).
   Every kind sits inside its corridor with a verge either side. Upgrade widens a road one step and
@@ -309,11 +322,13 @@ Restoring coverage clears the countdown. Saving and reloading preserves it.
 
 Narrow curbs meet compatible straight roadside lots. Lot strips move together toward the curb; conflicting shifts are rejected at junctions. Building fronts reach their road-facing lot boundary.
 
-Road endpoints and curve guide points snap to tile centers, so a two-lane road fills one
-square and an avenue a three-square corridor, matching the squares zoning uses. An avenue
-costs $180/cell and three times a road's upkeep, for the three tiles it takes. Tile buildings
-stay aligned inside their cells, facing the nearest cardinal direction. Connections to existing
-roads take priority, so curved roads and older saves retain their original geometry.
+Roads are placed freely, but zoning and buildings keep to the tile grid. A two-lane road on grid
+snap fills one square and an avenue a three-square corridor, matching the squares zoning uses. An
+avenue costs $180/cell and three times a road's upkeep, for the three tiles it takes. Beside a road
+within 10° of the grid, tile buildings square up with it exactly as they always did. Beside an
+angled or curved road they turn to face it and shrink across the ground to stay inside their
+cell, and their lots move up to the kerb along the road's normal. Larger sites keep to the grid,
+and back lanes only run behind rows squared to it.
 
 ## Controls
 
@@ -332,7 +347,10 @@ roads take priority, so curved roads and older saves retain their original geome
 | G, right click | Turn the building in hand before placing it |
 | F | Walk the streets at eye level; Esc or F again to return |
 | M | Drive a car around town; V switches to the driver's seat; Esc or M to park |
-| U | Upgrade a road one step wider |
+| U | Upgrade a road one step wider (drag for just a stretch) |
+| N, Z | Edit roads (drag points and bends), Cut roads |
+| G with a road tool | Toggle tile-centre grid snap |
+| Alt while drawing | Place the point exactly under the pointer |
 | C | Cycle road drawing: Straight, Curved, Smooth |
 | O, T, Y | Roundabout, Signal, One-way |
 | 1, 2, 3 | Homes, Shops, Industry |
@@ -349,7 +367,10 @@ The city autosaves in your browser, and **Share** copies a link that contains th
 - Vite + TypeScript + [three.js](https://threejs.org/), no UI framework.
 - **Roads** are a graph of nodes joined by quadratic Bezier segments (`src/roads/network.ts`). Inserting a
   road snaps its ends, splits every segment it crosses, and creates junction nodes. Roundabouts cut the
-  roads that cross a circle and join them with one-way arcs.
+  roads that cross a circle and join them with one-way arcs. Road points are snapped by
+  `src/roads/snap.ts` (joins, guide lines, 15° steps). Edits (`moveNode`, `bendSeg`, `cutRange`,
+  `setKindRange`) are planned on a scratch copy of the network by `src/roadEdit.ts`, which prices and
+  checks them for the preview, then swaps the copy in as one undoable change.
 - **Zoning stays on a tile grid.** The network is rasterized onto it (`src/roads/raster.ts`): tiles under a
   road are reserved, tiles within three rows of a road can use it, and buildings turn to face their road.
   Straight roadside lots meet narrow curbs; intersecting lot shifts are rejected at junctions.
