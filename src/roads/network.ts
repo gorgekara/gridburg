@@ -1,4 +1,5 @@
 import { GRID } from '../constants';
+import { canAddLanes, laneLimits, clampLanes } from './lanes';
 
 export const KIND_ROAD = 0;
 export const KIND_AVENUE = 1;
@@ -75,6 +76,9 @@ export interface RSeg {
   fixed: boolean;
   calm: boolean; // traffic calming: slower, but collisions are rarer
   bike?: boolean; // curbside bicycle tracks within the asphalt; absent in older cities
+  /** Lanes added (or, negative, taken away) right and left of the centre line seen a→b; absent means none. */
+  addR?: number;
+  addL?: number;
   // derived
   n: number; // number of polyline pieces
   pts: Float32Array; // (n+1) x,z pairs, uniform in t
@@ -152,6 +156,15 @@ export function buildPieces(p: { x: number; z: number }[]): Curve[] {
     sz = ez;
   }
   return out;
+}
+
+/** Two small signed lane counts in one number: (addR + 8) | (addL + 8) << 4. */
+export const packLanes = (r: number, l: number): number => (r + 8) | ((l + 8) << 4);
+export const unpackLanes = (v: number): [number, number] => [(v & 15) - 8, ((v >> 4) & 15) - 8];
+
+function copyLanes(from: RSeg, to: RSeg): void {
+  if (from.addR) to.addR = from.addR; else delete to.addR;
+  if (from.addL) to.addL = from.addL; else delete to.addL;
 }
 
 /** A control point in the frame of its chord, so it can follow when either end moves. */
@@ -366,7 +379,7 @@ export class Network {
     this.removeSegKeepNodes(segId);
     const left = this.addSeg(s.a, node.id, l.cx, l.cz, s.kind, s.oneway, s.fixed, 0.05);
     const right = this.addSeg(node.id, s.b, r.cx, r.cz, s.kind, s.oneway, s.fixed, 0.05);
-    for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; }
+    for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; copyLanes(s, child); }
     return { node, left, right };
   }
 
@@ -612,7 +625,30 @@ export class Network {
     }
     const seg = this.segs.get(target)!;
     seg.kind = kind;
+    clampLanes(seg);
     if (!canAddBikeLane(seg, this)) seg.bike = false;
+    this.version++;
+    return [target];
+  }
+
+  /**
+   * Add a lane to (delta +1) or take one from (−1) one side of a stretch of road, splitting the stretch
+   * out of the segment. `side` is +1 for the right of the centre line seen a→b, −1 for the left.
+   * Bridges and tunnels change whole. Returns the changed segment ids, or null when the road cannot
+   * have another lane there (or lose one).
+   */
+  addLaneRange(id: number, s0: number, s1: number, side: number, delta: number): number[] | null {
+    const s = this.segs.get(id);
+    if (!s || !this.editable(s) || !canAddLanes(s, this)) return null;
+    const lim = laneLimits(s);
+    const key = side > 0 ? 'addR' : 'addL';
+    const next = (s[key] ?? 0) + delta;
+    if (next < (side > 0 ? lim.minR : lim.minL) || next > (side > 0 ? lim.maxR : lim.maxL)) return null;
+    const r = this.range(s, s0, s1);
+    if (!r) return null;
+    const target = r.whole || s.structure ? id : this.isolate(id, r.s0, r.s1);
+    const seg = this.segs.get(target)!;
+    if (next) seg[key] = next; else delete seg[key];
     this.version++;
     return [target];
   }
@@ -642,6 +678,7 @@ export class Network {
     const s = this.segs.get(id);
     if (!s) return;
     s.calm = from.calm;
+    copyLanes(from, s);
     s.bike = !!from.bike && canAddBikeLane(s, this);
   }
 
@@ -677,6 +714,10 @@ export class Network {
     const t = s.a;
     s.a = s.b;
     s.b = t;
+    // What was on the right is now on the left.
+    const r = s.addR, l = s.addL;
+    if (l) s.addR = l; else delete s.addR;
+    if (r) s.addL = r; else delete s.addL;
     this.resample(s);
     this.version++;
   }
@@ -806,7 +847,10 @@ export class Network {
       // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
       // the extra kinds set bit 5 as well. Bit 6 stores bike tracks in the existing byte;
       // old saves leave it clear, and structure bits 3–4 remain unchanged.
-      segs.push([s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0) | ((s.kind & 4) << 6)]);
+      const row = [s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0) | ((s.kind & 4) << 6)];
+      // Added lanes ride along as a seventh number, only where there are any.
+      if (s.addR || s.addL) row.push(packLanes(s.addR ?? 0, s.addL ?? 0));
+      segs.push(row);
     }
     return { nextId: this.nextId, nodes, segs };
   }
@@ -817,12 +861,17 @@ export class Network {
       net.nodes.set(id, { id, x, z, light: !!(f & 1), ring: !!(f & 2), fixed: !!(f & 4), entry: !!(f & 8), stop: !!(f & 16) });
       net.adj.set(id, []);
     }
-    for (const [id, a, b, cx, cz, f] of p.segs) {
+    for (const [id, a, b, cx, cz, f, lanes] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
         id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2) | ((f >> 6) & 4), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
+      if (lanes !== undefined) {
+        const [r, l] = unpackLanes(lanes);
+        if (r) s.addR = r;
+        if (l) s.addL = l;
+      }
       net.resample(s);
       net.segs.set(id, s);
       net.adj.get(a)!.push(id);

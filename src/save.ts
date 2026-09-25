@@ -7,6 +7,7 @@ import { noPolicies, policiesFromMask, policyMask } from './policies';
 import type { Policies } from './policies';
 import { levelForPopulation, MILESTONES } from './progression';
 import type { PlainNet } from './roads/network';
+import { packLanes, unpackLanes } from './roads/network';
 import { defaultExtras, extrasFromJson, extrasToJson } from './extras';
 import type { CityExtras } from './extras';
 
@@ -100,7 +101,9 @@ export function encode(d: SaveData): string {
   // v13: everything newer as one JSON block, so later additions need no new binary layout.
   // The segment flag byte is full, so the one-way highway and ramp kinds keep their high bit here.
   const segHi = segs.flatMap((s, k) => (s[5] & 256 ? [k] : []));
-  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}) }));
+  // Added lanes: only the segments that have any, by their index in the list above.
+  const segLanes = segs.flatMap((s, k) => (s[6] !== undefined ? [[k, ...unpackLanes(s[6])]] : []));
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segLanes.length ? { segLanes } : {}) }));
   bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
   for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
@@ -224,6 +227,11 @@ export function decode(str: string): SaveData | null {
       if (json.segHi !== undefined) {
         if (!Array.isArray(json.segHi) || !json.segHi.every((k: unknown) => Number.isInteger(k) && (k as number) >= 0 && (k as number) < net.segs.length)) return null;
         for (const k of json.segHi as number[]) net.segs[k][5] |= 256;
+      }
+      if (json.segLanes !== undefined) {
+        const ok = (v: unknown): boolean => Number.isInteger(v) && Math.abs(v as number) <= 6;
+        if (!Array.isArray(json.segLanes) || !json.segLanes.every((e: unknown) => Array.isArray(e) && e.length === 3 && Number.isInteger(e[0]) && e[0] >= 0 && e[0] < net.segs.length && ok(e[1]) && ok(e[2]))) return null;
+        for (const [k, r, l] of json.segLanes as number[][]) net.segs[k][6] = packLanes(r, l);
       }
       extras = parsed; p += length;
     }
