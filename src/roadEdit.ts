@@ -1,5 +1,6 @@
 import { N_TILES, ROAD_COST, isService, isZone } from './constants';
 import { Network, measurePath, isOneWayKind } from './roads/network';
+import { canAddLanes, laneLimits, DEFAULT_LANES } from './roads/lanes';
 import type { PlainNet, RSeg } from './roads/network';
 import { STRUCTURE_COST, structurePlan, approachProblem } from './roads/structures';
 import { rasterize } from './roads/raster';
@@ -11,7 +12,9 @@ export type EditOp =
   /** Pull a road so its middle passes through (x, z). */
   | { type: 'bend'; seg: number; x: number; z: number }
   | { type: 'cut'; seg: number; s0: number; s1: number }
-  | { type: 'kind'; seg: number; s0: number; s1: number; kind: number };
+  | { type: 'kind'; seg: number; s0: number; s1: number; kind: number }
+  /** Add (delta +1) or take away (−1) a lane on one side (+1 right, −1 left, seen a→b) of a stretch. */
+  | { type: 'lane'; seg: number; s0: number; s1: number; side: number; delta: number };
 
 /**
  * An edit worked out on a scratch copy of the network, ready to preview or commit: the roads it
@@ -65,6 +68,21 @@ export function planEdit(game: EditHost, op: EditOp, plain: PlainNet = game.net.
     if (!s || !before.editable(s)) problem = "The map's own motorway cannot be cut";
     else if (!net.cutRange(op.seg, op.s0, op.s1)) problem = s.structure ? 'Bridges and tunnels come out whole: click to remove the span' : 'Drag further along the road to cut it';
     ids = [];
+  } else if (op.type === 'lane') {
+    const s = before.segs.get(op.seg);
+    ids = s ? net.addLaneRange(op.seg, op.s0, op.s1, op.side, op.delta) : null;
+    if (!s || !ids) {
+      const lim = s && laneLimits(s), key = op.side > 0 ? 'addR' : 'addL', now = s?.[key] ?? 0;
+      problem = !s || !before.editable(s) ? "The map's own motorway cannot be changed"
+        : !canAddLanes(s, before) ? 'Lanes cannot be added to a single-track lane or a roundabout'
+        : lim && op.delta > 0 && now >= (op.side > 0 ? lim.maxR : lim.maxL) ? 'This side already has as many lanes as it can take'
+        : op.delta < 0 ? 'A road keeps at least one lane each way' : 'Drag further along the road';
+    } else if (op.delta > 0) {
+      // A lane costs its share of the road's price: an avenue's four lanes make up an avenue's cost.
+      const seg = net.segs.get(ids[0])!;
+      const lanes = isOneWayKind(seg.kind) ? DEFAULT_LANES[seg.kind] : 2 * DEFAULT_LANES[seg.kind];
+      cost = Math.round(ROAD_COST[seg.kind] / lanes * seg.len * STRUCTURE_COST[seg.structure ?? 0]);
+    }
   } else {
     const s = before.segs.get(op.seg);
     ids = s && before.editable(s) ? net.setKindRange(op.seg, op.s0, op.s1, op.kind) : null;

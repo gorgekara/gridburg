@@ -9,6 +9,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 }});
 const { Network, KIND_ROAD, KIND_AVENUE, KIND_MOTORWAY } = await import('../src/roads/network.ts');
+const N = await import('../src/roads/network.ts');
 let failures = 0, checks = 0;
 function test(name, run) {
   try { run(); checks++; console.log(`✓ ${name}`); }
@@ -254,6 +255,32 @@ test('a cut costs nothing and a stretch upgrade charges only its length', () => 
   const up = planEdit(g, { type: 'kind', seg: seg.id, s0: 2, s1: 6, kind: KIND_AVENUE });
   assert.equal(up.problem, null);
   assert.equal(up.cost, Math.round((C.ROAD_COST[KIND_AVENUE] - C.ROAD_COST[KIND_ROAD]) * 4));
+});
+
+test('adding a lane costs its share of the road, taking one away is free, and both undo', () => {
+  const g = city();
+  const seg = [...g.net.segs.values()].find(s => !s.fixed && s.kind === KIND_ROAD);
+  const plan = planEdit(g, { type: 'lane', seg: seg.id, s0: 2, s1: 6, side: 1, delta: 1 });
+  assert.equal(plan.problem, null);
+  assert.equal(plan.cost, Math.round(C.ROAD_COST[KIND_ROAD] / 2 * 4));
+  const money = g.stats.money;
+  assert.ok(commitEdit(g, plan));
+  assert.ok([...g.net.segs.values()].some(s => s.addR === 1));
+  const widened = [...g.net.segs.values()].find(s => s.addR === 1);
+  const back = planEdit(g, { type: 'lane', seg: widened.id, s0: 0, s1: widened.len, side: 1, delta: -1 });
+  assert.equal(back.problem, null); assert.equal(back.cost, 0);
+  assert.ok(g.undo());
+  assert.equal(g.stats.money, money);
+  assert.ok(![...g.net.segs.values()].some(s => s.addR));
+});
+
+test('no lanes on a single-track lane, and none below one lane each way', () => {
+  const g = city();
+  g.net.insertPath([{ x: 20, z: 50 }, { x: 30, z: 50 }], N.KIND_LANE);
+  const lane = [...g.net.segs.values()].find(s => s.kind === N.KIND_LANE);
+  assert.match(planEdit(g, { type: 'lane', seg: lane.id, s0: 0, s1: lane.len, side: 1, delta: 1 }).problem, /single-track/);
+  const street = [...g.net.segs.values()].find(s => !s.fixed && s.kind === KIND_ROAD);
+  assert.match(planEdit(g, { type: 'lane', seg: street.id, s0: 0, s1: street.len, side: -1, delta: -1 }).problem, /at least one lane/);
 });
 
 console.log(`${checks} road edit checks passed; ${failures} failed`);

@@ -1,5 +1,5 @@
 import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
-import { sideHalf } from './roads/lanes';
+import { sideHalf, canAddLanes, clampLanes } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
@@ -38,7 +38,7 @@ import type { Game } from './game';
 export type Tool =
   | 'none' | 'inspect'
   | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
-  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade' | 'edit' | 'cut'
+  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade' | 'edit' | 'cut' | 'addlane'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
@@ -54,7 +54,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
-  road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, edit: 0x9fd3ff, cut: 0xe04b3a, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
+  road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, edit: 0x9fd3ff, cut: 0xe04b3a, addlane: 0x7fb8f0, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a, parking: 0x8b9096, parkingm: 0x8b9096, parkingl: 0x8b9096,
@@ -310,7 +310,7 @@ export class Input {
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
     if (side) this.reach = side.distanceTo(this.hit) / 0.5;
-    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut'].includes(this.tool)) {
+    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut', 'addlane'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
     }
@@ -713,7 +713,7 @@ export class Input {
   // ---- editing roads: drag nodes, bend, cut and re-kind stretches -----------------------------------
   /** Edit, Cut, and Upgrade (which still upgrades a whole road on a plain click). */
   private isEditTool(): boolean {
-    return this.tool === 'edit' || this.tool === 'cut' || this.tool === 'upgrade';
+    return this.tool === 'edit' || this.tool === 'cut' || this.tool === 'upgrade' || this.tool === 'addlane';
   }
 
   /** Grab whatever is under the pointer for the edit tool in hand. */
@@ -742,7 +742,12 @@ export class Input {
       if (!h) return;
       // Upgrade still widens a roundabout's ring on a click; only the stretch drag needs an ordinary road.
       if (this.tool === 'upgrade' ? h.seg.fixed : !net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be changed" : 'Roundabouts are removed with the bulldozer'); return; }
-      op = this.tool === 'cut'
+      if (this.tool === 'addlane') {
+        // The side of the centre line the press landed on is the side that gets the lane.
+        Network.poseAt(h.seg, h.s, pose);
+        const side = (p.x - h.x) * -pose.tz + (p.z - h.z) * pose.tx >= 0 ? 1 : -1;
+        op = { type: 'lane', seg: h.seg.id, s0: h.s, s1: h.s, side, delta: e.shiftKey ? -1 : 1 };
+      } else op = this.tool === 'cut'
         ? { type: 'cut', seg: h.seg.id, s0: h.s, s1: h.s }
         : { type: 'kind', seg: h.seg.id, s0: h.s, s1: h.s, kind: nextRoadKind(h.seg.kind) };
     }
@@ -784,7 +789,8 @@ export class Input {
     if (!this.editDragged(ed, e)) {
       // A click: Upgrade widens the whole road as before, Cut removes the whole road.
       if (ed.op.type === 'kind' && p) this.click(p);
-      else if (ed.op.type === 'cut') {
+      else if (ed.op.type === 'cut' || ed.op.type === 'lane') {
+        // A click takes the whole road, from junction to junction.
         const seg = this.game.net.segs.get(ed.op.seg);
         if (seg) this.applyEdit(planEdit(this.game, { ...ed.op, s0: 0, s1: seg.len }, ed.plain));
       }
@@ -830,7 +836,8 @@ export class Input {
     this.shape.visible = true;
     this.hover.visible = false;
     const snapLabel = op.type === 'move' ? this.lastSnap?.label : null;
-    const parts = [snapLabel, op.type === 'cut' ? 'Cut' : `$${plan.cost.toLocaleString()}`, plan.lost ? `−${plan.lost} building${plan.lost > 1 ? 's' : ''}` : null];
+    const what = op.type === 'cut' ? 'Cut' : op.type === 'lane' ? `${op.delta > 0 ? '+1 lane' : '−1 lane'}${plan.cost ? ` $${plan.cost.toLocaleString()}` : ''}` : `$${plan.cost.toLocaleString()}`;
+    const parts = [snapLabel, what, plan.lost ? `−${plan.lost} building${plan.lost > 1 ? 's' : ''}` : null];
     this.onCost?.(plan.problem ?? parts.filter(Boolean).join(' · '), e.clientX, e.clientY, ok);
   }
 
@@ -916,6 +923,7 @@ export class Input {
       const cost = Math.max(0, Math.round((ROAD_COST[next] - ROAD_COST[h.seg.kind]) * h.seg.len * STRUCTURE_COST[h.seg.structure ?? 0]));
       if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
       h.seg.kind = next;
+      clampLanes(h.seg);
       if (!canAddBikeLane(h.seg, net)) h.seg.bike = false;
       net.version++;
       g.spend(cost);
@@ -1090,11 +1098,15 @@ export class Input {
         label = net.editable(h.seg) ? 'Drag to bend this road' : 'This road keeps its shape';
         if (!net.editable(h.seg)) { color = BAD; ok = false; }
       } else { size = 0.5; label = 'Grab a point or a road'; }
-    } else if (['oneway', 'upgrade', 'calm', 'bikelane', 'cut'].includes(this.tool)) {
+    } else if (['oneway', 'upgrade', 'calm', 'bikelane', 'cut', 'addlane'].includes(this.tool)) {
       const h = this.roadHit(p, 0.9);
       if (h && !h.seg.fixed) {
         hx = h.x; hz = h.z; size = 0.8;
-        if (this.tool === 'cut') {
+        if (this.tool === 'addlane') {
+          const ok2 = canAddLanes(h.seg, this.game.net);
+          label = ok2 ? `${e.shiftKey ? 'Shift: remove a lane' : 'Add a lane'} on this side · drag for a stretch` : 'Lanes cannot be added here';
+          if (!ok2) { color = BAD; ok = false; }
+        } else if (this.tool === 'cut') {
           label = this.game.net.editable(h.seg) ? (h.seg.structure ? 'Click to remove the span' : 'Click to remove · drag to cut a stretch') : 'Roundabouts are removed with the bulldozer';
         } else if (this.tool === 'bikelane') {
           ok = !!h.seg.bike || (canAddBikeLane(h.seg, this.game.net) && this.game.canAfford(bikeLaneCost(h.seg)));
