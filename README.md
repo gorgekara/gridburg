@@ -59,6 +59,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   turns in 15° steps with whole-cell lengths. The tooltip names the snap along with the price. Hold
   **Alt** to put a point exactly where the pointer is, or press **G** with a road tool for the old
   tile-centre snap.
+- **Lanes that carry traffic.** Every road has lanes each way (a street one, an avenue two, an
+  expressway three) and traffic really uses them. Cars choose the lane for their next turn, change
+  lanes to get by a stopped car, and cross a junction together whenever their paths do not cross, so
+  a wider road carries more (an avenue crossing moves nearly three times the traffic it did when
+  junctions took one car at a time). **Add lane** widens one side of any stretch: drag along the
+  side you want, click for the whole road, hold Shift to take a lane away. The widening tapers in and
+  out, and one that ends at a junction becomes a turn pocket. Turn lanes are worked out
+  automatically and painted with arrows; drivers line up for a pocket before they reach it.
 - **Edit roads after you build them.** **Edit roads (N)** drags a junction or road end somewhere else:
   the roads on it follow, keep their curves, merge into a node you drop them on and form junctions
   with whatever they now cross. Drag the middle of a road to bend it. **Cut (Z)** removes a road up to
@@ -349,6 +357,7 @@ and back lanes only run behind rows squared to it.
 | M | Drive a car around town; V switches to the driver's seat; Esc or M to park |
 | U | Upgrade a road one step wider (drag for just a stretch) |
 | N, Z | Edit roads (drag points and bends), Cut roads |
+| Add lane (Roads panel) | Drag along one side of a road to add a lane there; Shift-drag removes one |
 | G with a road tool | Toggle tile-centre grid snap |
 | Alt while drawing | Place the point exactly under the pointer |
 | C | Cycle road drawing: Straight, Curved, Smooth |
@@ -371,6 +380,12 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   `src/roads/snap.ts` (joins, guide lines, 15° steps). Edits (`moveNode`, `bendSeg`, `cutRange`,
   `setKindRange`) are planned on a scratch copy of the network by `src/roadEdit.ts`, which prices and
   checks them for the preview, then swaps the copy in as one undoable change.
+- **Lanes** (`src/roads/lanes.ts`): a segment stores only the lanes added or removed on each side
+  (`addR`, `addL`), so default roads are laid out exactly as before. The module works out lane
+  positions, tapers where widths change, which lane carries on into which across a node, and each
+  approach's turn lanes. In the traffic worker every lane is its own queue; cars change lanes with a
+  gap check, and a junction admits any car whose movement (sampled from the same corner curves the
+  cars drive) does not overlap a car already crossing, with the longest waiter reserving the box.
 - **Zoning stays on a tile grid.** The network is rasterized onto it (`src/roads/raster.ts`): tiles under a
   road are reserved, tiles within three rows of a road can use it, and buildings turn to face their road.
   Straight roadside lots meet narrow curbs; intersecting lot shifts are rejected at junctions.
