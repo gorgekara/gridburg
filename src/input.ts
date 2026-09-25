@@ -92,6 +92,9 @@ export class Input {
   placeRotation = 0;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
+  /** The signal editor: offered each Signal-tool click first (true if it handled it), and asked to open on a junction. */
+  onSignalClick: ((p: { x: number; z: number }) => boolean) | null = null;
+  onSignalEdit: ((node: number) => void) | null = null;
   /** Which district the district brush paints (1..8). */
   districtBrush = 1;
   onDistrict: (() => void) | null = null;
@@ -929,15 +932,20 @@ export class Input {
       g.spend(cost);
       g.flush();
     } else if (this.tool === 'light') {
+      // With the editor open, a click on one of its arrows edits that movement.
+      if (this.onSignalClick?.(p)) return;
       const n = net.nearestNode(p.x, p.z, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Traffic lights go on junctions of three or more roads'); return; }
       if (n.ring) { this.onToast?.('Roundabouts do not need lights'); return; }
-      if (!n.light && !g.canAfford(COST_LIGHT)) { this.onToast?.('Not enough money'); return; }
-      n.light = !n.light;
-      if (n.light) n.stop = false; else delete n.signal;
+      // A signalised junction opens in the editor; the signal is taken away from there.
+      if (n.light) { this.onSignalEdit?.(n.id); return; }
+      if (!g.canAfford(COST_LIGHT)) { this.onToast?.('Not enough money'); return; }
+      n.light = true;
+      n.stop = false;
       net.version++;
-      g.spend(n.light ? COST_LIGHT : 0);
+      g.spend(COST_LIGHT);
       g.flush();
+      this.onSignalEdit?.(n.id);
     } else if (this.tool === 'stopsign') {
       const n = net.nearestNode(p.x, p.z, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Stop signs go on junctions of three or more roads'); return; }
@@ -1085,7 +1093,7 @@ export class Input {
       const sign = this.tool === 'stopsign';
       if (n && this.game.net.degree(n.id) >= 3 && !n.ring) {
         hx = n.x; hz = n.z; size = 1.4;
-        label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Remove signal' : `$${COST_LIGHT}`;
+        label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Click to edit the signal' : `$${COST_LIGHT}`;
       } else { size = 0.5; color = BAD; }
     } else if (this.tool === 'edit') {
       const net = this.game.net;

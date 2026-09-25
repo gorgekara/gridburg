@@ -535,3 +535,20 @@ body.touch canvas { touch-action: none; }
 .race-results h2 { margin: 0 0 4px; font-size: 30px; }
 .race-results p { margin: 0; color: var(--dim); }
 .race-buttons { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+/* ---- signal editor ------------------------------------------------------------------------- */
+.popover.signals { top: 62px; left: 12px; width: 300px; max-height: calc(100vh - 200px); overflow-y: auto; }
+.signal-head { display: flex; align-items: center; justify-content: space-between; }
+.signal-x { background: none; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; padding: 0 4px; }
+.signal-phases { display: flex; flex-direction: column; gap: 4px; }
+.signal-phase { display: grid; grid-template-columns: 1fr auto 26px 42px 26px 26px; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 8px; border: 1px solid transparent; }
+.signal-phase.active { border-color: var(--accent); background: rgba(255, 209, 102, 0.08); }
+.signal-name { background: none; border: 0; color: var(--fg); font: inherit; text-align: left; cursor: pointer; padding: 2px 0; }
+.signal-count { color: var(--dim); font-size: 12px; }
+.signal-secs { text-align: center; font-variant-numeric: tabular-nums; }
+.signal-step { background: rgba(255,255,255,0.07); border: 1px solid var(--line); border-radius: 6px; color: var(--fg); cursor: pointer; height: 24px; font: inherit; }
+.signal-step:disabled { opacity: 0.35; cursor: default; }
+.signal-adaptive { display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.signal-buttons { display: flex; gap: 6px; }
+.signal-buttons .mitem { flex: 1; justify-content: center; }
+.signal-remove { color: var(--neg); }

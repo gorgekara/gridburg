@@ -143,5 +143,28 @@ test('signal heads show their own approach\'s state from the junction\'s clock',
   assert.equal(any, false);
 });
 
+const { cycleMove } = await import('../src/ui/signalPanel.ts');
+const { SignalOverlay } = await import('../src/render/signalOverlay.ts');
+test('clicking an arrow cycles its movement: red, green, give way, red', () => {
+  let plan = { phases: [{ green: 8, moves: {} }] };
+  plan = cycleMove(plan, 0, 'k'); assert.equal(plan.phases[0].moves.k, 1);
+  plan = cycleMove(plan, 0, 'k'); assert.equal(plan.phases[0].moves.k, 2);
+  plan = cycleMove(plan, 0, 'k'); assert.equal(plan.phases[0].moves.k, undefined);
+});
+
+test('the overlay finds the movement arrow under a click', () => {
+  const j = junction(['W', 'E', 'N', 'S'], KIND_AVENUE);
+  const overlay = new SignalOverlay();
+  overlay.show(j.net, j.node.id, S.planFor(j.net, j.node.id), 0);
+  // Every right turn has its corner to itself: a click on the middle of its arrow finds it.
+  for (const path of overlay.paths) {
+    const turn = j.name(path.key);
+    if (!['W>S', 'S>E', 'E>N', 'N>W'].includes(turn)) continue;
+    const mid = path.pts[7];
+    assert.equal(j.name(overlay.pick(mid.x, mid.z)), turn);
+  }
+  assert.equal(overlay.pick(10, 10), null);
+});
+
 console.log(`${checks} signal checks passed; ${failures} failed`);
 if (failures) process.exit(1);

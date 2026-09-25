@@ -40,6 +40,10 @@ import { BuildingLayer } from './render/buildings';
 import { OverlayLayer } from './render/overlay';
 import { CarLayer } from './render/cars';
 import { Input } from './input';
+import { SignalOverlay } from './render/signalOverlay';
+import { SignalPanel, cycleMove } from './ui/signalPanel';
+import { planFor, clonePlan } from './roads/signals';
+import type { SignalPlan } from './roads/signals';
 import { Hud } from './ui/hud';
 import { demoCity } from './demo';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
@@ -721,6 +725,51 @@ focusCity(false);
 
 setInterval(() => { if (playing && settings.autosave) saveLocal(game.snapshot()); }, 5000);
 window.addEventListener('beforeunload', () => { if (playing && settings.autosave) saveLocal(game.snapshot()); });
+
+// ---- signal editor ---------------------------------------------------------------------------------
+// The Signal tool opens a junction's plan: phases in a panel, movements as arrows over the junction.
+const signalOverlay = new SignalOverlay();
+scene.add(signalOverlay.mesh);
+let signalEdit: { node: number; phase: number } | null = null;
+const signalPanel = new SignalPanel({
+  commit: (plan, phase) => { if (!signalEdit) return; signalEdit.phase = phase; saveSignal(plan); },
+  select: (phase) => { if (signalEdit) { signalEdit.phase = phase; refreshSignal(); } },
+  reset: () => { const n = signalEdit && game.net.nodes.get(signalEdit.node); if (!n) return; delete n.signal; signalEdit!.phase = 0; game.net.version++; game.flush(); refreshSignal(); },
+  remove: () => { const n = signalEdit && game.net.nodes.get(signalEdit.node); if (!n) return; n.light = false; delete n.signal; game.net.version++; game.flush(); closeSignal(); hud.toast('Signal removed'); },
+  close: () => closeSignal(),
+});
+uiRoot.append(signalPanel.root);
+function saveSignal(plan: SignalPlan): void {
+  const n = signalEdit && game.net.nodes.get(signalEdit.node);
+  if (!n) return;
+  n.signal = clonePlan(plan);
+  game.net.version++;
+  game.flush();
+  refreshSignal();
+}
+function closeSignal(): void { signalEdit = null; signalOverlay.hide(); signalPanel.close(); }
+function refreshSignal(): void {
+  const n = signalEdit && game.net.nodes.get(signalEdit.node);
+  if (!signalEdit || !n || !n.light) { closeSignal(); return; }
+  const plan = planFor(game.net, n.id);
+  signalEdit.phase = Math.max(0, Math.min(plan.phases.length - 1, signalEdit.phase));
+  signalOverlay.show(game.net, n.id, plan, signalEdit.phase);
+  signalPanel.open(plan, signalEdit.phase);
+}
+input.onSignalEdit = (node) => { signalEdit = { node, phase: signalEdit?.node === node ? signalEdit.phase : 0 }; refreshSignal(); };
+input.onSignalClick = (p) => {
+  if (!signalEdit) return false;
+  const n = game.net.nodes.get(signalEdit.node);
+  const key = n && Math.hypot(p.x - n.x, p.z - n.z) < 4 ? signalOverlay.pick(p.x, p.z) : null;
+  if (key && n) { saveSignal(cycleMove(planFor(game.net, n.id), signalEdit.phase, key)); audio.play('click'); return true; }
+  return false;
+};
+{
+  const onEdit = game.onEdit;
+  game.onEdit = () => { onEdit?.(); if (signalEdit) refreshSignal(); };
+  const onTool = input.onToolChange;
+  input.onToolChange = (t) => { onTool?.(t); if (t !== 'light') closeSignal(); };
+}
 
 const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
