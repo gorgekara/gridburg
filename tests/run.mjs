@@ -34,7 +34,7 @@ const { generateTerrain, WATER_EDGE, adjacentFlow, touchesWater } = await import
 const { POLICIES, noPolicies, policyEffects, policyExpense, policyMask, policiesFromMask } = await import('../src/policies.ts');
 const { ensureApproaches, APPROACH, mapGates } = await import('../src/roads/entries.ts');
 let checks = 0;
-function test(name, fn) { fn(); checks++; console.log(`✓ ${name}`); }
+function test(name, fn) { if (process.env.ONLY && !name.includes(process.env.ONLY)) return; fn(); checks++; console.log(`✓ ${name}`); }
 
 test('detailed windows stay below the old box budget and face outwards on every facade', () => {
   const b = new Builder(1);

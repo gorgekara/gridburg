@@ -123,5 +123,25 @@ test('every tile holds at most one cell, and each cell sits on or next to its ti
   }
 });
 
+const { zoneCellsUnder, ZONE_BRUSH } = await import('../src/roads/raster.ts');
+test('a zone brush dragged along a street picks up just the cells it passes over', () => {
+  const net = new Network();
+  const t = Math.tan(Math.PI / 6);
+  net.insertPath([{ x: 10, z: 10 }, { x: 50, z: 10 + 40 * t }], KIND_ROAD);
+  const r = rasterize(net);
+  const seg = [...net.segs.values()][0];
+  // Along the kerb-side row on the right of the road, from 10 to 20 cells along it.
+  const picked = new Set();
+  const pose = { x: 0, z: 0, tx: 0, tz: 0 };
+  for (let d = 10; d <= 20; d += 0.25) {
+    Network.poseAt(seg, d, pose);
+    const off = HALF_WIDTH[KIND_ROAD] + 0.59;
+    for (const i of zoneCellsUnder(r, pose.x - pose.tz * off, pose.z + pose.tx * off, ZONE_BRUSH[0])) picked.add(i);
+  }
+  assert.ok(picked.size >= 10 && picked.size <= 22, `${picked.size} cells`);
+  for (const i of picked) assert.ok(r.cell[i] <= 1, 'a small brush on the front row stays near the kerb');
+  assert.equal(zoneCellsUnder(r, 5, 70, 2.8).length, 0, 'no cells away from roads');
+});
+
 console.log(`${checks} lot checks passed; ${failures} failed`);
 if (failures) process.exit(1);

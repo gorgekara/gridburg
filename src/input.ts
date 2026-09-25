@@ -11,6 +11,7 @@ import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint } from './placement';
 import { snapPoint } from './roads/snap';
+import { zoneCellsUnder, ZONE_BRUSH } from './roads/raster';
 import type { Snapped, SnapCtx } from './roads/snap';
 import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK, T_PARKING, T_PARKING_M, T_PARKING_L } from './constants';
 import { DISTRICT_COLORS, terraformAllowed } from './extras';
@@ -22,7 +23,7 @@ export const BRUSH_RADIUS = [0.5, 1.6, 2.8];
 import * as THREE from 'three';
 import {
   T_DOCKS, T_GAS, T_HYDRO, T_NUCLEAR, T_PARK, T_PLAYGROUND, T_SPORTS, T_GARDEN, T_CLINIC, T_HOSPITAL, T_CITY_HOSPITAL, T_POLICE_HQ, T_SCHOOL, T_FIRE, T_POLICE, T_RECYCLING, T_UNIVERSITY, T_SOLAR, GRID, N_TILES, T_EMPTY, T_RES, T_COM, T_IND, T_COAL, T_WIND, T_PUMP, T_TOWER, T_OUTLET,
-  ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService,
+  ROAD_COST, COST_ZONE, COST_LIGHT, COST_STOP, COST_CALM, COST_ROUNDABOUT, SERVICES, idx, isService, isZone,
 } from './constants';
 import { MILESTONES } from './progression';
 import { isMotorway, isOneWayKind, isCarriageway, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2 } from './roads/network';
@@ -216,7 +217,12 @@ export class Input {
   }
 
   private isRectTool(): boolean {
-    return this.tool in ZONE_TOOL || ['plaza', 'lawn', 'bulldoze'].includes(this.tool);
+    return ['plaza', 'lawn', 'bulldoze'].includes(this.tool);
+  }
+
+  /** Zone tools paint the road-aligned cells along roads with a brush. */
+  private isZoneTool(): boolean {
+    return this.tool in ZONE_TOOL;
   }
 
   private isLandTool(): boolean {
@@ -434,6 +440,15 @@ export class Input {
       this.painted.clear();
       this.curTile = this.tileOf(p);
       this.paintBrush(this.curTile);
+    } else if (this.isZoneTool()) {
+      if (!this.zoneUnlocked()) return;
+      this.dragging = true;
+      this.painted.clear();
+      this.zoneErase = e.shiftKey;
+      this.zoneChanged = 0;
+      this.zoneBroke = false;
+      this.paintZone(p);
+      this.previewZone(p, e);
     } else if (this.isRectTool()) {
       this.dragging = true;
       this.startTile = this.tileOf(p);
@@ -463,6 +478,12 @@ export class Input {
       const t = this.tileOf(p);
       if (t !== this.curTile) { this.curTile = t; this.paintBrush(t); }
       this.previewBrush(t);
+    } else if (this.dragging && this.isZoneTool()) {
+      this.paintZone(p);
+      this.previewZone(p, e);
+    } else if (this.isZoneTool()) {
+      this.zoneErase = e.shiftKey;
+      this.previewZone(p, e);
     } else if (this.dragging) {
       const t = this.tileOf(p);
       if (t !== this.curTile) { this.curTile = t; this.updateRect(); }
@@ -510,6 +531,17 @@ export class Input {
     }
     if (!this.dragging) return;
     if (this.isBrushTool()) { this.dragging = false; this.painted.clear(); return; }
+    if (this.isZoneTool()) {
+      // One stroke is one change: sent to the city, and undone, together.
+      this.dragging = false;
+      this.painted.clear();
+      this.rect.count = 0;
+      if (this.zoneBroke) this.onToast?.('Not enough money');
+      if (this.zoneChanged) { this.game.spend(0); this.game.flush(); }
+      const p = this.pick(e);
+      if (p) this.previewZone(p, e);
+      return;
+    }
     this.commitRect();
     this.dragging = false;
     this.rect.count = 0;
@@ -934,6 +966,58 @@ export class Input {
     if (this.rect.instanceColor) this.rect.instanceColor.needsUpdate = true;
   }
 
+  // ---- zone brush --------------------------------------------------------------------------------
+  /** A zone stroke in progress: unzoning (Shift held at the press), cells changed, and money run out. */
+  private zoneErase = false;
+  private zoneChanged = 0;
+  private zoneBroke = false;
+
+  private zoneUnlocked(): boolean {
+    const zk = ZONE_TOOL[this.tool]!, level = this.game.stats.cityLevel;
+    if (zk === T_OFFICE && level < OFFICE_UNLOCK) { this.onToast?.('Offices unlock at Thriving town (900 residents)'); return false; }
+    if (zk === T_LEISURE && level < LEISURE_UNLOCK) { this.onToast?.('Leisure & tourism unlocks at Small town (400 residents)'); return false; }
+    return true;
+  }
+
+  /** Paint (or with Shift, clear) the zone cells under the brush, each once per stroke. */
+  private paintZone(p: P): void {
+    const g = this.game, zk = ZONE_TOOL[this.tool]!;
+    for (const t of zoneCellsUnder(g.raster, p.x, p.z, ZONE_BRUSH[this.brushSize])) {
+      if (this.painted.has(t)) continue;
+      this.painted.add(t);
+      if (this.zoneErase) {
+        if (isZone(g.kind[t]) && g.setKind(t, T_EMPTY, 0)) this.zoneChanged++;
+        continue;
+      }
+      if (!g.buildable(t) || g.kind[t] === zk || isService(g.kind[t])) continue;
+      if (!g.canAfford(COST_ZONE)) { this.zoneBroke = true; continue; }
+      if (g.setKind(t, zk, COST_ZONE)) this.zoneChanged++;
+    }
+  }
+
+  /** Show the cells under the brush, and those painted so far this stroke, turned to their roads. */
+  private previewZone(p: P, e: { clientX: number; clientY: number }): void {
+    const g = this.game, r = g.raster, half = GRID / 2, zk = ZONE_TOOL[this.tool]!;
+    const under = zoneCellsUnder(r, p.x, p.z, ZONE_BRUSH[this.brushSize]);
+    const show = new Set([...this.painted, ...under]);
+    let n = 0, cost = 0;
+    for (const t of show) {
+      const ok = this.zoneErase ? isZone(g.kind[t]) : g.buildable(t) && !isService(g.kind[t]);
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), r.face[t]);
+      m4.compose(new THREE.Vector3(r.lotX[t] - half, 0, r.lotZ[t] - half), q, one);
+      this.rect.setMatrixAt(n, m4);
+      this.rect.setColorAt(n, tmpColor.setHex(!ok ? 0x555555 : this.zoneErase ? BAD : 0xffffff));
+      n++;
+      if (ok && !this.zoneErase && under.includes(t) && g.kind[t] !== zk && !this.painted.has(t)) cost += COST_ZONE;
+    }
+    this.rect.count = n;
+    this.rect.instanceMatrix.needsUpdate = true;
+    if (this.rect.instanceColor) this.rect.instanceColor.needsUpdate = true;
+    this.hover.visible = false;
+    const label = !under.length ? 'Paint the cells along a road' : this.zoneErase ? 'Shift: unzone' : cost ? `$${cost}` : null;
+    this.onCost?.(label, e.clientX, e.clientY, true);
+  }
+
   private commitRect(): void {
     const g = this.game;
     const tiles = this.rectTiles();
@@ -952,16 +1036,6 @@ export class Input {
         if (problem === 'Not enough money') { broke = true; break; }
         if (problem) continue;
         if (g.setKind(t, k, SERVICES[k].cost)) changed++;
-      }
-    } else {
-      const zk = ZONE_TOOL[this.tool]!;
-      if (zk === T_OFFICE && g.stats.cityLevel < OFFICE_UNLOCK) { this.onToast?.('Offices unlock at Thriving town (900 residents)'); return; }
-      if (zk === T_LEISURE && g.stats.cityLevel < LEISURE_UNLOCK) { this.onToast?.('Leisure & tourism unlocks at Small town (400 residents)'); return; }
-      for (const t of tiles) {
-        if (!g.buildable(t) || g.kind[t] === zk || isService(g.kind[t])) continue;
-        if (!g.canAfford(COST_ZONE)) { broke = true; break; }
-        g.setKind(t, zk, COST_ZONE);
-        changed++;
       }
     }
     if (broke) this.onToast?.('Not enough money');

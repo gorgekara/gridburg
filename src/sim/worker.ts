@@ -1377,8 +1377,11 @@ function stepCars(dt: number): void {
         continue;
       }
 
-      // Release a junction lock, or leave the box, once clear of it.
-      if (c.lock >= 0 && c.li > c.lockLi && c.p > Math.min(0.8, seg.len * 0.5)) {
+      // Release a junction lock, or leave the box, once clear of it. On a roundabout arc that is as soon
+      // as the tail is past the node: a car queued on the arc stops short of the usual release point,
+      // and a full ring of cars each still holding the node behind them waits on itself for ever.
+      const clearOf = ringArc[leg.seg] ? Math.min(0.8, seg.len * 0.5, leg.p0 + vehicleLength(c.vehicle) / 2 + 0.12) : Math.min(0.8, seg.len * 0.5);
+      if (c.lock >= 0 && c.li > c.lockLi && c.p > clearOf) {
         if (lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
         c.lock = -1;
       }
@@ -1452,6 +1455,9 @@ function stepCars(dt: number): void {
           const booked = ringClaim[node] >= 0 ? slots[ringClaim[node]] : null;
           const bl = booked?.legs[booked.li];
           if (ringClaim[node] >= 0 && (!bl || ringArc[bl.seg] || legEndNode(bl) !== node)) ringClaim[node] = -1;
+          // A car that pulled out of a lot, or changed lanes, ahead of the one holding the booking leaves
+          // it stuck behind them for ever, and the booking with it: the front car takes the turn over.
+          else if (entering && booked && bl && leaderP === Infinity && ringClaim[node] !== slot && bl.seg === leg.seg && bl.fwd === leg.fwd && booked.p < c.p) ringClaim[node] = slot;
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
         }
         if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
@@ -1471,7 +1477,9 @@ function stepCars(dt: number): void {
             const yielding = ringArc[leg.seg] && !ringArc[hLeg.seg] && owner !== ringClaim[node] && holder.p <= holder.lockStop + 1e-3;
             if (stale || yielding) { holder.lock = -1; lockOwner[node] = -1; }
           }
-          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot;
+          // A booking holds back traffic going on round the circle, not traffic leaving it here, which only
+          // makes room; held behind a booker that is itself waiting for room, it would lock the ring.
+          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot && !!ringArc[next.seg];
           if (canGo && front && !booked && c.p >= stopP - 0.3 && lockOwner[node] < 0) {
             // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
             // before the previous one is released, and overwriting leaked that lock forever.

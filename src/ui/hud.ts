@@ -90,10 +90,10 @@ const CATEGORIES: Category[] = [
   {
     id: 'zones', label: 'Zones',
     tools: [
-      { id: 'res', label: 'Residential', key: '1', price: `${money(COST_ZONE)} / cell`, note: 'Homes', hint: 'Drag a rectangle beside a road. Buildings grow up to three cells back from it' },
-      { id: 'com', label: 'Commercial', key: '2', price: `${money(COST_ZONE)} / cell`, note: 'Shops and commerce', hint: 'Drag a rectangle beside a road. Shops want customers nearby' },
+      { id: 'res', label: 'Residential', key: '1', price: `${money(COST_ZONE)} / cell`, note: 'Homes', hint: 'Paint the cells along a road: they show while a zone tool is in hand, up to three rows back. Shift-drag unzones. Homes grow on them facing the street' },
+      { id: 'com', label: 'Commercial', key: '2', price: `${money(COST_ZONE)} / cell`, note: 'Shops and commerce', hint: 'Paint the cells along a road; Shift-drag unzones. Shops want customers nearby' },
       { id: 'office', label: 'Offices', price: `${money(COST_ZONE)} / cell`, note: 'Clean jobs · needs education', hint: 'Clean employment with no industrial pollution. Unlocks at 900 residents; upgrades need 25% then 50% education coverage' },
-      { id: 'ind', label: 'Industrial', key: '3', price: `${money(COST_ZONE)} / cell`, note: 'Jobs, pollutes', hint: 'Drag a rectangle beside a road. Pollutes the ground around it, so keep it away from homes' },
+      { id: 'ind', label: 'Industrial', key: '3', price: `${money(COST_ZONE)} / cell`, note: 'Jobs, pollutes', hint: 'Paint the cells along a road; Shift-drag unzones. Pollutes the ground around it, so keep it away from homes' },
       { id: 'farm', label: 'Farmland', price: `${money(COST_ZONE)} / cell`, note: 'Clean rural jobs', hint: 'Fields, barns and greenhouses. Meets industrial demand with few jobs but no pollution and little power; fields drink extra water' },
       { id: 'leisure', label: 'Leisure & tourism', price: `${money(COST_ZONE)} / cell`, note: 'Hotels, cafés, nightlife', hint: 'Meets commercial demand with cafés, hotels and nightlife. Pays more tax near parks and the river. Unlocks at 400 residents' },
     ],
@@ -651,7 +651,8 @@ export class Hud {
         this.ringRow = ring;
         side.append(ring);
       }
-      if (c.id === 'land' || c.id === 'districts') {
+      // The brush sizes serve the land and district brushes, and the zone brush too.
+      if (c.id === 'land' || c.id === 'districts' || c.id === 'zones') {
         const brush = el('div', 'modes');
         brush.append(el('span', 'mlabel', 'Brush'));
         for (const [size, label, ic] of [[0, 'Small brush · one cell', 'brush1'], [1, 'Medium brush · about nine cells', 'brush2'], [2, 'Large brush · about twenty-five cells', 'brush3']] as [number, string, string][]) {

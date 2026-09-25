@@ -266,3 +266,18 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
   }
   return cell;
 }
+
+/** Brush radii for painting zone cells, for the three brush sizes. */
+export const ZONE_BRUSH = [0.7, 1.6, 2.8];
+
+/** The tiles whose zone cells lie within `radius` of (x, z): what a zone brush there paints. */
+export function zoneCellsUnder(r: Raster, x: number, z: number, radius: number): number[] {
+  const out: number[] = [];
+  const x0 = Math.max(0, Math.floor(x - radius - 1)), x1 = Math.min(GRID - 1, Math.floor(x + radius + 1));
+  const z0 = Math.max(0, Math.floor(z - radius - 1)), z1 = Math.min(GRID - 1, Math.floor(z + radius + 1));
+  for (let tz = z0; tz <= z1; tz++) for (let tx = x0; tx <= x1; tx++) {
+    const i = tz * GRID + tx;
+    if (r.cell[i] >= 0 && Math.hypot(r.lotX[i] - x, r.lotZ[i] - z) < radius) out.push(i);
+  }
+  return out;
+}
