@@ -67,6 +67,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   side you want, click for the whole road, hold Shift to take a lane away. The widening tapers in and
   out, and one that ends at a junction becomes a turn pocket. Turn lanes are worked out
   automatically and painted with arrows; drivers line up for a pocket before they reach it.
+- **Stacked levels.** Every road point sits on a level: a tunnel below ground, the ground, or one,
+  two or three storeys up. Press **+** or **−** while drawing to set the level of the next point; a
+  stretch between two levels becomes a ramp (it needs four cells per level). Roads meet wherever
+  they cross at the same level on the flat, up in the air too, so elevated junctions and stacked
+  interchanges are drawn by hand; a whole level apart they pass over or under each other, and
+  anything closer is refused. Decks stand on piers placed from the road's own profile, never on the
+  road beneath, elevated junctions get a slab and column of their own, and a tunnel's portal stands
+  wherever it dips below ground. Old bridges and tunnels keep working as before.
 - **Traffic signals you design yourself.** A signal runs a plan of phases, and in each phase every
   movement through the junction (from one road into another) is green, green but giving way, or red.
   A new signal starts from a sensible plan: at a crossroads opposite roads go together with left turns
@@ -359,7 +367,7 @@ and back lanes only run behind rows squared to it.
 | Wheel | Zoom |
 | I | Inspect a building and its growth requirements |
 | L, R, V, X | Lane, Road, Avenue, Expressway |
-| + / − | Raise the road to a bridge, lower it to a tunnel |
+| + / − | The level of the next road point: tunnel, ground, or 1–3 up (ramps between) |
 | K, J | Stop signs, traffic calming |
 | G, right click | Turn the building in hand before placing it |
 | F | Walk the streets at eye level; Esc or F again to return |

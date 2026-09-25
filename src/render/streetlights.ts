@@ -1,5 +1,5 @@
 import { roadHeight } from '../roads/structures';
-import { sideHalf } from '../roads/lanes';
+import { sideHalf, roadHalf } from '../roads/lanes';
 import * as THREE from 'three';
 import { KIND_RAMP, Network } from '../roads/network';
 
@@ -41,6 +41,9 @@ export class StreetlightLayer {
         // carriageway: try the next point along instead of planting a pole in the traffic.
         // Well clear of any other road, so a lamp never stands in the paved gore beside a slip road.
         if (net.onRoad(px, pz, seg.id, 0.8)) continue;
+        // Nor under a deck passing overhead: the pole would come up through it.
+        const base = roadHeight(seg, seg.cum[i]);
+        if ([...net.segs.values()].some(o => o.structure === 1 && o.id !== seg.id && (() => { const h = Network.nearestOn(o, px, pz); return h.dist < roadHalf(o) + 1.0 && roadHeight(o, h.s) > base + 0.3; })())) continue;
         next = seg.cum[i] + 5;
         obj.position.set(px - 40, roadHeight(seg, seg.cum[i]) + 0.65, pz - 40);
         obj.updateMatrix(); this.poles.setMatrixAt(count, obj.matrix);
