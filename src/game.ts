@@ -123,7 +123,7 @@ export class Game {
         this.onInspection?.(m.report);
       } else if (m.type === 'notice') {
         this.onNotice?.(m.message);
-      } else {
+      } else if (m.type === 'frame') {
         this.carIdsPrev = this.carIdsNext; this.carIdsNext = m.carIds;
         this.carsPrev = this.carsNext;
         this.carsNext = m.cars;

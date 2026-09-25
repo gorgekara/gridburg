@@ -104,10 +104,13 @@ export type MainToWorker =
   | { type: 'funding'; key: FundingKey; value: number }
   | { type: 'policy'; id: PolicyId; on: boolean }
   | { type: 'loan'; action: 'take' | 'repay' }
-  | { type: 'inspect'; tile: number };
+  | { type: 'inspect'; tile: number }
+  /** Tests only: start these trips (by segment id and distance along it) and report traffic counters. */
+  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number }[] };
 
 export type WorkerToMain =
   | { type: 'notice'; message: string }
+  | { type: 'probe'; arrived: number; gaveUp: number; cars: number; lanes: Record<number, number[]> }
   | { type: 'inspection'; report: TileReport | null }
   | { type: 'state'; incidents: IncidentView; incidentSave: IncidentSnapshot; neglect: Uint8Array; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; maps?: CityMaps; disaster?: DisasterView | null; stats: Stats }
   | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; cars: Float32Array; segCong: Uint8Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface height of every tile holding water worth drawing (NaN elsewhere) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };

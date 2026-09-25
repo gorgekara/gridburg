@@ -98,6 +98,8 @@ let simTime = 0;
 let pop = 0, comJobs = 0, indJobs = 0, officeJobs = 0, buildings = 0;
 let commuteAvg = 0;
 let noPath = 0, gaveUp = 0;
+/** Running totals for the traffic probe tests use; never reset by the economy tick. */
+let arrivedTotal = 0, gaveUpTotal = 0;
 let subCount = 0;
 let netIncome = 0;
 const demand: [number, number, number, number] = [0, 0, 0, 0];
@@ -792,6 +794,13 @@ function spawn(dt: number): void {
  * measured in, so inner-lane cars close up until their bodies overlap, and an outer lane wide enough
  * for an avenue reaches out across the mouth of every entry arm.
  */
+/** Which lane a car is in, for the probe: before real lanes, the lane its slot draws it in. */
+function carLane(c: Car): number {
+  const slot = slots.indexOf(c);
+  const leg = c.legs[c.li], seg = segs[leg.seg];
+  return Math.round(Math.abs(laneOffset(leg.seg, seg, slot, leg, c.p)) * 10);
+}
+
 /** Travel speed on a road, slowed where the street has been calmed. */
 function segSpeed(seg: RSeg): number {
   return SPEED[seg.kind] * (seg.calm ? 0.55 : 1);
@@ -1056,6 +1065,7 @@ function stepCars(dt: number): void {
           else {
             if (c.taxiStop !== undefined) { taxiWindow++; money += 0.16 * effects.fare; }
             if (!c.through) commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
+            arrivedTotal++;
             freeCar(slot); leaderP = Infinity; }
         }
       } else if (c.p >= legEnd - 1e-4) {
@@ -1081,7 +1091,7 @@ function stepCars(dt: number): void {
         }
       }
       if (slots[slot] && c.stuck > 30) {
-        gaveUp++;
+        gaveUp++; gaveUpTotal++;
         commuteAvg = commuteAvg * 0.97 + 90 * 0.03;
         freeCar(slot);
       }
@@ -1842,6 +1852,21 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       inspected = Number.isInteger(m.tile) && m.tile >= 0 && m.tile < N_TILES ? m.tile : -1;
       postInspection();
       break;
+    case 'probe': {
+      const index = new Map(segs.map((s, i) => [s.id, i]));
+      for (const t of m.trips ?? []) {
+        const a = index.get(t.a), b = index.get(t.b);
+        if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1);
+      }
+      const lanes: Record<number, number[]> = {};
+      for (const c of slots) {
+        if (!c) continue;
+        const id = segs[c.legs[c.li].seg].id;
+        (lanes[id] ??= [])[carLane(c)] = ((lanes[id] ??= [])[carLane(c)] ?? 0) + 1;
+      }
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes });
+      break;
+    }
     case 'warm': {
       commuteAvg = 0;
       for (let n = 0; n < m.ticks; n++) { spreadPollution(); census(); refreshMaps(); grow(); }
