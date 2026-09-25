@@ -90,6 +90,9 @@ function test(name, run) {
 // Before real lanes (one car in a junction at a time, lanes fixed by slot) these crossings managed
 // 235 trips on streets and 286 on avenues in 150 s.
 const street = crossing(cross(N.KIND_ROAD), 150);
+const lit = cross(N.KIND_ROAD); lit.nearestNode(40, 40, 0.1).light = true;
+const signalled = crossing(lit, 150);
+console.log(`  signalled street crossing: ${signalled.arrived} trips in 150 s, ${signalled.gaveUp} gave up`);
 const avenue = crossing(cross(N.KIND_AVENUE), 150);
 console.log(`  street crossing: ${street.arrived} trips in 150 s, ${street.gaveUp} gave up`);
 console.log(`  avenue crossing: ${avenue.arrived} trips in 150 s, ${avenue.gaveUp} gave up, ${Math.round(avenue.rightShare * 100)}% in the right lane at the line`);
@@ -100,6 +103,9 @@ test('an avenue crossing carries at least half as much again as with one car in 
 test('a street crossing is no worse than before', () => {
   assert.ok(street.arrived >= 0.9 * 235, `${street.arrived} trips`);
   assert.ok(street.gaveUp <= street.arrived * 0.1, `${street.gaveUp} gave up`);
+});
+test('cars queued at a red light do not hold up the green traffic', () => {
+  assert.ok(signalled.arrived >= 200, `${signalled.arrived} trips`);
 });
 test('both lanes of an avenue carry traffic', () => {
   for (const [id, counts] of Object.entries(avenue.lanes)) assert.ok((counts[0] ?? 0) > 0 && (counts[1] ?? 0) > 0, `segment ${id}: ${counts}`);

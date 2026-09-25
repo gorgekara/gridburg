@@ -1,4 +1,5 @@
-import { Network, HALF_WIDTH } from '../roads/network';
+import { Network } from '../roads/network';
+import { laneCentre, sideHalf } from '../roads/lanes';
 import type { RSeg } from '../roads/network';
 import { GRID, T_BUS, T_STATION, T_AIRPORT, T_SUBWAY, T_TROLLEY, T_TAXI, SERVICES } from '../constants';
 export type TransitMode = 'bus' | 'trolley' | 'rail' | 'subway';
@@ -99,18 +100,18 @@ export function trolleyRoute(net: Network, startId: number, startS: number, endI
   }
 }
 
-/** Trolleys use one consistent existing motor lane so their poles follow the contact wires. */
-export const trolleyLaneOffset = (seg: RSeg): number => seg.kind === 1 ? (seg.oneway ? 0.43 : 0.64) : 0.18;
+/** Trolleys keep to the kerb lane, wherever lanes have put it, so their poles follow the contact wires. */
+export const trolleyLaneOffset = (net: Network, seg: RSeg, fwd: boolean): number => laneCentre(net, seg, fwd, 0);
 export function trolleyPath(net: Network, startId: number, startS: number, endId: number, endS: number): { x: number; z: number; poleOffset: number }[] {
   const legs = trolleyRoute(net, startId, startS, endId, endS);
   const out: { x: number; z: number; poleOffset: number }[] = [], pose = { x: 0, z: 0, tx: 0, tz: 0 };
   for (const leg of legs ?? []) {
     const seg = net.segs.get(leg.seg)!, count = Math.max(1, Math.ceil((leg.p1 - leg.p0) / 0.25));
-    const offset = trolleyLaneOffset(seg) * (leg.fwd ? 1 : -1);
+    const lane = trolleyLaneOffset(net, seg, leg.fwd), offset = lane * (leg.fwd ? 1 : -1);
     for (let i = 0; i <= count; i++) {
       const p = leg.p0 + (leg.p1 - leg.p0) * i / count;
       Network.poseAt(seg, leg.fwd ? p : seg.len - p, pose);
-      out.push({ x: pose.x - pose.tz * offset, z: pose.z + pose.tx * offset, poleOffset: HALF_WIDTH[seg.kind] + 0.39 - trolleyLaneOffset(seg) });
+      out.push({ x: pose.x - pose.tz * offset, z: pose.z + pose.tx * offset, poleOffset: sideHalf(seg, leg.fwd ? 1 : -1) + 0.39 - lane });
     }
   }
   return out;

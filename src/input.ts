@@ -974,6 +974,8 @@ export class Input {
       if (!s.oneway) { s.oneway = true; this.flipped.delete(s.id); }
       else if (!this.flipped.has(s.id)) { net.reverseSeg(s.id); this.flipped.add(s.id); }
       else { s.oneway = false; this.flipped.delete(s.id); }
+      // One-way and two-way roads have different lane limits.
+      clampLanes(s);
       net.version++;
       g.spend(0);
       g.flush();

@@ -232,5 +232,25 @@ test('the raster paves the widened side and leaves the other alone', () => {
   assert.equal(after[at(30, 28)], before[at(30, 28)], 'north is as it was');
 });
 
+test('switching a road between one-way and two-way keeps its lanes within limits', () => {
+  const { s } = road(KIND_ROAD);
+  s.addR = 3; s.addL = 3;
+  s.oneway = true; L.clampLanes(s);
+  assert.ok(L.lanesFor(new Network(), s, true) <= 6, 'no more than six one way');
+  const av = road(KIND_AVENUE, true).s;
+  av.addR = -2;
+  av.oneway = false; L.clampLanes(av);
+  assert.ok(L.lanesFor(new Network(), av, true) >= 1 && L.lanesFor(new Network(), av, false) >= 1);
+});
+
+const { trolleyLaneOffset } = await import('../src/sim/transit.ts');
+test('trolleybuses keep to the kerb lane, wherever an added lane puts it', () => {
+  const { net, s } = road(KIND_AVENUE);
+  assert.ok(close(trolleyLaneOffset(net, s, true), 0.645));
+  s.addR = 1;
+  assert.ok(close(trolleyLaneOffset(net, s, true), 1.075));
+  assert.ok(close(trolleyLaneOffset(net, s, false), 0.645));
+});
+
 console.log(`${checks} lane checks passed; ${failures} failed`);
 if (failures) process.exit(1);

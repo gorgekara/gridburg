@@ -6,7 +6,7 @@ import { T_FIRE, T_POLICE, T_POLICE_HQ, T_DOCKS, DOCK_JOBS, DOCK_CATCH } from '.
 import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
-import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute, trolleyLaneOffset } from './transit';
+import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute } from './transit';
 import type { TransitNetwork } from './transit';
 import {
   GRID, N_TILES, MAX_CARS, SIM_HZ, T_RES, T_COM, T_IND, T_PUMP, T_TOWER, T_OUTLET,
@@ -905,7 +905,6 @@ function rampOffset(segIndex: number, seg: RSeg, progress: number): number {
  */
 function latOf(c: Car, li: number, p: number): number {
   const leg = c.legs[li], seg = segs[leg.seg];
-  if (c.vehicle === 8) return trolleyLaneOffset(seg);
   const along = leg.fwd ? p : seg.len - p;
   let lat: number;
   if (li === c.li) {
@@ -928,7 +927,7 @@ function carPoseAt(leg: Leg, progress: number, type: number, lane: number): Vehi
 /** A pose in lane `lane` of a leg, for placing a car before it has a record (spawning, lining up on a ring). */
 function carPose(leg: Leg, progress: number, type: number, lane = 0): VehiclePose {
   const seg = segs[leg.seg];
-  const lat = type === 8 ? trolleyLaneOffset(seg) : ringArc[leg.seg] ? 0 : centreOf(leg, lane) + rampOffset(leg.seg, seg, leg.fwd ? progress : seg.len - progress) * (leg.fwd ? 1 : -1);
+  const lat = ringArc[leg.seg] ? 0 : centreOf(leg, type === 8 ? 0 : lane) + rampOffset(leg.seg, seg, leg.fwd ? progress : seg.len - progress) * (leg.fwd ? 1 : -1);
   return carPoseAt(leg, progress, type, lat);
 }
 
@@ -1085,7 +1084,8 @@ function gapIn(c: Car, slot: number, lane: number): boolean {
  * there (overtaking, now and then). The car switches queues at once and slides across as it drives.
  */
 function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck: boolean): void {
-  if (c.chT >= 0 || simTime < c.lcCool || c.vehicle === 8 || c.working) return;
+  // Once admitted to a junction box the movement it was checked for is fixed.
+  if (c.chT >= 0 || simTime < c.lcCool || c.vehicle === 8 || c.working || c.box >= 0) return;
   const leg = c.legs[c.li];
   if (ringArc[leg.seg] || !c.legs[c.li + 1]) return;
   const n = legLanes(leg);
@@ -1270,7 +1270,7 @@ function stepCars(dt: number): void {
       // A finished lane change; one that has been stuck for a while goes back to where it was.
       if (c.chT >= 0) {
         if (Math.max((c.p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME) >= 1) c.chT = -1;
-        else if (c.stuck > 3) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
+        else if (c.stuck > 3 && c.box < 0) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
       }
       considerLaneChange(c, slot, leaderP - c.p, leaderStuck);
 
@@ -1298,9 +1298,10 @@ function stepCars(dt: number): void {
         const clear = Math.max(GAP[segs[next.seg].kind], (vehicleLength(c.vehicle) + vehicleLength(3)) / 2 + 0.06);
         let canGo = laneTail[nextKey] - next.p0 > Math.min(clear, (next.p1 - next.p0) * 0.6);
         const type = nodeType[node];
+        let redLight = false;
         if (type === J_LIGHT && !pastStop) {
           const g = nodeGroups[node].get(leg.seg) ?? 0;
-          if (!isGreen(simTime, nodeIds[node], g)) canGo = false;
+          if (!isGreen(simTime, nodeIds[node], g)) { canGo = false; redLight = true; }
         }
         // An all-way stop: come to a halt at the line, then take your turn like any other junction.
         if (type === J_STOP && !pastStop && c.stopAt !== node) {
@@ -1373,7 +1374,8 @@ function stepCars(dt: number): void {
               if (boxWait[node] === slot) boxWait[node] = -1;
             } else canGo = false;
           } else canGo = false;
-          if (!canGo && atLine && c.stuck > 4 && boxWait[node] < 0) boxWait[node] = slot;
+          // Waiting out a red light is not waiting for the box: it must not hold up the green traffic.
+          if (!canGo && !redLight && atLine && c.stuck > 4 && boxWait[node] < 0) boxWait[node] = slot;
         }
         if (!canGo) maxP = Math.min(maxP, pastStop ? legEnd - 0.02 : stopP);
       }
