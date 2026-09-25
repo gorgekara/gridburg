@@ -63,10 +63,10 @@ export class SignalOverlay {
       const color = state === 1 ? GREEN : state === 2 ? YIELD : RED;
       const flat: number[] = [];
       for (const p of pts) flat.push(p.x - half, p.z - half);
-      b.ribbon(flat, pts.length, state ? 0.05 : 0.03, 0.2, color);
+      b.ribbon(flat, pts.length, state ? 0.05 : 0.03, 0.07, color);
       const last = pts[pts.length - 1], prev = pts[pts.length - 3];
       const dl = Math.hypot(last.x - prev.x, last.z - prev.z) || 1;
-      b.arrow(last.x - half, last.z - half, (last.x - prev.x) / dl, (last.z - prev.z) / dl, state ? 0.16 : 0.11, 0.201, color);
+      b.arrow(last.x - half, last.z - half, (last.x - prev.x) / dl, (last.z - prev.z) / dl, state ? 0.16 : 0.11, 0.071, color);
     }
     this.mesh.geometry.dispose();
     this.mesh.geometry = b.build();
@@ -80,7 +80,7 @@ export class SignalOverlay {
 
   /** The movement whose arrow passes nearest (x, z), in map coordinates, if any is close enough. */
   pick(x: number, z: number): string | null {
-    let best: string | null = null, bd = 0.35;
+    let best: string | null = null, bd = 0.45;
     // Movements from one lane share their first stretch and movements into one lane their last, so
     // only the middle of each arrow, where they are apart, counts.
     for (const p of this.paths) for (const q of p.pts.slice(3, 12)) {

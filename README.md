@@ -67,6 +67,15 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   side you want, click for the whole road, hold Shift to take a lane away. The widening tapers in and
   out, and one that ends at a junction becomes a turn pocket. Turn lanes are worked out
   automatically and painted with arrows; drivers line up for a pocket before they reach it.
+- **Traffic signals you design yourself.** A signal runs a plan of phases, and in each phase every
+  movement through the junction (from one road into another) is green, green but giving way, or red.
+  A new signal starts from a sensible plan: at a crossroads opposite roads go together with left turns
+  giving way, at a T the through road goes first and then the side road. Click a signalised junction
+  with the Signal tool to open the editor: its phases with their green times, and arrows over the
+  junction for every movement, coloured by what the selected phase shows; click an arrow to cycle it.
+  Add, remove and retime phases, or turn on **adaptive** timing, which cuts a phase nobody is using
+  and stretches a busy one up to twice its green. Turners waiting on a give-way green go at the end of
+  it, the lamps show each approach's real state, and fire engines and police still go through on red.
 - **Edit roads after you build them.** **Edit roads (N)** drags a junction or road end somewhere else:
   the roads on it follow, keep their curves, merge into a node you drop them on and form junctions
   with whatever they now cross. Drag the middle of a road to bend it. **Cut (Z)** removes a road up to
@@ -361,7 +370,7 @@ and back lanes only run behind rows squared to it.
 | G with a road tool | Toggle tile-centre grid snap |
 | Alt while drawing | Place the point exactly under the pointer |
 | C | Cycle road drawing: Straight, Curved, Smooth |
-| O, T, Y | Roundabout, Signal, One-way |
+| O, T, Y | Roundabout, Signal (click a signalised junction to edit its plan), One-way |
 | 1, 2, 3 | Homes, Shops, Industry |
 | B | Bulldoze |
 | P | Pollution view |
@@ -380,6 +389,11 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   `src/roads/snap.ts` (joins, guide lines, 15° steps). Edits (`moveNode`, `bendSeg`, `cutRange`,
   `setKindRange`) are planned on a scratch copy of the network by `src/roadEdit.ts`, which prices and
   checks them for the preview, then swaps the copy in as one undoable change.
+- **Signals** (`src/roads/signals.ts`): a plan is a list of phases, each with a green time and a state
+  for movements keyed by the segments they come in and go out on. Plans live on nodes and move with
+  splits and reversals; one that no longer fits its junction gives way to the default. The traffic
+  worker runs a phase clock per signal (adaptive ones reading the queues four times a second) and sends
+  the clocks with every frame for the lamps.
 - **Lanes** (`src/roads/lanes.ts`): a segment stores only the lanes added or removed on each side
   (`addR`, `addL`), so default roads are laid out exactly as before. The module works out lane
   positions, tapers where widths change, which lane carries on into which across a node, and each
