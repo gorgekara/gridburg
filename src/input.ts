@@ -2,7 +2,7 @@ import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
-import { structurePlan, roadHeight, BRIDGE_RISE, STRUCTURE_COST } from './roads/structures';
+import { structurePlan, roadHeight, approachProblem, STRUCTURE_COST } from './roads/structures';
 import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
@@ -129,7 +129,7 @@ export class Input {
   private rightDown: { x: number; y: number } | null = null;
 
   /** A road edit in progress: what was grabbed, the network as it stood, and the latest plan. */
-  private editing: { op: EditOp; plain: PlainNet; screen: { x: number; y: number }; plan: EditPlan | null } | null = null;
+  private editing: { op: EditOp; plain: PlainNet; screen: { x: number; y: number }; plan: EditPlan | null; grab: P; mid: P; moved?: boolean } | null = null;
 
   // Rectangle tools.
   private dragging = false;
@@ -575,21 +575,7 @@ export class Input {
       const plan = structurePlan(this.game.net, this.game.terrain, this.game.kind, path, this.drawKind(), structure);
       return typeof plan === 'string' ? plan : null;
     }
-    for (const c of buildPieces(path)) {
-      const sm = sampleCurve(c);
-      for (const seg of this.game.net.segs.values()) {
-        if (!seg.structure) continue;
-        for (let i = 0; i <= sm.n; i++) {
-          const hit = Network.nearestOn(seg, sm.pts[i * 2], sm.pts[i * 2 + 1]);
-          if (hit.s < 0.9 || seg.len - hit.s < 0.9) {
-            if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && sm.cum[i] > 1.5 && sm.len - sm.cum[i] > 1.5) return 'End the road at the bridge or tunnel entrance to connect it';
-            continue;
-          }
-          if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.4 * (BRIDGE_RISE / 2.4)) return 'Keep surface roads clear of the approach ramps';
-        }
-      }
-    }
-    return null;
+    return approachProblem(this.game.net, path);
   }
 
   /** The kind of road the tool in hand draws, at whatever height it is set to. */
@@ -734,6 +720,7 @@ export class Input {
     const net = this.game.net;
     const screen = { x: e.clientX, y: e.clientY };
     let op: EditOp | null = null;
+    let mid: P = { x: p.x, z: p.z };
     if (this.tool === 'edit') {
       const node = net.nearestNode(p.x, p.z, 0.9);
       if (node && net.degree(node.id)) {
@@ -745,21 +732,27 @@ export class Input {
         if (!h) return;
         if (!net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be reshaped" : 'Roundabouts keep their shape'); return; }
         op = { type: 'bend', seg: h.seg.id, x: h.x, z: h.z };
+        // The road's middle moves with the pointer from wherever it was grabbed, so it never jumps.
+        const a = net.nodes.get(h.seg.a)!, b = net.nodes.get(h.seg.b)!;
+        mid = { x: (a.x + b.x) / 4 + h.seg.cx / 2, z: (a.z + b.z) / 4 + h.seg.cz / 2 };
       }
     } else {
       const h = this.roadHit(p, 0.9);
       if (!h) return;
-      if (!net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be changed" : 'Roundabouts are removed with the bulldozer'); return; }
+      // Upgrade still widens a roundabout's ring on a click; only the stretch drag needs an ordinary road.
+      if (this.tool === 'upgrade' ? h.seg.fixed : !net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be changed" : 'Roundabouts are removed with the bulldozer'); return; }
       op = this.tool === 'cut'
         ? { type: 'cut', seg: h.seg.id, s0: h.s, s1: h.s }
         : { type: 'kind', seg: h.seg.id, s0: h.s, s1: h.s, kind: nextRoadKind(h.seg.kind) };
     }
-    this.editing = { op, plain: net.toPlain(), screen, plan: null };
+    this.editing = { op, plain: net.toPlain(), screen, plan: null, grab: { x: p.x, z: p.z }, mid };
   }
 
   /** Whether the pointer has moved far enough since the press to count as a drag. */
   private editDragged(ed: NonNullable<Input['editing']>, e: { clientX: number; clientY: number }): boolean {
-    return ed.op.type === 'move' || ed.op.type === 'bend' || Math.hypot(e.clientX - ed.screen.x, e.clientY - ed.screen.y) > 10;
+    // Once it has moved it stays a drag, even brought back to where it started.
+    if (!ed.moved && Math.hypot(e.clientX - ed.screen.x, e.clientY - ed.screen.y) > 6) ed.moved = true;
+    return !!ed.moved;
   }
 
   private dragEdit(p: P, e: PointerEvent): void {
@@ -773,7 +766,7 @@ export class Input {
       op.x = t.x; op.z = t.z;
     } else if (op.type === 'bend') {
       this.lastSnap = null;
-      op.x = p.x; op.z = p.z;
+      op.x = ed.mid.x + p.x - ed.grab.x; op.z = ed.mid.z + p.z - ed.grab.z;
     } else {
       const seg = net.segs.get(op.seg);
       if (!seg) return;

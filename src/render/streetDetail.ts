@@ -1382,8 +1382,9 @@ class ChunkBuilder {
   private remember(x: number, y: number, z: number, yaw: number, scale = 1): void { this.saved = [x, y, z, yaw, scale]; }
   /** Local lot coordinates to the scene, for helpers that need a scene point. */
   private toScene(lx: number, lz: number): [number, number] {
-    const [x, , z, yaw] = this.saved;
-    return [x + lx * Math.cos(yaw) + lz * Math.sin(yaw), z - lx * Math.sin(yaw) + lz * Math.cos(yaw)];
+    const [x, , z, yaw, k] = this.saved;
+    const c = Math.cos(yaw) * k, s = Math.sin(yaw) * k;
+    return [x + lx * c + lz * s, z - lx * s + lz * c];
   }
 
   private chair(x: number, z: number, yaw: number, color: number): void {

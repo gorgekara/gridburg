@@ -1,7 +1,7 @@
 import { N_TILES, ROAD_COST, isService, isZone } from './constants';
 import { Network, measurePath, isOneWayKind } from './roads/network';
 import type { PlainNet, RSeg } from './roads/network';
-import { STRUCTURE_COST, structurePlan } from './roads/structures';
+import { STRUCTURE_COST, structurePlan, approachProblem } from './roads/structures';
 import { rasterize } from './roads/raster';
 import type { Game } from './game';
 
@@ -102,6 +102,8 @@ function shapeProblem(game: EditHost, net: Network, segs: RSeg[]): string | null
     }
     if (measurePath(path, game.hillMask).wet > 0) return 'Roads cannot climb raised ground: lower it first';
     if (measurePath(path, game.terrain.water).wet > 0) return 'Keep the road out of the river, or draw a bridge';
+    const clash = approachProblem(net, path);
+    if (clash) return clash;
   }
   return null;
 }

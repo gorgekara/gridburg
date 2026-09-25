@@ -153,6 +153,37 @@ test('moving a road keeps its bike lanes and calming', () => {
   assert.ok(moved.bike && moved.calm);
 });
 
+test('dropping a dead end on the middle of a road joins it there', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 30 }, { x: 40, z: 30 }], KIND_ROAD);
+  net.insertPath([{ x: 30, z: 20 }, { x: 30, z: 25 }], KIND_ROAD);
+  assert.ok(net.moveNode(nodeAt(net, 30, 25).id, 30.2, 30.3));
+  const joint = [...net.nodes.values()].find(n => net.degree(n.id) === 3);
+  assert.ok(joint, 'a T-junction formed');
+  assert.ok(Math.abs(joint.z - 30) < 0.05);
+  assert.equal(net.segs.size, 3);
+});
+
+test('merging onto a road that already runs between the same nodes does not shred it', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 30 }, { x: 30, z: 30 }], KIND_ROAD);
+  net.insertPath([{ x: 20, z: 30 }, { x: 30, z: 31 }], KIND_AVENUE);
+  assert.ok(net.moveNode(nodeAt(net, 30, 30).id, 30, 31));
+  assert.equal(net.segs.size, 1, [...net.segs.values()].map(s => s.len).join(','));
+  assert.equal(net.nodes.size, 2);
+});
+
+test('cutting an arm off an all-way stop takes the stop signs with it', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 30 }, { x: 40, z: 30 }], KIND_ROAD);
+  net.insertPath([{ x: 30, z: 20 }, { x: 30, z: 30 }], KIND_ROAD);
+  const j = nodeAt(net, 30, 30);
+  j.stop = true;
+  const arm = net.segsAt(j.id).find(s => net.nodes.get(s.a === j.id ? s.b : s.a).z < 25);
+  assert.ok(net.cutRange(arm.id, 0, arm.len));
+  assert.equal(j.stop, false);
+});
+
 // ---- planning and committing edits in a whole city ---------------------------------------------------
 globalThis.Worker = class { postMessage() {} };
 const C = await import('../src/constants.ts');
@@ -202,6 +233,16 @@ test('bending through a building counts it as paved over', () => {
   assert.equal(plan.lost, 1);
   const mid = plan.net.segs.get(plan.ids[0]);
   assert.ok(Math.abs(mid.pts[(mid.n >> 1) * 2 + 1] - 36.5) < 0.05, 'the road passes through the pointer');
+});
+
+test('a street bent through a bridge approach is refused', () => {
+  const g = city();
+  g.net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 40 }], KIND_ROAD, false, 1);
+  g.flush();
+  const seg = [...g.net.segs.values()].find(s => !s.structure && !s.fixed && s.kind === KIND_ROAD);
+  // Pull the street's middle across the bridge's southern ramp, where the deck is still low.
+  const plan = planEdit(g, { type: 'bend', seg: seg.id, x: 42, z: 21.5 });
+  assert.match(plan.problem ?? '', /approach ramps|entrance/);
 });
 
 test('a cut costs nothing and a stretch upgrade charges only its length', () => {

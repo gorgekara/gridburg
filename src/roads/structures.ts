@@ -69,3 +69,25 @@ export function structurePlan(net: Network, terrain: Terrain, kind: Uint8Array, 
   if (!copy.insertPath(points, roadKind, false, structure).length) return 'This connection already exists';
   return copy;
 }
+
+/**
+ * Why a surface road along these guide points would clash with a bridge or tunnel: running through
+ * an approach ramp at ground level, or touching a span anywhere but its ends. Null when it is clear.
+ */
+export function approachProblem(net: Network, points: { x: number; z: number }[]): string | null {
+  for (const c of buildPieces(points)) {
+    const sm = sampleCurve(c);
+    for (const seg of net.segs.values()) {
+      if (!seg.structure) continue;
+      for (let i = 0; i <= sm.n; i++) {
+        const hit = Network.nearestOn(seg, sm.pts[i * 2], sm.pts[i * 2 + 1]);
+        if (hit.s < 0.9 || seg.len - hit.s < 0.9) {
+          if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && sm.cum[i] > 1.5 && sm.len - sm.cum[i] > 1.5) return 'End the road at the bridge or tunnel entrance to connect it';
+          continue;
+        }
+        if (hit.dist < HALF_WIDTH[seg.kind] + 0.5 && Math.abs(roadHeight(seg, hit.s)) < 1.4 * CLEAR) return 'Keep surface roads clear of the approach ramps';
+      }
+    }
+  }
+  return null;
+}

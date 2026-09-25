@@ -236,6 +236,7 @@ export class Network {
         this.adj.delete(nid);
       } else if (list.length < 3) {
         node.light = false;
+        node.stop = false;
       }
     }
     this.version++;
@@ -400,10 +401,12 @@ export class Network {
   }
 
   /** Earliest crossing of a sampled curve with any existing segment, ignoring touches near its ends. */
-  private firstCrossing(c: Curve, sm: Sampled): { t: number; segId: number; tSeg: number } | null {
+  private firstCrossing(c: Curve, sm: Sampled, ends?: [number, number]): { t: number; segId: number; tSeg: number } | null {
     let best: { t: number; segId: number; tSeg: number } | null = null;
     for (const seg of this.segs.values()) {
       if (seg.structure) continue;
+      // A road already joining the same two nodes lies along this one; it is not a crossing.
+      if (ends && ((seg.a === ends[0] && seg.b === ends[1]) || (seg.a === ends[1] && seg.b === ends[0]))) continue;
       if (sm.maxX < seg.minX || sm.minX > seg.maxX || sm.maxZ < seg.minZ || sm.minZ > seg.maxZ) continue;
       for (let i = 0; i < sm.n; i++) {
         const ax = sm.pts[i * 2], az = sm.pts[i * 2 + 1], bx = sm.pts[i * 2 + 2], bz = sm.pts[i * 2 + 3];
@@ -459,7 +462,7 @@ export class Network {
     let c: Curve = { ...curve, ax: fn.x, az: fn.z, bx: tn.x, bz: tn.z };
     for (let guard = 0; guard < 40; guard++) {
       const sm = sampleCurve(c);
-      const hit = structure ? null : this.firstCrossing(c, sm);
+      const hit = structure ? null : this.firstCrossing(c, sm, [fromId, toId]);
       if (!hit || !this.segs.has(hit.segId)) {
         const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway, false, 0.4, structure);
         if (s) added.push(s.id);
@@ -516,6 +519,18 @@ export class Network {
       const d = Math.hypot(n.x - x, n.z - z);
       if (n.id !== id && d < td) { td = d; target = n; }
     }
+    // Dropped on the middle of another road, the node joins it there, as a drawn road would.
+    if (!target) {
+      const own = new Set(segs.map((s) => s.id));
+      let hit: Hit | null = null;
+      for (const seg of this.segs.values()) {
+        if (own.has(seg.id) || seg.structure) continue;
+        const r = Network.nearestOn(seg, x, z);
+        if (r.dist < 0.8 && (!hit || r.dist < hit.dist)) hit = { seg, ...r };
+      }
+      if (hit) target = this.nodes.get(this.splitOrSnap(hit.seg.id, hit.t))!;
+      if (target?.id === id) target = null;
+    }
     const endId = target ? target.id : id;
     if (!target) { node.x = x; node.z = z; }
     for (const { s } of plans) this.removeSegKeepNodes(s.id);
@@ -527,6 +542,8 @@ export class Network {
       if (a === b) continue;
       const an = this.nodes.get(a)!, bn = this.nodes.get(b)!;
       const c = chordAbs(an, bn, rel);
+      // Merged onto a road that already runs the same way between the same nodes: the two become one.
+      if (this.segsAt(a).some((o) => (o.a === b || o.b === b) && Math.hypot(o.cx - c.x, o.cz - c.z) < 0.6)) continue;
       const ids = s.structure
         ? [this.addSeg(a, b, c.x, c.z, s.kind, s.oneway, false, 0.4, s.structure)?.id].filter((v): v is number => v !== undefined)
         : this.layCurve(a, b, { ax: an.x, az: an.z, cx: c.x, cz: c.z, bx: bn.x, bz: bn.z }, s.kind, s.oneway);
