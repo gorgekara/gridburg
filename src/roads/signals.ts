@@ -90,10 +90,10 @@ export function planFits(net: Network, node: number, plan: SignalPlan | undefine
   const all = movements(net, node), keys = new Set(all.map(m => m.key));
   const sane = plan.phases.every(p => Number.isFinite(p.green) && p.green >= MIN_GREEN && p.green <= MAX_GREEN
     && Object.entries(p.moves).every(([k, v]) => keys.has(k) && (v === 1 || v === 2)));
-  // Every road coming in must get a green somewhere, or its traffic would wait there for ever: a new
-  // arm added to the junction since the plan was made sends it back to the default.
-  const served = new Set(plan.phases.flatMap(p => Object.keys(p.moves).map(k => k.split('>')[0])));
-  return sane && all.every(m => served.has(`${m.inSeg}${m.inFwd ? 'f' : 'b'}`));
+  // Every movement must get a green somewhere, or the traffic routed that way would wait for ever:
+  // a new arm added since the plan was made sends it back to the default.
+  const served = new Set(plan.phases.flatMap(p => Object.keys(p.moves)));
+  return sane && all.every(m => served.has(m.key));
 }
 
 /** The plan a signalised node actually runs: its own if it still fits, otherwise the default. */
@@ -121,6 +121,7 @@ export const cycleOf = (plan: SignalPlan): number => plan.phases.reduce((t, p) =
 /** Where a fixed-time plan is at `time` seconds into its cycle. */
 export function fixedClock(plan: SignalPlan, time: number): { phase: number; t: number; len: number } {
   const cycle = cycleOf(plan);
+  if (!plan.phases.length || cycle <= 0) return { phase: 0, t: 0, len: 0 };
   let t = ((time % cycle) + cycle) % cycle;
   for (let i = 0; i < plan.phases.length; i++) {
     const span = plan.phases[i].green + AMBER;

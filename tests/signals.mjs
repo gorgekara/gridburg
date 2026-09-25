@@ -166,5 +166,35 @@ test('the overlay finds the movement arrow under a click', () => {
   assert.equal(overlay.pick(10, 10), null);
 });
 
+test('a junction nobody can drive through gets no phases, and nothing breaks', () => {
+  const net = new Network();
+  for (const [x, z] of [[20, 40], [60, 40], [40, 20]]) net.insertPath([{ x, z }, { x: 40, z: 40 }], KIND_ROAD, true);
+  const node = net.nearestNode(40, 40, 0.1); node.light = true;
+  assert.equal(S.defaultPlan(net, node.id).phases.length, 0);
+  assert.deepEqual(S.fixedClock({ phases: [] }, 5), { phase: 0, t: 0, len: 0 });
+  const layer = new RoadLayer(); const terrain = generateTerrain(3); terrain.water.fill(0);
+  layer.rebuild(net, terrain);
+  layer.updateLights(3);
+});
+
+test('bending an arm or moving its far end keeps the junction\'s plan', () => {
+  const j = junction(['W', 'E', 'N', 'S']);
+  const plan = S.defaultPlan(j.net, j.node.id); plan.phases[0].green = 21; j.node.signal = plan;
+  const west = j.net.segsAt(j.node.id).find(s => j.name(`${s.id}f>${s.id}f`).startsWith('W'));
+  assert.ok(j.net.bendSeg(west.id, 30, 42));
+  assert.ok(S.planFits(j.net, j.node.id, j.node.signal), 'after a bend');
+  j.net.moveNode(j.net.nearestNode(40, 60, 0.1).id, 41, 61);
+  assert.ok(S.planFits(j.net, j.node.id, j.node.signal), 'after moving an arm end');
+  assert.equal(S.planFor(j.net, j.node.id).phases[0].green, 21);
+});
+
+test('a plan that leaves a movement red in every phase does not fit', () => {
+  const j = junction(['W', 'E', 'N', 'S']);
+  const plan = S.defaultPlan(j.net, j.node.id);
+  const key = Object.keys(plan.phases[0].moves)[0];
+  delete plan.phases[0].moves[key];
+  assert.equal(S.planFits(j.net, j.node.id, plan), false);
+});
+
 console.log(`${checks} signal checks passed; ${failures} failed`);
 if (failures) process.exit(1);

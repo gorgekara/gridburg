@@ -42,7 +42,7 @@ import { CarLayer } from './render/cars';
 import { Input } from './input';
 import { SignalOverlay } from './render/signalOverlay';
 import { SignalPanel, cycleMove } from './ui/signalPanel';
-import { planFor, clonePlan } from './roads/signals';
+import { planFor, planFits, clonePlan } from './roads/signals';
 import type { SignalPlan } from './roads/signals';
 import { Hud } from './ui/hud';
 import { demoCity } from './demo';
@@ -742,6 +742,8 @@ uiRoot.append(signalPanel.root);
 function saveSignal(plan: SignalPlan): void {
   const n = signalEdit && game.net.nodes.get(signalEdit.node);
   if (!n) return;
+  // A plan that leaves some movement without a green would strand the traffic routed that way.
+  if (!planFits(game.net, n.id, plan)) { hud.toast('Every movement needs a green in some phase: give it one elsewhere first'); refreshSignal(); return; }
   n.signal = clonePlan(plan);
   game.net.version++;
   game.flush();
@@ -767,6 +769,9 @@ input.onSignalClick = (p) => {
 {
   const onEdit = game.onEdit;
   game.onEdit = () => { onEdit?.(); if (signalEdit) refreshSignal(); };
+  // A different city: whatever junction the editor had open is gone.
+  const load = game.load.bind(game);
+  game.load = (...args: Parameters<typeof load>) => { closeSignal(); load(...args); };
   const onTool = input.onToolChange;
   input.onToolChange = (t) => { onTool?.(t); if (t !== 'light') closeSignal(); };
 }

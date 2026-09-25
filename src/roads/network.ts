@@ -689,6 +689,11 @@ export class Network {
     if (!s) return;
     s.calm = from.calm;
     copyLanes(from, s);
+    // The piece that meets a signalised junction takes over the old road's movements there.
+    for (const n of [s.a, s.b]) {
+      const plan = this.nodes.get(n)?.signal;
+      if (plan && (from.a === n || from.b === n)) renameSeg(plan, from.id, s.id);
+    }
     s.bike = !!from.bike && canAddBikeLane(s, this);
   }
 

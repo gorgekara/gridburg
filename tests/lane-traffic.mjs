@@ -191,6 +191,13 @@ function lopsided(adaptive) {
   }
   return ask([]).arrived - start;
 }
+const longRed = cross(N.KIND_ROAD);
+{ const node = longRed.nearestNode(40, 40, 0.1); node.light = true; const plan = S.defaultPlan(longRed, node.id); for (const p of plan.phases) p.green = 40; node.signal = plan; }
+const longRun = crossing(longRed, 150, 1.2);
+test('cars waiting out a long red do not give up', () => {
+  assert.equal(longRun.gaveUp, 0, `${longRun.gaveUp} gave up`);
+  assert.ok(longRun.arrived > 40, `${longRun.arrived} trips`);
+});
 const fixedRun = lopsided(false), adaptiveRun = lopsided(true);
 console.log(`  busy avenue across a quiet street: ${fixedRun} trips on fixed timing, ${adaptiveRun} adaptive`);
 test('an adaptive signal gives the busy road more of the green', () => {

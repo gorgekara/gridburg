@@ -426,7 +426,10 @@ export class RoadLayer {
     for (const node of net.nodes.values()) {
       if (!node.light || net.degree(node.id) < 3) continue;
       const plan = planFor(net, node.id), moves = movements(net, node.id);
+      if (!plan.phases.length) continue;
       for (const s of net.segsAt(node.id)) {
+        // A road that only leaves the junction has no traffic to control, so no head faces it.
+        if (!moves.some(m => m.inSeg === s.id && m.inFwd === (s.b === node.id))) continue;
         if (n >= MAX_LAMPS) break;
         const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
         if (!spot) continue;

@@ -25,7 +25,7 @@ import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
 import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, isMotorway, isCarriageway } from '../roads/network';
-import { planFor, stateIn, fixedClock, movements as nodeMovements, moveKey, AMBER, MIN_GREEN } from '../roads/signals';
+import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, AMBER, MIN_GREEN } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
 import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
@@ -308,6 +308,7 @@ function applyNetwork(p: EditPayload): void {
   trolleyNet = net;
   laneNet = net;
   const oldLens = segs.map((s) => s.len);
+  const oldNodeIds = nodeIds;
   const oldA = segs.map((s) => s.a);
 
   serial = p.serial;
@@ -486,14 +487,21 @@ function applyNetwork(p: EditPayload): void {
   approachCache = new Map();
   // Signals: each light runs its plan from where the city clock puts it, so an edit elsewhere does
   // not reset every junction's cycle.
-  sigPlan = nodeIds.map((id, ni) => nodeType[ni] === J_LIGHT ? planFor(net, id) : null);
+  // Keep each signal's clock through the edit when its plan is unchanged (so an adaptive signal does
+  // not jump), or its phase when only the plan's timings or movements changed.
+  const oldClock = new Map<number, { plan: string; phase: number; t: number; len: number }>();
+  sigPlan.forEach((plan, ni) => { if (plan) oldClock.set(oldNodeIds[ni], { plan: JSON.stringify(plan), phase: sigPhase[ni], t: sigT[ni], len: sigLen[ni] }); });
+  // A junction nothing can drive through (every arm one way the same way) runs no signal at all.
+  sigPlan = nodeIds.map((id, ni) => { if (nodeType[ni] !== J_LIGHT) return null; const plan = planFor(net, id); return plan.phases.length ? plan : null; });
   sigPhase = new Int16Array(nodeIds.length); sigT = new Float32Array(nodeIds.length); sigLen = new Float32Array(nodeIds.length);
   sigApproaches = nodeIds.map(() => []);
   nodeIds.forEach((id, ni) => {
     const plan = sigPlan[ni];
     if (!plan) return;
-    const clock = fixedClock(plan, simTime + id * 3.7);
-    sigPhase[ni] = clock.phase; sigT[ni] = clock.t; sigLen[ni] = clock.len;
+    const old = oldClock.get(id);
+    if (old && old.plan === JSON.stringify(plan)) { sigPhase[ni] = old.phase; sigT[ni] = old.t; sigLen[ni] = old.len; }
+    else if (old && old.phase < plan.phases.length) { sigPhase[ni] = old.phase; sigLen[ni] = plan.phases[old.phase].green; sigT[ni] = Math.min(old.t, sigLen[ni] + AMBER - 0.01); }
+    else { const clock = fixedClock(plan, simTime + id * 3.7); sigPhase[ni] = clock.phase; sigT[ni] = clock.t; sigLen[ni] = clock.len; }
     const seen = new Set<string>();
     for (const m of nodeMovements(net, id)) {
       const k = `${m.inSeg}:${m.inFwd}`;
@@ -1564,7 +1572,10 @@ function stepCars(dt: number): void {
           break;
         }
       }
-      if (slots[slot] && c.stuck > 30) {
+      // Waiting out a long red is not being stuck: at a signal, a whole cycle's wait is allowed first.
+      const endNode = c.li < c.legs.length - 1 ? legEndNode(c.legs[c.li]) : -1;
+      const patience = 30 + (endNode >= 0 && sigPlan[endNode] ? cycleOf(sigPlan[endNode]!) * (sigPlan[endNode]!.adaptive ? 2 : 1) : 0);
+      if (slots[slot] && c.stuck > patience) {
         gaveUp++; gaveUpTotal++;
         commuteAvg = commuteAvg * 0.97 + 90 * 0.03;
         freeCar(slot);
