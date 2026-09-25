@@ -71,7 +71,9 @@ const CATEGORIES: Category[] = [
       { id: 'ramp', label: 'Highway ramp', price: `${money(COST_RAMP)} / cell`, note: '1 lane · one way', hint: 'A slip road on or off a highway, one way in the direction you draw it. Start it from a highway to make an exit, end it on one to make an on-ramp; press + for a flyover or − to dive under' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
       { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
-      { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Widening costs the difference; narrowing is free' },
+      { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Drag along a road to change just that stretch. Widening costs the difference; narrowing is free' },
+      { id: 'edit', label: 'Edit roads', key: 'N', price: 'Extra length', note: 'Drag points and bends', hint: 'Drag a junction or road end to move it: the roads follow, keep their curves, and join whatever they cross. Drag the middle of a road to bend it. You pay only for road you add' },
+      { id: 'cut', label: 'Cut', key: 'H', price: 'Free', note: 'Remove a road or a stretch', hint: 'Click a road to remove it up to the next junctions, or drag along it to cut out just that stretch. Bridges and tunnels come out whole' },
     ],
   },
   {
@@ -750,6 +752,8 @@ export class Hud {
           <li><b>Roads</b> — pick Road or Avenue, then <b>click</b> to place points. <b>Straight</b> is two clicks,
           <b>Curved</b> is start, bend, end, and <b>Smooth</b> keeps flowing from click to click. <b>C</b> cycles the modes;
           right-click or <b>Esc</b> stops. Crossings become junctions</li>
+          <li><b>Snapping</b> — roads go anywhere. Points join nearby roads, catch on dashed guides (straight on, square to a road, parallel) and turn in 15° steps with whole-cell lengths. Hold <b>Alt</b> to place freely, or press <b>G</b> with a road tool for tile-centre grid snap</li>
+          <li><b>Editing</b> — <b>Edit roads (N)</b> drags junctions, ends and bends; <b>Cut (H)</b> removes a road or drags out a stretch; <b>Upgrade</b> drags to widen part of a road. <b>Ctrl+Z</b> undoes</li>
           <li><b>Height</b> — with a road in hand, <b>+</b> raises it to a bridge and <b>−</b> lowers it to a tunnel. Allow 8 cells and clear, dry ends. A road drawn across water becomes a bridge on its own</li>
           <li><b>Four road types</b> — Lane, Road, Avenue and Expressway, in rising order of width, speed and price.
           Nothing can be zoned along an expressway, so feed it with ordinary streets. <b>Upgrade (U)</b> widens a road one step</li>
@@ -759,7 +763,7 @@ export class Hud {
           small. Pumps and outlets sit on the river; keep the pump <b>upstream</b> (arrows show the flow)</li>
           <li><b>Inspect</b> — click any building to see its local coverage and growth blockers. Amber markers warn of a service downgrade after 180 simulation seconds</li>
           <li><b>Budget</b> — click your treasury to adjust service funding, review expenses or take a repayable recovery loan. Private development continues while the city is in debt</li>
-          <li><b>Grid</b> — road points snap to tile centers, so roads sit on squares like zones: a road fills one square, an avenue three. Buildings occupy cells and face a cardinal direction; connections to existing curved roads take priority</li>
+          <li><b>Grid</b> — zones and buildings sit on cells. Small buildings turn to face their road at any angle, larger sites keep to the grid</li>
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
           <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and clicking a message takes you to it</li>
           <li><b>Placing</b> — right-click, press <b>G</b> or use Rotate in the panel to turn a building before you put it down</li>

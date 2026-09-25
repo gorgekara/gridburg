@@ -69,6 +69,8 @@ const I: Record<string, string> = {
   road: '<path d="M8 21 10 3M16 21 14 3"/><path d="M12 5v2M12 11v2M12 17v2"/>',
   avenue: '<path d="M4 21 7 3M20 21 17 3"/><path d="M11.2 4v16M12.8 4v16"/>',
   upgrade: '<path d="M12 18V6M6.5 11.5 12 6l5.5 5.5"/><path d="M5 21h14"/>',
+  edit: '<path d="M4 19c3-9 8-12 16-14"/><circle cx="4" cy="19" r="1.8"/><circle cx="20" cy="5" r="1.8"/><circle cx="11" cy="10" r="2.2"/>',
+  cut: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8 7.5 20 17M8 16.5 20 7"/>',
   straight: '<path d="M5 19 19 5"/><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/>',
   curve: '<path d="M5 19C5 10 10 5 19 5"/><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/><circle cx="6" cy="6" r="1.2"/>',
   smooth: '<path d="M3 17c3-9 6-9 9-5s6 4 9-5"/>',

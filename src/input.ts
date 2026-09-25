@@ -29,12 +29,15 @@ import type { RingSize } from './roads/network';
 import type { Pose } from './roads/network';
 import { touchesWater } from './terrain';
 import { MeshBuilder } from './render/meshBuilder';
+import { planEdit, commitEdit, moveBlocked } from './roadEdit';
+import type { EditOp, EditPlan } from './roadEdit';
+import type { PlainNet } from './roads/network';
 import type { Game } from './game';
 
 export type Tool =
   | 'none' | 'inspect'
   | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
-  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade'
+  | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade' | 'edit' | 'cut'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
   | 'coal' | 'wind' | 'gas' | 'hydro' | 'nuclear' | 'pump' | 'tower' | 'outlet' | 'docks'
@@ -50,7 +53,7 @@ const TOOL_COLOR: Record<Tool, number> = {
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
-  road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
+  road: 0x8fa3b8, motorway: 0xdfe6ec, highway2: 0xd3dbe3, ramp: 0xc5ced8, avenue: 0xc9d2dc, lane: 0xa8b4c2, highway: 0xdfe6ec, upgrade: 0xc9d2dc, edit: 0x9fd3ff, cut: 0xe04b3a, roundabout: 0xc9d2dc, light: 0xffd23f, oneway: 0xffffff, stopsign: 0xe0503f, calm: 0x7fc4a8,
   res: 0x62c46a, com: 0x4f8fe8, ind: 0xe6b93a,
   coal: 0x9a9a9a, wind: 0xf2f2ee, gas: 0xc9ccce, hydro: 0x6fa4c6, nuclear: 0xd8d6cf, pump: 0x4fb3ff, tower: 0x4fb3ff, outlet: 0x9a6b3a, docks: 0xb8573f,
   cemetery: 0x8a9a7a, crematorium: 0xa7a39a, postoffice: 0xd9503f, barrier: 0x8fa3b0, landmark: 0xe6c36a, parking: 0x8b9096, parkingm: 0x8b9096, parkingl: 0x8b9096,
@@ -124,6 +127,9 @@ export class Input {
   private downScreen: { x: number; y: number } | null = null;
   private downWorld: P | null = null;
   private rightDown: { x: number; y: number } | null = null;
+
+  /** A road edit in progress: what was grabbed, the network as it stood, and the latest plan. */
+  private editing: { op: EditOp; plain: PlainNet; screen: { x: number; y: number }; plan: EditPlan | null } | null = null;
 
   // Rectangle tools.
   private dragging = false;
@@ -264,7 +270,7 @@ export class Input {
     if (this.suspended) return;
     if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
     const map: Record<string, Tool> = {
-      i: 'inspect', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
+      i: 'inspect', n: 'edit', h: 'cut', r: 'road', v: 'avenue', l: 'lane', x: 'highway', u: 'upgrade', o: 'roundabout', t: 'light', y: 'oneway', k: 'stopsign', j: 'calm',
       '1': 'res', '2': 'com', '3': 'ind', b: 'bulldoze',
     };
     const key = e.key.toLowerCase();
@@ -285,7 +291,7 @@ export class Input {
     }
     if (e.key === 'Escape') {
       // First Escape drops the road being laid; the next one puts the tool away.
-      if (this.chain.length || this.dragging) this.cancel();
+      if (this.chain.length || this.dragging || this.editing) this.cancel();
       else if (this.tool !== 'none') this.setTool('none');
     }
   };
@@ -296,7 +302,7 @@ export class Input {
     this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
-    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane'].includes(this.tool)) {
+    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
     }
@@ -363,6 +369,8 @@ export class Input {
     if (this.isRoadTool()) {
       this.downScreen = { x: e.clientX, y: e.clientY };
       this.downWorld = p;
+    } else if (this.isEditTool()) {
+      this.beginEdit(p, e);
     } else if (this.isBrushTool()) {
       this.dragging = true;
       this.painted.clear();
@@ -384,7 +392,9 @@ export class Input {
     this.free = e.altKey;
     const p = this.pick(e);
     if (!p) { if (!this.dragging && !this.chain.length) this.clearHover(); return; }
-    if (this.isRoadTool()) {
+    if (this.editing) {
+      this.dragEdit(p, e);
+    } else if (this.isRoadTool()) {
       // A press-and-drag previews from the press point, so a quick drag still lays a road.
       const pressing = this.downScreen && this.downWorld && !this.chain.length
         && Math.hypot(e.clientX - this.downScreen.x, e.clientY - this.downScreen.y) > 10;
@@ -423,6 +433,7 @@ export class Input {
       return;
     }
     if (e.button !== 0) return;
+    if (this.editing) { this.finishEdit(e); return; }
     if (this.isRoadTool() && this.downScreen && this.downWorld) {
       const moved = Math.hypot(e.clientX - this.downScreen.x, e.clientY - this.downScreen.y);
       const up = this.pick(e) ?? this.downWorld;
@@ -447,6 +458,7 @@ export class Input {
   };
 
   private cancel(): void {
+    this.editing = null;
     this.dragging = false;
     this.chain = [];
     this.tangent = null;
@@ -704,6 +716,124 @@ export class Input {
     }
   }
 
+  // ---- editing roads: drag nodes, bend, cut and re-kind stretches -----------------------------------
+  /** Edit, Cut, and Upgrade (which still upgrades a whole road on a plain click). */
+  private isEditTool(): boolean {
+    return this.tool === 'edit' || this.tool === 'cut' || this.tool === 'upgrade';
+  }
+
+  /** Grab whatever is under the pointer for the edit tool in hand. */
+  private beginEdit(p: P, e: PointerEvent): void {
+    const net = this.game.net;
+    const screen = { x: e.clientX, y: e.clientY };
+    let op: EditOp | null = null;
+    if (this.tool === 'edit') {
+      const node = net.nearestNode(p.x, p.z, 0.9);
+      if (node && net.degree(node.id)) {
+        const why = moveBlocked(net, node.id);
+        if (why) { this.onToast?.(why); return; }
+        op = { type: 'move', node: node.id, x: node.x, z: node.z };
+      } else {
+        const h = this.roadHit(p, 0.9);
+        if (!h) return;
+        if (!net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be reshaped" : 'Roundabouts keep their shape'); return; }
+        op = { type: 'bend', seg: h.seg.id, x: h.x, z: h.z };
+      }
+    } else {
+      const h = this.roadHit(p, 0.9);
+      if (!h) return;
+      if (!net.editable(h.seg)) { this.onToast?.(h.seg.fixed ? "The map's own motorway cannot be changed" : 'Roundabouts are removed with the bulldozer'); return; }
+      op = this.tool === 'cut'
+        ? { type: 'cut', seg: h.seg.id, s0: h.s, s1: h.s }
+        : { type: 'kind', seg: h.seg.id, s0: h.s, s1: h.s, kind: nextRoadKind(h.seg.kind) };
+    }
+    this.editing = { op, plain: net.toPlain(), screen, plan: null };
+  }
+
+  /** Whether the pointer has moved far enough since the press to count as a drag. */
+  private editDragged(e: { clientX: number; clientY: number }): boolean {
+    const ed = this.editing!;
+    return ed.op.type === 'move' || ed.op.type === 'bend' || Math.hypot(e.clientX - ed.screen.x, e.clientY - ed.screen.y) > 10;
+  }
+
+  private dragEdit(p: P, e: PointerEvent): void {
+    const ed = this.editing!;
+    const net = this.game.net;
+    const op = ed.op;
+    if (!this.editDragged(e)) return;
+    if (op.type === 'move') {
+      const own = new Set(net.segsAt(op.node).map(s => s.id));
+      const t = this.snap(p, { excludeNodes: new Set([op.node]), excludeSegs: own });
+      op.x = t.x; op.z = t.z;
+    } else if (op.type === 'bend') {
+      this.lastSnap = null;
+      op.x = p.x; op.z = p.z;
+    } else {
+      const seg = net.segs.get(op.seg);
+      if (!seg) return;
+      op.s1 = Network.nearestOn(seg, p.x, p.z).s;
+    }
+    ed.plan = planEdit(this.game, op, ed.plain);
+    this.previewEdit(ed.plan, e);
+  }
+
+  private finishEdit(e: PointerEvent): void {
+    const ed = this.editing!;
+    this.editing = null;
+    const p = this.pick(e);
+    if (!this.editDragged(e)) {
+      // A click: Upgrade widens the whole road as before, Cut removes the whole road.
+      if (ed.op.type === 'kind' && p) this.click(p);
+      else if (ed.op.type === 'cut') {
+        const seg = this.game.net.segs.get(ed.op.seg);
+        if (seg) this.applyEdit(planEdit(this.game, { ...ed.op, s0: 0, s1: seg.len }, ed.plain));
+      }
+    } else if (ed.plan) this.applyEdit(ed.plan);
+    this.shape.visible = false;
+    this.onCost?.(null, 0, 0, true);
+    if (p) this.updateHover(p, e);
+  }
+
+  private applyEdit(plan: EditPlan): void {
+    if (plan.problem) { this.onToast?.(plan.problem); return; }
+    commitEdit(this.game, plan);
+  }
+
+  /** Draw the edited roads over the old ones, and the removed stretch of a cut in red. */
+  private previewEdit(plan: EditPlan, e: { clientX: number; clientY: number }): void {
+    const half = GRID / 2;
+    const b = new MeshBuilder();
+    const ok = !plan.problem;
+    const op = this.editing!.op;
+    const ribbon = (seg: import('./roads/network').RSeg, from: number, to: number, color: number): void => {
+      const pts: number[] = [];
+      for (let d = from; ; d = Math.min(to, d + 0.25)) {
+        Network.poseAt(seg, d, pose);
+        pts.push(pose.x - half, pose.z - half);
+        if (d >= to) break;
+      }
+      if (pts.length >= 4) b.ribbon(pts, pts.length / 2, HALF_WIDTH[seg.kind], 0.1, color);
+    };
+    if (op.type === 'cut') {
+      const seg = this.game.net.segs.get(op.seg);
+      if (seg) ribbon(seg, Math.min(op.s0, op.s1), Math.max(op.s0, op.s1), ok ? BAD : 0x777777);
+    } else {
+      for (const id of plan.ids) {
+        const seg = plan.net.segs.get(id);
+        if (seg) ribbon(seg, 0, seg.len, ok ? TOOL_COLOR[this.tool] : BAD);
+      }
+      if (op.type === 'move' || op.type === 'bend') b.disc(op.x - half, op.z - half, 0.26, 0.12, GUIDE);
+      this.drawGuides(b);
+    }
+    this.shape.geometry.dispose();
+    this.shape.geometry = b.build();
+    this.shape.visible = true;
+    this.hover.visible = false;
+    const snapLabel = op.type === 'move' ? this.lastSnap?.label : null;
+    const parts = [snapLabel, op.type === 'cut' ? 'Cut' : `$${plan.cost.toLocaleString()}`, plan.lost ? `−${plan.lost} building${plan.lost > 1 ? 's' : ''}` : null];
+    this.onCost?.(plan.problem ?? parts.filter(Boolean).join(' · '), e.clientX, e.clientY, ok);
+  }
+
   // ---- rectangles: zones and bulldoze --------------------------------------------------------------
   private rectTiles(): number[] {
     const sx = this.startTile % GRID, sz = (this.startTile / GRID) | 0;
@@ -947,11 +1077,26 @@ export class Input {
         hx = n.x; hz = n.z; size = 1.4;
         label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Remove signal' : `$${COST_LIGHT}`;
       } else { size = 0.5; color = BAD; }
-    } else if (['oneway', 'upgrade', 'calm', 'bikelane'].includes(this.tool)) {
+    } else if (this.tool === 'edit') {
+      const net = this.game.net;
+      const n = net.nearestNode(p.x, p.z, 0.9);
+      const h = n && net.degree(n.id) ? null : this.roadHit(p, 0.9);
+      if (n && net.degree(n.id)) {
+        hx = n.x; hz = n.z; size = 0.9;
+        label = moveBlocked(net, n.id) ?? 'Drag to move this point';
+        if (moveBlocked(net, n.id)) { color = BAD; ok = false; }
+      } else if (h) {
+        hx = h.x; hz = h.z; size = 0.7;
+        label = net.editable(h.seg) ? 'Drag to bend this road' : 'This road keeps its shape';
+        if (!net.editable(h.seg)) { color = BAD; ok = false; }
+      } else { size = 0.5; label = 'Grab a point or a road'; }
+    } else if (['oneway', 'upgrade', 'calm', 'bikelane', 'cut'].includes(this.tool)) {
       const h = this.roadHit(p, 0.9);
       if (h && !h.seg.fixed) {
         hx = h.x; hz = h.z; size = 0.8;
-        if (this.tool === 'bikelane') {
+        if (this.tool === 'cut') {
+          label = this.game.net.editable(h.seg) ? (h.seg.structure ? 'Click to remove the span' : 'Click to remove · drag to cut a stretch') : 'Roundabouts are removed with the bulldozer';
+        } else if (this.tool === 'bikelane') {
           ok = !!h.seg.bike || (canAddBikeLane(h.seg, this.game.net) && this.game.canAfford(bikeLaneCost(h.seg)));
           label = h.seg.bike ? 'Remove bike lanes' : !canAddBikeLane(h.seg, this.game.net) ? 'Needs a surface street or avenue' : `$${bikeLaneCost(h.seg).toLocaleString()} · Bike lanes`;
           if (!ok) color = BAD;
@@ -961,7 +1106,7 @@ export class Input {
         } else if (this.tool === 'upgrade') {
           const next = nextRoadKind(h.seg.kind);
           const change = Math.round((ROAD_COST[next] - ROAD_COST[h.seg.kind]) * h.seg.len * STRUCTURE_COST[h.seg.structure ?? 0]);
-          label = `${ROAD_LABEL[next]}${change > 0 ? ` $${change.toLocaleString()}` : ''}`;
+          label = `${ROAD_LABEL[next]}${change > 0 ? ` $${change.toLocaleString()}` : ''}${isOneWayKind(next) || h.seg.structure ? '' : ' · drag for a stretch'}`;
         }
       } else { size = 0.5; color = BAD; }
     } else {

@@ -516,7 +516,7 @@ const showCoverage = (): void => {
 };
 input.onElevation = (level) => hud.setElevation(level);
 input.onRotate = (quarter) => hud.setRotation(quarter, SERVICE_TOOL[input.tool] !== undefined);
-input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'upgrade', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office', 'farm', 'leisure'].includes(t)); panels.showDistricts(t === 'district' || t === 'undistrict'); touch.setTool(!['none', 'inspect'].includes(t)); if (t !== 'none') audio.play('click'); renderView(); };
+input.onToolChange = (t) => { showCoverage(); showTransitLines(t); hud.setRotation(0, SERVICE_TOOL[t] !== undefined); showGrid(t); structures.showUnderground(['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'upgrade', 'edit', 'cut', 'oneway', 'bulldoze'].includes(t)); subway.showUnderground(['subway', 'bulldoze'].includes(t) || input.elevation < 0); hud.setTool(t); buildings.showZones(['res', 'com', 'ind', 'office', 'farm', 'leisure'].includes(t)); panels.showDistricts(t === 'district' || t === 'undistrict'); touch.setTool(!['none', 'inspect'].includes(t)); if (t !== 'none') audio.play('click'); renderView(); };
 showGrid(input.tool);
 input.onModeChange = (m) => hud.setMode(m);
 input.onToast = (m) => hud.toast(m);

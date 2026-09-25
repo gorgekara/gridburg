@@ -153,5 +153,67 @@ test('moving a road keeps its bike lanes and calming', () => {
   assert.ok(moved.bike && moved.calm);
 });
 
+// ---- planning and committing edits in a whole city ---------------------------------------------------
+globalThis.Worker = class { postMessage() {} };
+const C = await import('../src/constants.ts');
+const { Game } = await import('../src/game.ts');
+const { planEdit, commitEdit } = await import('../src/roadEdit.ts');
+function city() {
+  const game = new Game();
+  game.terrain.water.fill(0); game.terrain.shore.fill(0);
+  game.stats.money = 100000;
+  game.net.insertPath([{ x: 20, z: 30 }, { x: 30, z: 30 }], KIND_ROAD);
+  game.flush();
+  return game;
+}
+
+test('a moved road is charged only for the road it adds, and can be undone', () => {
+  const g = city();
+  const end = g.net.nearestNode(30, 30, 0.05);
+  const plan = planEdit(g, { type: 'move', node: end.id, x: 34, z: 30 });
+  assert.equal(plan.problem, null);
+  assert.equal(plan.cost, Math.round(4 * C.ROAD_COST[KIND_ROAD]));
+  const money = g.stats.money;
+  assert.ok(commitEdit(g, plan));
+  assert.equal(g.stats.money, money - plan.cost);
+  assert.ok(g.net.nearestNode(34, 30, 0.05));
+  assert.ok(g.undo());
+  assert.ok(g.net.nearestNode(30, 30, 0.05), 'undo puts the node back');
+  assert.equal(g.stats.money, money);
+});
+
+test('a road dragged into the river is refused', () => {
+  const g = city();
+  for (let x = 33; x < 36; x++) for (let z = 0; z < C.GRID; z++) g.terrain.water[z * C.GRID + x] = 1;
+  const end = g.net.nearestNode(30, 30, 0.05);
+  const plan = planEdit(g, { type: 'move', node: end.id, x: 38, z: 30 });
+  assert.match(plan.problem, /river/);
+  assert.equal(commitEdit(g, plan), false);
+  assert.ok(g.net.nearestNode(30, 30, 0.05));
+});
+
+test('bending through a building counts it as paved over', () => {
+  const g = city();
+  const house = 36 * C.GRID + 25;
+  g.setKind(house, C.T_RES, 0); g.level[house] = 1; g.flush();
+  const seg = [...g.net.segs.values()][0];
+  const plan = planEdit(g, { type: 'bend', seg: seg.id, x: 25.5, z: 36.5 });
+  assert.equal(plan.problem, null);
+  assert.equal(plan.lost, 1);
+  const mid = plan.net.segs.get(plan.ids[0]);
+  assert.ok(Math.abs(mid.pts[(mid.n >> 1) * 2 + 1] - 36.5) < 0.05, 'the road passes through the pointer');
+});
+
+test('a cut costs nothing and a stretch upgrade charges only its length', () => {
+  const g = city();
+  const seg = [...g.net.segs.values()][0];
+  const cut = planEdit(g, { type: 'cut', seg: seg.id, s0: 2, s1: 5 });
+  assert.equal(cut.problem, null); assert.equal(cut.cost, 0);
+  assert.equal(cut.net.segs.size, 2);
+  const up = planEdit(g, { type: 'kind', seg: seg.id, s0: 2, s1: 6, kind: KIND_AVENUE });
+  assert.equal(up.problem, null);
+  assert.equal(up.cost, Math.round((C.ROAD_COST[KIND_AVENUE] - C.ROAD_COST[KIND_ROAD]) * 4));
+});
+
 console.log(`${checks} road edit checks passed; ${failures} failed`);
 if (failures) process.exit(1);
