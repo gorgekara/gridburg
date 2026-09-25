@@ -3,7 +3,7 @@ import { sideHalf, canAddLanes, clampLanes } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
-import { structurePlan, roadHeight, approachProblem, STRUCTURE_COST } from './roads/structures';
+import { structurePlan, roadHeight, approachProblem, levelProblem, levelY, structureFor, LEVEL_H, MIN_LEVEL, MAX_LEVEL, STRUCTURE_COST } from './roads/structures';
 import type { Structure } from './roads/structures';
 import { footprint, footprintSize } from './sites';
 import { entrancePlan, entrySite } from './roads/entries';
@@ -67,13 +67,16 @@ const ZONE_TOOL: Partial<Record<Tool, number>> = { res: T_RES, com: T_COM, ind: 
 const BAD = 0xe04b3a;
 const GUIDE = 0xffffff;
 
-type P = { x: number; z: number; y?: number };
+/** A point on the map; `level` is the level a road point sits at (absent: the ground). */
+type P = { x: number; z: number; y?: number; level?: number };
 
 const m4 = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const one = new THREE.Vector3(1, 1, 1);
 const tmpColor = new THREE.Color();
 const pose: Pose = { x: 0, z: 0, tx: 0, tz: 0 };
+/** What the tooltip calls a level. */
+const levelName = (level: number): string => level < 0 ? 'Tunnel' : level === 0 ? 'Ground' : `Level ${level}`;
 
 export class Input {
   roadTarget: THREE.Object3D | null = null;
@@ -86,7 +89,7 @@ export class Input {
   suspended = false;
   onRotate: ((quarter: number) => void) | null = null;
   onElevation: ((level: number) => void) | null = null;
-  /** What the road tool is drawing: -1 a tunnel, 0 the surface, 1 a bridge. */
+  /** The level the next road point goes in at: −1 a tunnel, 0 the ground, 1 to 3 above it. */
   elevation = 0;
   /** Quarter turns applied to the next building placed, cleared when the tool changes. */
   placeRotation = 0;
@@ -306,6 +309,8 @@ export class Input {
 
   private pick(e: { clientX: number; clientY: number }): P | null {
     const r = this.canvas.getBoundingClientRect();
+    // Drawing up in the air, the pointer works on the level being drawn, so it lines up with the road.
+    this.plane.constant = this.isRoadTool() && this.tool !== 'parkpath' ? -Math.max(0, levelY(this.elevation)) : 0;
     this.ndc.set(((e.clientX + 10 - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(this.ndc, this.camera);
     const side = this.raycaster.ray.intersectPlane(this.plane, this.hit) ? this.hit.clone() : null;
@@ -343,8 +348,22 @@ export class Input {
       for (const path of this.game.parkPaths) for (const end of [{ x: path.ax, z: path.az }, { x: path.bx, z: path.bz }]) if (Math.hypot(end.x - p.x, end.z - p.z) < 0.3) return end;
       return this.gridSnap(p);
     }
-    this.lastSnap = snapPoint(this.game.net, p, { grid: this.gridSnapOn, free: this.free, reach: this.reach, ...ctx });
-    return { x: this.lastSnap.x, z: this.lastSnap.z };
+    this.lastSnap = snapPoint(this.game.net, p, { grid: this.gridSnapOn, free: this.free, reach: this.reach, level: this.elevation, ...ctx });
+    // Joining a road puts the point at that road's level; otherwise it goes in at the level in hand.
+    const net = this.game.net, node = this.lastSnap.node !== undefined ? net.nodes.get(this.lastSnap.node) : undefined;
+    const level = node ? node.level ?? 0 : this.lastSnap.seg !== undefined ? this.levelOfSeg(this.lastSnap.seg) : this.elevation;
+    return { x: this.lastSnap.x, z: this.lastSnap.z, level };
+  }
+
+  /** The level a flat road sits at, from its height. */
+  private levelOfSeg(id: number): number {
+    const y = this.game.net.segs.get(id)?.ya ?? 0;
+    return y < 0 ? -1 : Math.round(y / LEVEL_H);
+  }
+
+  /** The levels a path runs between: its start point's, and the end's. */
+  private levels(path: P[]): [number, number] {
+    return [path[0].level ?? 0, path[path.length - 1].level ?? 0];
   }
 
   /** Where a curve's bend goes: guides and steps from the start, but never onto a road. */
@@ -552,34 +571,43 @@ export class Input {
     return [start, end];
   }
 
+  /**
+   * What a path is built as: between levels, elevated or a tunnel as its ends say; on the ground, an
+   * ordinary road, or an old-style bridge span where it would otherwise run through the river.
+   */
   private roadStructure(path: P[]): Structure {
     if (this.tool === 'parkpath') return 0;
-    if (this.elevation < 0) return 2;
-    // Raised by hand, or automatically where the road would otherwise run through the river.
-    return this.elevation > 0 || measurePath(path, this.game.terrain.water).wet > 0 ? 1 : 0;
+    const [la, lb] = this.levels(path);
+    if (la || lb) return structureFor(la, lb);
+    return measurePath(path, this.game.terrain.water).wet > 0 ? 1 : 0;
+  }
+
+  /** An old-style span: a ground road carried over the river as one bridge. */
+  private legacySpan(path: P[]): boolean {
+    const [la, lb] = this.levels(path);
+    return !la && !lb && this.roadStructure(path) !== 0;
   }
 
   /**
-   * Step the road being drawn up or down: tunnel, surface, bridge. Cities: Skylines raises roads the
-   * same way, and it beats keeping a separate tool for every height.
+   * Step the level of the next road point up or down, from a tunnel to three levels up, as in
+   * Trafficity. The road being drawn carries on: its next piece is a ramp to the new level.
    */
   setElevation(level: number): void {
-    const next = Math.max(-1, Math.min(1, level));
+    const next = Math.max(MIN_LEVEL, Math.min(MAX_LEVEL, level));
     if (next === this.elevation) return;
     this.elevation = next;
     this.onElevation?.(next);
-    if (this.chain.length) this.cancel();
   }
 
   private roadProblem(path: P[]): string | null {
     if (this.tool === 'parkpath') return this.game.parkPathProblem(buildPieces(path));
     if (measurePath(path, this.game.hillMask).wet > 0) return 'Roads cannot climb raised ground: lower it first';
-    const structure = this.roadStructure(path);
-    if (structure) {
-      const plan = structurePlan(this.game.net, this.game.terrain, this.game.kind, path, this.drawKind(), structure);
+    if (this.legacySpan(path)) {
+      const plan = structurePlan(this.game.net, this.game.terrain, this.game.kind, path, this.drawKind(), this.roadStructure(path));
       return typeof plan === 'string' ? plan : null;
     }
-    return approachProblem(this.game.net, path);
+    const [la, lb] = this.levels(path);
+    return levelProblem(this.game.net, this.game.terrain, path, this.drawKind(), la, lb) ?? (!la && !lb ? approachProblem(this.game.net, path) : null);
   }
 
   /** The kind of road the tool in hand draws, at whatever height it is set to. */
@@ -617,12 +645,13 @@ export class Input {
     const problem = this.roadProblem(path);
     if (problem) { this.onToast?.(problem); return; }
     if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
-    const joins = this.onRoad(end);
+    // Joined another road (at its own height), so this road is finished.
+    const joins = this.tool === 'parkpath' ? this.onRoad(end) : this.lastSnap?.node !== undefined || this.lastSnap?.seg !== undefined;
     if (this.tool === 'parkpath') {
       if (g.addParkPaths(buildPieces(path))) g.flush();
     } else {
       // One-way highways and ramps run the way they were drawn, start to finish.
-      const added = g.net.insertPath(path, this.drawKind(), isOneWayKind(this.drawKind()), this.roadStructure(path));
+      const added = g.net.insertPath(path, this.drawKind(), isOneWayKind(this.drawKind()), this.legacySpan(path) ? this.roadStructure(path) : 0, true, this.levels(path));
       if (added.length) { g.spend(cost); g.flush(); }
     }
     // Keep laying from where this piece ended, unless it joined an existing road.
@@ -670,10 +699,11 @@ export class Input {
           const sm = sampleCurve(c);
           const pts = new Float32Array((sm.n + 1) * 2);
           for (let i = 0; i < pts.length; i++) pts[i] = sm.pts[i] - half;
-          const structure = this.roadStructure(path);
-          if (structure === 1) b.heightAt = (x, z) => {
+          const structure = this.roadStructure(path), [la, lb] = this.levels(path);
+          const profile = { structure, len: sm.len, ya: levelY(la), yb: levelY(lb) };
+          if (structure === 1 || la || lb) b.heightAt = (x, z) => {
             const hit = Network.nearestOn({ ...sm } as Parameters<typeof Network.nearestOn>[0], x + half, z + half);
-            return roadHeight({ structure, len: sm.len }, hit.s);
+            return Math.max(-0.02, roadHeight(profile, hit.s));
           };
           b.ribbon(pts, sm.n + 1, hw, 0.09, ok ? TOOL_COLOR[this.tool] : BAD);
           b.heightAt = null;
@@ -688,7 +718,9 @@ export class Input {
         b.disc(end.x - half, end.z - half, 0.26, 0.11, GUIDE);
         const snapLabel = this.tool !== 'parkpath' ? this.lastSnap?.label : null;
         if (this.tool !== 'parkpath') this.drawGuides(b);
-        label = problem ?? `${snapLabel ? `${snapLabel} · ` : ''}$${cost.toLocaleString()} · ${this.tool === 'parkpath' ? "Park path" : this.roadStructure(path) === 1 ? "Bridge" : this.roadStructure(path) === 2 ? "Tunnel" : "Road"}`;
+        const [la, lb] = this.levels(path);
+        const what = this.tool === 'parkpath' ? 'Park path' : la !== lb ? `Ramp to ${levelName(lb)}` : la ? levelName(la) : this.roadStructure(path) === 1 ? 'Bridge' : 'Road';
+        label = problem ?? `${snapLabel ? `${snapLabel} · ` : ''}$${cost.toLocaleString()} · ${what}`;
       }
     }
     b.disc(start.x - half, start.z - half, 0.26, 0.11, GUIDE);
@@ -1073,6 +1105,7 @@ export class Input {
       return;
     }
     let hx = Math.floor(p.x) + 0.5, hz = Math.floor(p.z) + 0.5;
+    let hy = 0;
     let size = 1, depth = 1;
     let color = TOOL_COLOR[this.tool];
     let label: string | null = null;
@@ -1088,6 +1121,7 @@ export class Input {
       const s = this.snap(p);
       hx = s.x; hz = s.z; size = 0.6;
       label = this.tool !== 'parkpath' && this.lastSnap?.label ? `${this.lastSnap.label} · Click to start` : 'Click to start';
+      if (this.tool !== 'parkpath') { label = `${levelName(s.level ?? 0)} · ${label}`; hy = Math.max(0, levelY(s.level ?? 0)); }
     } else if (this.tool === 'light' || this.tool === 'stopsign') {
       const n = this.game.net.nearestNode(p.x, p.z, 1.4);
       const sign = this.tool === 'stopsign';
@@ -1164,7 +1198,7 @@ export class Input {
     }
     mat.color.setHex(color);
     this.hover.scale.set(size, 1, depth === 1 ? size : depth);
-    this.hover.position.set(hx - half, (p.y ?? 0) + 0.095, hz - half);
+    this.hover.position.set(hx - half, (p.y ?? hy) + 0.095, hz - half);
     this.hover.visible = true;
     this.onCost?.(label, e.clientX, e.clientY, ok);
   }

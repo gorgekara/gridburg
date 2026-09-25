@@ -606,10 +606,12 @@ export class Hud {
       if (c.id === 'roads') {
         const height = el('div', 'modes');
         height.append(el('span', 'mlabel', 'Height'));
-        for (const [level, label, key] of [[-1, 'Tunnel', '−'], [0, 'Surface', ''], [1, 'Bridge', '+']] as [number, string, string][]) {
+        // Levels, top to bottom: three storeys up, the ground, a tunnel. + and − step between them.
+        for (const [level, label] of [[3, 'Level 3'], [2, 'Level 2'], [1, 'Level 1'], [0, 'Ground'], [-1, 'Tunnel']] as [number, string][]) {
           const b = el('button', 'mode');
-          b.append(icon(level > 0 ? 'bridge' : level < 0 ? 'tunnel' : 'road', 20));
-          b.title = key ? `${label} (${key})` : `${label} road`;
+          if (level > 0) { b.append(icon('bridge', 16), el('span', 'mode-level', String(level))); }
+          else b.append(icon(level < 0 ? 'tunnel' : 'road', 20));
+          b.title = `${label} (+ / − to step)`;
           b.setAttribute('aria-label', label);
           b.addEventListener('click', () => actions.setElevation(level));
           this.heightBtns.set(level, b);
@@ -849,7 +851,7 @@ export class Hud {
     if (!def) { this.hint.textContent = ''; return; }
     if (['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'parkpath'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
-      const height = this.elevation > 0 ? 'Bridge: minimum 8 cells, dry ends. ' : this.elevation < 0 ? 'Tunnel: minimum 8 cells, clear portals. ' : '';
+      const height = this.elevation > 0 ? `Level ${this.elevation}: the next point goes in ${this.elevation} up. Ramps need 4 cells per level; roads at the same level join, a level apart they pass. ` : this.elevation < 0 ? 'Tunnel: the next point goes in underground; ramps need 4 cells. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;
     } else {
       this.hint.textContent = def.hint;

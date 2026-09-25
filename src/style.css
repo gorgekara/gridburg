@@ -552,3 +552,4 @@ body.touch canvas { touch-action: none; }
 .signal-buttons { display: flex; gap: 6px; }
 .signal-buttons .mitem { flex: 1; justify-content: center; }
 .signal-remove { color: var(--neg); }
+.mode-level { font-size: 11px; font-weight: 700; margin-left: -3px; }
