@@ -156,5 +156,46 @@ test('a right-turn pocket lets right turners past the cars waiting to go straigh
   assert.ok(withPocket.straight >= plainApproach.straight * 0.9, 'straight traffic is no worse off');
 });
 
+// ---- signals ---------------------------------------------------------------------------------------
+const S = await import('../src/roads/signals.ts');
+test('at a signal nobody is let in on red, and turning traffic gets through on its yield greens', () => {
+  const admits = ask([]).signalAdmits;
+  assert.equal(admits.red ?? 0, 0, JSON.stringify(admits));
+  assert.ok((admits.green ?? 0) > 50 && (admits.yield ?? 0) > 5, JSON.stringify(admits));
+});
+
+/** A busy east-west avenue crossed by a quiet side street, under a fixed or an adaptive signal. */
+function lopsided(adaptive) {
+  const net = new Network();
+  net.insertPath([{ x: 18, z: 40 }, { x: 62, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 18 }, { x: 40, z: 62 }], N.KIND_ROAD);
+  const node = net.nearestNode(40, 40, 0.1);
+  node.light = true;
+  const plan = S.defaultPlan(net, node.id);
+  plan.adaptive = adaptive;
+  node.signal = plan;
+  load(net);
+  const byEnd = (x, z) => { const n = net.nearestNode(x, z, 0.1); const s = net.segsAt(n.id)[0]; return { seg: s.id, s: s.a === n.id ? 0.6 : s.len - 0.6 }; };
+  const west = byEnd(18, 40), east = byEnd(62, 40), north = byEnd(40, 18), south = byEnd(40, 62);
+  const start = ask([]).arrived;
+  let t = 0, next = 0, quiet = 0;
+  for (let i = 0; i < 150 * C.SIM_HZ; i++) {
+    clock();
+    t += 1 / C.SIM_HZ;
+    if (t >= next) {
+      next += 0.3;
+      const trips = [{ a: west.seg, as: west.s, b: east.seg, bs: east.s }, { a: east.seg, as: east.s, b: west.seg, bs: west.s }];
+      if (++quiet % 12 === 0) trips.push({ a: north.seg, as: north.s, b: south.seg, bs: south.s });
+      ask(trips);
+    }
+  }
+  return ask([]).arrived - start;
+}
+const fixedRun = lopsided(false), adaptiveRun = lopsided(true);
+console.log(`  busy avenue across a quiet street: ${fixedRun} trips on fixed timing, ${adaptiveRun} adaptive`);
+test('an adaptive signal gives the busy road more of the green', () => {
+  assert.ok(adaptiveRun > fixedRun * 1.1, `${fixedRun} -> ${adaptiveRun}`);
+});
+
 console.log(`${checks} lane traffic checks passed; ${failures} failed`);
 if (failures) process.exit(1);

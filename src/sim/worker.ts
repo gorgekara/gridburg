@@ -24,7 +24,9 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, isGreen, isMotorway, isCarriageway } from '../roads/network';
+import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, isMotorway, isCarriageway } from '../roads/network';
+import { planFor, stateIn, fixedClock, movements as nodeMovements, moveKey, AMBER, MIN_GREEN } from '../roads/signals';
+import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
 import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
 import { isOneWayKind } from '../roads/network';
@@ -199,7 +201,17 @@ let nodeZ: number[] = [];
 let nodeIds: number[] = [];
 let nodeType: number[] = [];
 let nodeEdges: Edge[][] = [];
-let nodeGroups: Map<number, number>[] = []; // seg index -> signal group, for light nodes
+/**
+ * Per signalised node: the plan it runs, its phase clock (phase, seconds into it, and how long this
+ * phase's green lasts, which an adaptive signal stretches or cuts), and the approaches (as segment
+ * index and direction) whose queues tell it where traffic is waiting.
+ */
+let sigPlan: (SignalPlan | null)[] = [];
+let sigPhase = new Int16Array(0), sigT = new Float32Array(0), sigLen = new Float32Array(0);
+let sigApproaches: { seg: number; fwd: boolean }[][] = [];
+let sigCheck = 0;
+/** Tests only: box admissions at signals, by the state the car's movement was in. */
+const sigAdmits: Record<string, number> = {};
 let lockOwner = new Int32Array(0); // per node: the slot holding the junction box, or -1
 let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
@@ -300,7 +312,7 @@ function applyNetwork(p: EditPayload): void {
 
   serial = p.serial;
   const nodeIndex = new Map<number, number>();
-  nodeX = []; nodeZ = []; nodeIds = []; nodeType = []; nodeEdges = []; nodeGroups = [];
+  nodeX = []; nodeZ = []; nodeIds = []; nodeType = []; nodeEdges = [];
   entryNodes = [];
   for (const n of net.nodes.values()) {
     nodeIndex.set(n.id, nodeIds.length);
@@ -308,7 +320,6 @@ function applyNetwork(p: EditPayload): void {
     nodeX.push(n.x);
     nodeZ.push(n.z);
     nodeEdges.push([]);
-    nodeGroups.push(new Map());
     const deg = net.degree(n.id);
     // Where only highway-class roads meet (a ramp leaving or joining a carriageway) traffic merges and
     // splits on the move, like a real motorway, instead of taking turns through a junction box.
@@ -382,9 +393,6 @@ function applyNetwork(p: EditPayload): void {
   });
   nodeHalf = new Float32Array(nodeIds.length);
   nodeIds.forEach((id, ni) => {
-    if (nodeType[ni] === J_LIGHT) {
-      for (const [sid, g] of net.lightGroups(id)) nodeGroups[ni].set(segIndex.get(sid)!, g);
-    }
     for (const s of net.segsAt(id)) nodeHalf[ni] = Math.max(nodeHalf[ni], roadHalf(s));
   });
 
@@ -476,6 +484,23 @@ function applyNetwork(p: EditPayload): void {
     }
   });
   approachCache = new Map();
+  // Signals: each light runs its plan from where the city clock puts it, so an edit elsewhere does
+  // not reset every junction's cycle.
+  sigPlan = nodeIds.map((id, ni) => nodeType[ni] === J_LIGHT ? planFor(net, id) : null);
+  sigPhase = new Int16Array(nodeIds.length); sigT = new Float32Array(nodeIds.length); sigLen = new Float32Array(nodeIds.length);
+  sigApproaches = nodeIds.map(() => []);
+  nodeIds.forEach((id, ni) => {
+    const plan = sigPlan[ni];
+    if (!plan) return;
+    const clock = fixedClock(plan, simTime + id * 3.7);
+    sigPhase[ni] = clock.phase; sigT[ni] = clock.t; sigLen[ni] = clock.len;
+    const seen = new Set<string>();
+    for (const m of nodeMovements(net, id)) {
+      const k = `${m.inSeg}:${m.inFwd}`;
+      if (seen.has(k) || !segIndex.has(m.inSeg)) continue;
+      seen.add(k); sigApproaches[ni].push({ seg: segIndex.get(m.inSeg)!, fwd: m.inFwd });
+    }
+  });
   boxCars = nodeIds.map(() => []);
   boxWait = new Int32Array(nodeIds.length).fill(-1);
   movePaths = new Map();
@@ -1218,6 +1243,83 @@ function ringApproaching(node: number): boolean {
   return false;
 }
 
+// ---- traffic signals ------------------------------------------------------------------------------
+/** The movement car `c` makes through `node`, in the key signal plans use. */
+function moveKeyOf(c: Car, li = c.li): string {
+  const leg = c.legs[li], next = c.legs[li + 1];
+  return next ? moveKey(segs[leg.seg].id, leg.fwd, segs[next.seg].id, next.fwd) : '';
+}
+
+/** What the signal at `node` shows the car's movement right now. */
+function signalFor(c: Car, node: number): SignalState {
+  const plan = sigPlan[node];
+  return plan ? stateIn(plan, sigPhase[node], sigT[node], sigLen[node], moveKeyOf(c)) : 'green';
+}
+
+/**
+ * A car turning on a yield green gives way to traffic that has a protected green across its path
+ * and is at, or nearly at, its own stop line.
+ */
+function yieldBlocked(c: Car, node: number): boolean {
+  const mine = movementOf(c, node);
+  const leg = c.legs[c.li];
+  for (const a of sigApproaches[node]) {
+    if (a.seg === leg.seg && a.fwd === leg.fwd) continue;
+    const lanes = Math.max(1, dirLanes[a.seg * 2 + (a.fwd ? 0 : 1)]);
+    for (let l = 0; l < lanes; l++) {
+      let front: Car | null = null;
+      for (const slot of laneCars[laneKey(a.seg, a.fwd, l)]) { const o = slots[slot]; if (o && (!front || o.p > front.p)) front = o; }
+      if (!front || front.li >= front.legs.length - 1) continue;
+      const fl = front.legs[front.li];
+      if (fl.p1 - front.p > Math.max(STOP_SETBACK, nodeHalf[node] + 0.45) + 2.5) continue;
+      if (signalFor(front, node) !== 'green') continue;
+      if (conflicts(mine, movementOf(front, node))) return true;
+    }
+  }
+  return false;
+}
+
+/** Whether cars are waiting at, or coming up to, `node` for a movement that `phase` lets go. */
+function signalDemand(node: number, phase: number): boolean {
+  const plan = sigPlan[node]!, moves = plan.phases[phase].moves;
+  for (const a of sigApproaches[node]) {
+    const lanes = Math.max(1, dirLanes[a.seg * 2 + (a.fwd ? 0 : 1)]);
+    for (let l = 0; l < lanes; l++) for (const slot of laneCars[laneKey(a.seg, a.fwd, l)]) {
+      const o = slots[slot];
+      if (!o || o.li >= o.legs.length - 1 || o.legs[o.li].p1 - o.p > 6) continue;
+      if (moves[moveKeyOf(o)]) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Run every signal's phase clock. A fixed signal gives each phase its green and then its amber. An
+ * adaptive one also looks four times a second: after the shortest green it cuts a phase nobody is
+ * using when someone waits for another, and it stretches a busy phase up to twice its set green.
+ */
+function stepSignals(dt: number): void {
+  sigCheck += dt;
+  const look = sigCheck >= 0.25;
+  if (look) sigCheck = 0;
+  for (let n = 0; n < sigPlan.length; n++) {
+    const plan = sigPlan[n];
+    if (!plan) continue;
+    sigT[n] += dt;
+    const green = plan.phases[sigPhase[n]].green;
+    if (plan.adaptive && look && sigT[n] < sigLen[n]) {
+      const here = signalDemand(n, sigPhase[n]);
+      if (sigT[n] >= MIN_GREEN && !here && plan.phases.some((_, k) => k !== sigPhase[n] && signalDemand(n, k))) sigLen[n] = sigT[n];
+      else if (here && sigLen[n] - sigT[n] < 0.5 && sigLen[n] < 2 * green) sigLen[n] = Math.min(2 * green, sigLen[n] + 0.5);
+    }
+    if (sigT[n] >= sigLen[n] + AMBER) {
+      sigT[n] -= sigLen[n] + AMBER;
+      sigPhase[n] = (sigPhase[n] + 1) % plan.phases.length;
+      sigLen[n] = plan.phases[sigPhase[n]].green;
+    }
+  }
+}
+
 function stepCars(dt: number): void {
   for (const lane of laneCars) lane.length = 0;
   laneTail.fill(1e9);
@@ -1309,8 +1411,14 @@ function stepCars(dt: number): void {
         const type = nodeType[node];
         // Blue lights: a callout goes through on red, and everyone else waits for it.
         if (type === J_LIGHT && !pastStop && !c.mission) {
-          const g = nodeGroups[node].get(leg.seg) ?? 0;
-          if (!isGreen(simTime, nodeIds[node], g)) canGo = false;
+          const st = signalFor(c, node);
+          // A turner that has waited at the line on its yield green goes at the end of it, once the
+          // oncoming traffic has stopped for the amber, as drivers do; otherwise a busy oncoming
+          // stream would keep it, and everyone behind it, there for ever.
+          const clearing = st === 'amber' && sigPlan[node]!.phases[sigPhase[node]].moves[moveKeyOf(c)] === 2 && c.p >= stopP - 0.3;
+          // Amber: stop if you can. Only a car already rolling up to the line carries on.
+          if (st === 'red' || (st === 'amber' && !clearing && (c.stuck > 0 || c.p < stopP - 0.6))) canGo = false;
+          else if ((st === 'yield' || clearing) && yieldBlocked(c, node)) canGo = false;
         }
         // An all-way stop: come to a halt at the line, then take your turn like any other junction.
         if (type === J_STOP && !pastStop && c.stopAt !== node) {
@@ -1385,6 +1493,7 @@ function stepCars(dt: number): void {
             if (!blocked && boxWait[node] >= 0 && boxWait[node] !== slot) { const m = heldMovement(boxWait[node], node); if (m && conflicts(mine, m)) blocked = true; }
             if (!blocked) {
               c.box = node; c.boxLi = c.li; list.push(slot);
+              if (type === J_LIGHT) { const st = c.mission ? 'callout' : signalFor(c, node); sigAdmits[st] = (sigAdmits[st] ?? 0) + 1; }
               if (boxWait[node] === slot) boxWait[node] = -1;
             } else {
               canGo = false;
@@ -1492,9 +1601,13 @@ function writeFrame(): void {
   }
   const cong = new Uint8Array(segs.length);
   for (let i = 0; i < segs.length; i++) cong[i] = Math.min(255, (segCong[i] * 255) | 0);
+  // Every signal's clock, so the lamps show what traffic is actually doing.
+  const lit: number[] = [];
+  for (let n = 0; n < sigPlan.length; n++) if (sigPlan[n]) lit.push(nodeIds[n], sigPhase[n], sigT[n], sigLen[n]);
+  const signals = new Float32Array(lit);
   // The water level changes slowly, so it rides along every third frame.
   const wet = frames++ % 3 === 0 ? river.frame() : undefined, flooded = wet ? river.flooded.slice() : undefined;
-  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
+  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, signals, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
 }
 
 // ---- census, utilities, pollution, growth --------------------------------------------------------
@@ -2039,6 +2152,7 @@ function refreshMaps(): void {
 function substep(scale = 1): void {
   const dt = scale / SIM_HZ;
   simTime += dt;
+  stepSignals(dt);
   stepCars(dt);
   spawn(dt);
   for (let k = 0; k < WATER_HZ / SIM_HZ; k++) river.step(scale);
@@ -2244,7 +2358,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         const leg = c.legs[c.li], node = legEndNode(leg), desc = (o: Car | null | undefined): string => o ? `seg${segs[o.legs[o.li].seg].id}${o.legs[o.li].fwd ? 'f' : 'b'} li${o.li}/${o.legs.length} p${o.p.toFixed(2)}/${o.legs[o.li].p1.toFixed(2)} lane${o.lane}>${o.nextLane} box${o.box} ch${o.chT >= 0 ? 1 : 0} stuck${o.stuck.toFixed(1)} v${o.vehicle}` : 'gone';
         return { car: desc(c), node: nodeIds[node], type: nodeType[node], wait: boxWait[node] >= 0 ? `${boxWait[node]}: ${desc(slots[boxWait[node]])}` : '-', box: (boxCars[node] ?? []).map(o => `${o}: ${desc(slots[o])}`), want: wantedLanes(c) };
       });
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch } as never);
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits } } as never);
       break;
     }
     case 'warm': {
