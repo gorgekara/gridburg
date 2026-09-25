@@ -154,6 +154,18 @@ export function buildPieces(p: { x: number; z: number }[]): Curve[] {
   return out;
 }
 
+/** A control point in the frame of its chord, so it can follow when either end moves. */
+function chordRel(a: { x: number; z: number }, b: { x: number; z: number }, cx: number, cz: number): { u: number; v: number } {
+  const dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+  if (l2 < 1e-9) return { u: 0.5, v: 0 };
+  return { u: ((cx - a.x) * dx + (cz - a.z) * dz) / l2, v: ((cx - a.x) * -dz + (cz - a.z) * dx) / l2 };
+}
+
+function chordAbs(a: { x: number; z: number }, b: { x: number; z: number }, r: { u: number; v: number }): { x: number; z: number } {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  return { x: a.x + dx * r.u - dz * r.v, z: a.z + dz * r.u + dx * r.v };
+}
+
 function segSegIntersect(
   ax: number, az: number, bx: number, bz: number,
   cx: number, cz: number, dx: number, dz: number,
@@ -428,34 +440,203 @@ export class Network {
 
     let fromId = startId;
     for (let k = 0; k < pieces.length; k++) {
-      let c = pieces[k];
+      const c = pieces[k];
       const lastPiece = k === pieces.length - 1;
       const toId = lastPiece ? endId : this.resolveEndpoint(c.bx, c.bz);
-      const tn = this.nodes.get(toId)!;
-      const fn = this.nodes.get(fromId)!;
-      c = { ...c, ax: fn.x, az: fn.z, bx: tn.x, bz: tn.z };
-      for (let guard = 0; guard < 40; guard++) {
-        const sm = sampleCurve(c);
-        const hit = structure ? null : this.firstCrossing(c, sm);
-        if (!hit || !this.segs.has(hit.segId)) {
-          const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway, false, 0.4, structure);
-          if (s) added.push(s.id);
-          break;
-        }
-        const xId = this.splitOrSnap(hit.segId, hit.tSeg, 0.6);
-        const [left, right] = splitCurve(c, hit.t);
-        if (xId !== fromId) {
-          const s = this.addSeg(fromId, xId, left.cx, left.cz, kind, oneway);
-          if (s) added.push(s.id);
-        }
-        const xn = this.nodes.get(xId)!;
-        c = { ...right, ax: xn.x, az: xn.z };
-        fromId = xId;
-        if (xId === toId) break;
-      }
+      added.push(...this.layCurve(fromId, toId, c, kind, oneway, structure));
       fromId = toId;
     }
     return added;
+  }
+
+  /**
+   * Lay one curve between two existing nodes, turning every crossing with a surface road into a
+   * junction on the way. The curve's ends are pinned to the nodes. Returns the new segment ids.
+   */
+  layCurve(fromId: number, toId: number, curve: Curve, kind: number, oneway = false, structure: 0 | 1 | 2 = 0): number[] {
+    const added: number[] = [];
+    const fn = this.nodes.get(fromId)!, tn = this.nodes.get(toId)!;
+    let c: Curve = { ...curve, ax: fn.x, az: fn.z, bx: tn.x, bz: tn.z };
+    for (let guard = 0; guard < 40; guard++) {
+      const sm = sampleCurve(c);
+      const hit = structure ? null : this.firstCrossing(c, sm);
+      if (!hit || !this.segs.has(hit.segId)) {
+        const s = this.addSeg(fromId, toId, c.cx, c.cz, kind, oneway, false, 0.4, structure);
+        if (s) added.push(s.id);
+        break;
+      }
+      const xId = this.splitOrSnap(hit.segId, hit.tSeg, 0.6);
+      const [left, right] = splitCurve(c, hit.t);
+      if (xId !== fromId) {
+        const s = this.addSeg(fromId, xId, left.cx, left.cz, kind, oneway);
+        if (s) added.push(s.id);
+      }
+      const xn = this.nodes.get(xId)!;
+      c = { ...right, ax: xn.x, az: xn.z };
+      fromId = xId;
+      if (xId === toId) break;
+    }
+    return added;
+  }
+
+  // ---- direct editing: drag, bend, cut, re-kind ------------------------------------------------
+  /** Whether the player may reshape this road: not the map's own motorway, and not a roundabout's ring. */
+  editable(seg: RSeg): boolean {
+    return !seg.fixed && !(this.nodes.get(seg.a)?.ring && this.nodes.get(seg.b)?.ring);
+  }
+
+  /** Curve parameter at arc length `s` along a segment (its samples are uniform in t). */
+  static tAt(seg: RSeg, s: number): number {
+    const { cum, n } = seg;
+    if (s <= 0) return 0;
+    if (s >= seg.len) return 1;
+    let lo = 0, hi = n;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] <= s) lo = mid; else hi = mid;
+    }
+    return (lo + (s - cum[lo]) / (cum[lo + 1] - cum[lo] || 1)) / n;
+  }
+
+  /**
+   * Drag a node somewhere else. Every road on it follows, keeping its bend in proportion; dropped on
+   * another node the two merge, and wherever the moved roads now cross others a junction forms.
+   * Returns the ids of the re-laid segments, or null when the node cannot be moved.
+   */
+  moveNode(id: number, x: number, z: number): number[] | null {
+    const node = this.nodes.get(id);
+    if (!node || node.fixed || node.entry || node.ring) return null;
+    const segs = this.segsAt(id);
+    if (segs.some((s) => !this.editable(s))) return null;
+    x = Math.max(0.3, Math.min(GRID - 0.3, x));
+    z = Math.max(0.3, Math.min(GRID - 0.3, z));
+    const plans = segs.map((s) => ({ s, rel: chordRel(this.nodes.get(s.a)!, this.nodes.get(s.b)!, s.cx, s.cz) }));
+    let target: RNode | null = null, td = 0.9;
+    for (const n of this.nodes.values()) {
+      const d = Math.hypot(n.x - x, n.z - z);
+      if (n.id !== id && d < td) { td = d; target = n; }
+    }
+    const endId = target ? target.id : id;
+    if (!target) { node.x = x; node.z = z; }
+    for (const { s } of plans) this.removeSegKeepNodes(s.id);
+    const added: number[] = [];
+    const touched = new Set<number>([id, endId]);
+    for (const { s, rel } of plans) {
+      const a = s.a === id ? endId : s.a, b = s.b === id ? endId : s.b;
+      touched.add(a); touched.add(b);
+      if (a === b) continue;
+      const an = this.nodes.get(a)!, bn = this.nodes.get(b)!;
+      const c = chordAbs(an, bn, rel);
+      const ids = s.structure
+        ? [this.addSeg(a, b, c.x, c.z, s.kind, s.oneway, false, 0.4, s.structure)?.id].filter((v): v is number => v !== undefined)
+        : this.layCurve(a, b, { ax: an.x, az: an.z, cx: c.x, cz: c.z, bx: bn.x, bz: bn.z }, s.kind, s.oneway);
+      for (const sid of ids) this.carryOver(s, sid);
+      added.push(...ids);
+    }
+    this.prune(touched);
+    this.version++;
+    return added;
+  }
+
+  /** Reshape a road by moving its bend. New crossings become junctions. */
+  bendSeg(id: number, cx: number, cz: number): number[] | null {
+    const s = this.segs.get(id);
+    if (!s || !this.editable(s)) return null;
+    if (s.structure) {
+      s.cx = cx; s.cz = cz;
+      this.resample(s);
+      this.version++;
+      return [id];
+    }
+    const a = this.nodes.get(s.a)!, b = this.nodes.get(s.b)!;
+    this.removeSegKeepNodes(id);
+    const ids = this.layCurve(s.a, s.b, { ax: a.x, az: a.z, cx, cz, bx: b.x, bz: b.z }, s.kind, s.oneway);
+    if (!ids.length) {
+      // Nothing could be laid (it doubled back onto another road): put the old one back.
+      this.segs.set(id, s);
+      this.adj.get(s.a)!.push(id);
+      this.adj.get(s.b)!.push(id);
+      this.resample(s);
+      return null;
+    }
+    for (const sid of ids) this.carryOver(s, sid);
+    this.version++;
+    return ids;
+  }
+
+  /**
+   * Remove the stretch of a road between arc lengths s0 and s1, leaving dead ends. A cut within half a
+   * cell of an end takes the end with it. Bridges and tunnels only come out whole.
+   */
+  cutRange(id: number, s0: number, s1: number): boolean {
+    const s = this.segs.get(id);
+    if (!s || !this.editable(s)) return false;
+    const r = this.range(s, s0, s1);
+    if (!r) return false;
+    if (r.whole) { this.removeSeg(id); return true; }
+    if (s.structure) return false;
+    this.removeSeg(this.isolate(id, r.s0, r.s1));
+    return true;
+  }
+
+  /**
+   * Change the kind of a stretch of road, splitting it out of the segment. Spans change whole; the
+   * one-way highway kinds only go on whole roads. Returns the changed segment ids.
+   */
+  setKindRange(id: number, s0: number, s1: number, kind: number): number[] | null {
+    const s = this.segs.get(id);
+    if (!s || !this.editable(s)) return null;
+    const r = this.range(s, s0, s1);
+    if (!r) return null;
+    let target = id;
+    if (!r.whole && !s.structure) {
+      if (isOneWayKind(kind)) return null;
+      target = this.isolate(id, r.s0, r.s1);
+    }
+    const seg = this.segs.get(target)!;
+    seg.kind = kind;
+    if (!canAddBikeLane(seg, this)) seg.bike = false;
+    this.version++;
+    return [target];
+  }
+
+  /** Tidy a requested stretch: ordered, clamped, and swallowing ends closer than half a cell. */
+  private range(s: RSeg, s0: number, s1: number): { s0: number; s1: number; whole: boolean } | null {
+    if (s0 > s1) [s0, s1] = [s1, s0];
+    s0 = s0 < 0.5 ? 0 : s0;
+    s1 = s.len - s1 < 0.5 ? s.len : s1;
+    if (s1 - s0 < 0.3) return null;
+    return { s0, s1, whole: s0 === 0 && s1 === s.len };
+  }
+
+  /** Split a segment at two arc lengths and return the id of the piece between them. */
+  private isolate(id: number, s0: number, s1: number): number {
+    let mid = id;
+    const s = this.segs.get(id)!;
+    if (s1 < s.len) mid = this.splitSeg(id, Network.tAt(s, s1)).left!.id;
+    if (s0 > 0) {
+      const left = this.segs.get(mid)!;
+      mid = this.splitSeg(mid, Network.tAt(left, s0)).right!.id;
+    }
+    return mid;
+  }
+
+  private carryOver(from: RSeg, id: number): void {
+    const s = this.segs.get(id);
+    if (!s) return;
+    s.calm = from.calm;
+    s.bike = !!from.bike && canAddBikeLane(s, this);
+  }
+
+  /** Drop nodes an edit left with nothing attached, and signals on what is no longer a junction. */
+  private prune(ids: Set<number>): void {
+    for (const nid of ids) {
+      const n = this.nodes.get(nid);
+      if (!n) continue;
+      const deg = this.degree(nid);
+      if (deg === 0 && !n.fixed && !n.entry) { this.nodes.delete(nid); this.adj.delete(nid); }
+      else if (deg < 3) { n.light = false; n.stop = false; }
+    }
   }
 
   /** Remove every non-fixed segment that passes through the rectangle. Returns how many went. */
