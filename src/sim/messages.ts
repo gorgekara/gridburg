@@ -106,7 +106,7 @@ export type MainToWorker =
   | { type: 'loan'; action: 'take' | 'repay' }
   | { type: 'inspect'; tile: number }
   /** Tests only: start these trips (by segment id and distance along it) and report traffic counters. */
-  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number }[] };
+  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number }[]; watch?: number[] };
 
 export type WorkerToMain =
   | { type: 'notice'; message: string }

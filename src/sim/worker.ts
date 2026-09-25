@@ -245,6 +245,8 @@ interface Car {
   laneWait: number;
   /** The junction box it is inside (−1 for none), and the leg it entered it from. */
   box: number; boxLi: number;
+  /** When it was last held at a stop line by nothing but traffic crossing the box. */
+  boxBlockedAt: number;
 }
 const trafficSpace = new TrafficSpace();
 const spawnSpace = new TrafficSpace();
@@ -727,7 +729,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   if (!trafficSpace.free(placement) || !spawnSpace.free(placement)) return false;
   freeList.pop(); trafficSpace.set(slot, placement);
   slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, pace: drivingPace(vehicle), stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
-    lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1 };
+    lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
 }
@@ -949,12 +951,15 @@ function cornerPose(c: Car, li: number, p: number): VehiclePose | null {
   // a wide road lies well out from the centre line, and turning any later hooks back across the box.
   const reach = (l: Leg, other: number): number => Math.min(Math.max(CORNER, Math.abs(other) + 0.15), (l.p1 - l.p0) * 0.45);
   const next = c.legs[li + 1], prev = c.legs[li - 1];
-  const here = latOf(c, li, p);
-  if (next && leg.p1 - p < reach(leg, latOf(c, li + 1, next.p0))) {
-    const there = latOf(c, li + 1, next.p0);
+  // Measured from the lanes' own centres, not where the car happens to be mid lane change, so the
+  // corner does not move under a car already rounding it.
+  const laneAt = (l: number): number => c.vehicle === 8 || ringArc[c.legs[l].seg] ? 0 : centreOf(c.legs[l], l === c.li ? c.lane : l === c.li + 1 ? Math.max(0, c.nextLane) : c.prevLane);
+  const here = laneAt(li);
+  if (next && leg.p1 - p < reach(leg, laneAt(li + 1))) {
+    const there = laneAt(li + 1);
     fi = li; ti = li + 1; ra = reach(leg, there); rb = reach(next, here); along = ra - (leg.p1 - p);
-  } else if (prev && p - leg.p0 < reach(leg, latOf(c, li - 1, prev.p1))) {
-    const there = latOf(c, li - 1, prev.p1);
+  } else if (prev && p - leg.p0 < reach(leg, laneAt(li - 1))) {
+    const there = laneAt(li - 1);
     fi = li - 1; ti = li; ra = reach(prev, here); rb = reach(leg, there); along = ra + (p - leg.p0);
   }
   if (fi < 0 || ra <= 1e-3 || rb <= 1e-3) return null;
@@ -1296,12 +1301,16 @@ function stepCars(dt: number): void {
         // Room on the far side, in the lane it will take, measured from where this car will actually land:
         // enough to stand behind the longest vehicle that could already be there.
         const clear = Math.max(GAP[segs[next.seg].kind], (vehicleLength(c.vehicle) + vehicleLength(3)) / 2 + 0.06);
-        let canGo = laneTail[nextKey] - next.p0 > Math.min(clear, (next.p1 - next.p0) * 0.6);
+        // Don't block the box: go only if there is room to get the whole car out past the junction,
+        // not just its nose, or it stops across the crossing traffic's path and locks the junction.
+        const span1 = next.p1 - next.p0;
+        const out = Math.min(0.8, segs[next.seg].len * 0.5) + vehicleLength(c.vehicle) / 2 + 0.1;
+        let canGo = laneTail[nextKey] - next.p0 > Math.min(Math.max(clear, nodeType[node] === J_PLAIN || nodeType[node] === J_RING ? 0 : out), span1 * 0.9);
         const type = nodeType[node];
-        let redLight = false;
-        if (type === J_LIGHT && !pastStop) {
+        // Blue lights: a callout goes through on red, and everyone else waits for it.
+        if (type === J_LIGHT && !pastStop && !c.mission) {
           const g = nodeGroups[node].get(leg.seg) ?? 0;
-          if (!isGreen(simTime, nodeIds[node], g)) { canGo = false; redLight = true; }
+          if (!isGreen(simTime, nodeIds[node], g)) canGo = false;
         }
         // An all-way stop: come to a halt at the line, then take your turn like any other junction.
         if (type === J_STOP && !pastStop && c.stopAt !== node) {
@@ -1311,7 +1320,10 @@ function stepCars(dt: number): void {
         // In a lane that does not go its way: hold at the line a while for a chance to move over.
         if (type !== J_PLAIN && type !== J_RING && !pastStop && c.p >= stopP - 0.3) {
           const want = wantedLanes(c);
-          if (want && !want.includes(c.lane) && c.laneWait < 8) { c.laneWait += dt; canGo = false; }
+          // Fire engines, patrols and other callouts take the turn from whatever lane they are in.
+          if (want && !want.includes(c.lane) && c.laneWait < 8 && !c.mission) { c.laneWait += dt; canGo = false; }
+          // Finish sliding into a lane before turning out of it.
+          if (c.chT >= 0) canGo = false;
         }
         // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
         // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
@@ -1361,8 +1373,10 @@ function stepCars(dt: number): void {
           const atLine = front && c.p >= stopP - 0.3;
           const list = boxCars[node];
           for (let k = list.length - 1; k >= 0; k--) { const o = slots[list[k]]; if (!o || o.box !== node) list.splice(k, 1); }
-          const waiting = boxWait[node];
-          if (waiting >= 0 && (waiting === slot ? false : !slots[waiting] || slots[waiting]!.box === node || legEndNode(slots[waiting]!.legs[slots[waiting]!.li]) !== node)) boxWait[node] = -1;
+          // A booking only stands while the car that made it is still being held by crossing traffic
+          // alone. Held up by a full exit, a red light or its own lane change, it would only block others.
+          const waiting = boxWait[node], w = waiting >= 0 ? slots[waiting] : null;
+          if (waiting >= 0 && waiting !== slot && (!w || w.box === node || legEndNode(w.legs[w.li]) !== node || w.boxBlockedAt < simTime - 0.2)) boxWait[node] = -1;
           if (canGo && atLine) {
             const mine = movementOf(c, node);
             let blocked = false;
@@ -1372,10 +1386,17 @@ function stepCars(dt: number): void {
             if (!blocked) {
               c.box = node; c.boxLi = c.li; list.push(slot);
               if (boxWait[node] === slot) boxWait[node] = -1;
-            } else canGo = false;
-          } else canGo = false;
-          // Waiting out a red light is not waiting for the box: it must not hold up the green traffic.
-          if (!canGo && !redLight && atLine && c.stuck > 4 && boxWait[node] < 0) boxWait[node] = slot;
+            } else {
+              canGo = false;
+              c.boxBlockedAt = simTime;
+              // Held by crossing traffic alone: book the box once it has waited a while (a callout
+              // almost at once), so a busy stream cannot starve it.
+              if (c.stuck > (c.mission ? 1 : 4) && boxWait[node] < 0) boxWait[node] = slot;
+            }
+          } else {
+            canGo = false;
+            if (boxWait[node] === slot) boxWait[node] = -1;
+          }
         }
         if (!canGo) maxP = Math.min(maxP, pastStop ? legEnd - 0.02 : stopP);
       }
@@ -2216,7 +2237,14 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         if (!want || nodeType[legEndNode(leg)] === J_PLAIN || leg.p1 - c.p > 1.6) continue;
         near++; if (want.includes(c.lane)) right++;
       }
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy) });
+      // Tests may ask after particular cars: where they are, and what the junction ahead is doing.
+      const watch = (m.watch ?? []).map(slot => {
+        const c = slots[slot];
+        if (!c) return null;
+        const leg = c.legs[c.li], node = legEndNode(leg), desc = (o: Car | null | undefined): string => o ? `seg${segs[o.legs[o.li].seg].id}${o.legs[o.li].fwd ? 'f' : 'b'} li${o.li}/${o.legs.length} p${o.p.toFixed(2)}/${o.legs[o.li].p1.toFixed(2)} lane${o.lane}>${o.nextLane} box${o.box} ch${o.chT >= 0 ? 1 : 0} stuck${o.stuck.toFixed(1)} v${o.vehicle}` : 'gone';
+        return { car: desc(c), node: nodeIds[node], type: nodeType[node], wait: boxWait[node] >= 0 ? `${boxWait[node]}: ${desc(slots[boxWait[node]])}` : '-', box: (boxCars[node] ?? []).map(o => `${o}: ${desc(slots[o])}`), want: wantedLanes(c) };
+      });
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch } as never);
       break;
     }
     case 'warm': {
