@@ -7,7 +7,7 @@ import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { driverFor, idmAccel, stepMotion, curveSpeed, turnRadius, approachSpeed, segMinRadius } from './driver';
 import { turnOf, criticalGap } from './priority';
-import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE, SOLID_STRETCH } from '../roads/control';
+import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE, SOLID_STRETCH, ZEBRA_HALF } from '../roads/control';
 import { crossingApproaches } from '../roads/crossings';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute } from './transit';
@@ -29,10 +29,10 @@ import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
 import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, ROAD_LABEL, isCarriageway } from '../roads/network';
-import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, AMBER, ALL_RED, MIN_GREEN } from '../roads/signals';
+import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, crossingState, AMBER, ALL_RED, MIN_GREEN } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
-import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
+import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, sideHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
 import { isOneWayKind } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
@@ -261,6 +261,26 @@ let nodeIn: { seg: number; fwd: boolean }[][] = [];
  * coming along (seg·2 + dir) is −1 for none, and traffic ahead of it on that same approach goes on.
  */
 let blueAt = new Uint8Array(0), blueFrom = new Int32Array(0);
+/**
+ * Zebra crossings, where people cross and traffic gives way to them. Each lies across one end of a
+ * segment: its centre, the direction across (to the right of a→b), the sideways extent of the road
+ * (lo to hi in that direction), the people waiting at each kerb and those walking across.
+ */
+interface Walker { u: number; dir: 1 | -1; v: number; id: number }
+interface Crossing {
+  node: number; seg: number; end: 0 | 1; dist: number;
+  cx: number; cz: number; ux: number; uz: number; lo: number; hi: number;
+  waiting: [number, number]; lastStep: [number, number]; rate: number; walkers: Walker[];
+}
+let crossings: Crossing[] = [];
+/** Per segment end (seg·2 + end, 0 at a): the crossing there, or −1. */
+let crossingAt = new Int32Array(0);
+let walkerSeq = 0, walkersOut = 0;
+/** Tests only: every crossing's arrival rate, instead of the buildings'; −1 for none. */
+let walkRateOverride = -1;
+/** People walk about 1.3 m/s: 0.3 cells a game second. At most this many out at once, and waiting per kerb. */
+const WALK_SPEED = 0.3, MAX_WALKERS = 320, MAX_WAITING = 6;
+
 /** Per approach (seg·2 + dir): how far before its end node traffic holds. */
 let approachSetback = new Float32Array(0);
 /**
@@ -551,6 +571,21 @@ function applyNetwork(p: EditPayload): void {
         if (ringArc[i]) continue;
         const zebra = zebras.get(sg.id)?.[fwd ? 1 : 0] ?? 0;
         approachSetback[i * 2 + (fwd ? 0 : 1)] = stopLine(net, nodeIds[end], zebra) + HOLD_BEHIND_LINE;
+      }
+    });
+    // The crossings people use: every zebra the renderer paints.
+    crossings = []; walkersOut = 0;
+    crossingAt = new Int32Array(segs.length * 2).fill(-1);
+    const pose = { x: 0, z: 0, tx: 0, tz: 0 };
+    segs.forEach((sg, i) => {
+      const ends = zebras.get(sg.id);
+      if (!ends) return;
+      for (const end of [0, 1] as const) {
+        if (!ends[end]) continue;
+        Network.poseAt(sg, end ? sg.len - ends[end] : ends[end], pose);
+        crossingAt[i * 2 + end] = crossings.length;
+        crossings.push({ node: end ? segB[i] : segA[i], seg: i, end, dist: ends[end], cx: pose.x, cz: pose.z, ux: -pose.tz, uz: pose.tx,
+          lo: -sideHalf(sg, -1), hi: sideHalf(sg, 1), waiting: [0, 0], lastStep: [-9, -9], rate: 0.01, walkers: [] });
       }
     });
   }
@@ -1742,6 +1777,8 @@ function stepCars(dt: number): void {
             }
             // Priority: off the major road, wait for a gap in it; a booking made after long patience forces the way in.
             if (!blocked && nodePriority[node] && boxWait[node] !== slot && !c.insistent && priorityBlocked(c, node, mine)) blocked = true;
+            // People on a crossing it would pass over: it waits for them, whoever has priority.
+            if (!blocked && walkersBlock(c, node)) blocked = true;
             // Whoever has waited longest has booked the box: nothing that would cut across it goes first.
             if (!blocked && boxWait[node] >= 0 && boxWait[node] !== slot && !c.insistent) { const m = heldMovement(boxWait[node], node); if (m && conflicts(mine, m)) blocked = true; }
             if (!blocked) {
@@ -1963,6 +2000,131 @@ const BOX_GAP = 1.6;
 /** How fast a car turns off the road at the end of its trip. */
 const ARRIVE_SPEED = 0.8;
 
+// ---- people crossing -------------------------------------------------------------------------------
+/** The sideways band (lo, hi in the crossing's across direction) of the traffic arriving at, or leaving, its junction. */
+function crossingHalf(cr: Crossing, arriving: boolean): [number, number] {
+  if (segs[cr.seg].oneway) return [cr.lo, cr.hi];
+  // Arriving at the b end is travelling a→b, on the right of a→b; leaving from the a end is too.
+  return (cr.end === 1) === arriving ? [0, cr.hi] : [cr.lo, 0];
+}
+
+/** What a signalled crossing's heads show now. */
+function crossingSignal(cr: Crossing): 'walk' | 'flash' | 'stop' {
+  const plan = sigPlan[cr.node];
+  if (!plan) return 'walk';
+  const prefix = `${segs[cr.seg].id}${cr.end === 1 ? 'f' : 'b'}>`;
+  const from = new Set<string>();
+  for (const ph of plan.phases) for (const k of Object.keys(ph.moves)) if (k.startsWith(prefix)) from.add(k);
+  return crossingState(plan, sigPhase[cr.node], sigT[cr.node], sigLen[cr.node], [...from], (cr.hi - cr.lo + 0.1) / WALK_SPEED);
+}
+
+/**
+ * Whether stepping out now would put someone in front of a car: one arriving along the road that could
+ * not stop in time, one on the crossing, or one in the junction box about to cross it. A car standing
+ * at its line is no threat: it will wait.
+ */
+function crossingBusy(cr: Crossing): boolean {
+  const sg = segs[cr.seg];
+  for (const arriving of [true, false]) {
+    const fwd = arriving ? cr.end === 1 : cr.end === 0;
+    if (!fwd && sg.oneway) continue;
+    for (let l = 0; l < Math.max(1, dirLanes[cr.seg * 2 + (fwd ? 0 : 1)]); l++) for (const slot of laneCars[laneKey(cr.seg, fwd, l)]) {
+      const o = slots[slot];
+      if (!o) continue;
+      const len = vehicleLength(o.vehicle), leg = o.legs[o.li];
+      // How far its nose is from the near edge of the crossing, along its way.
+      const toZebra = arriving ? leg.p1 - o.p - cr.dist - ZEBRA_HALF - len / 2 : cr.dist - ZEBRA_HALF - o.p - len / 2;
+      const past = -(2 * ZEBRA_HALF + len);
+      if (toZebra < past) continue;
+      if (toZebra <= 0.05) return true;
+      if (arriving && o.v > 0.3 && toZebra < (o.v * o.v) / (2 * driverFor(o.vehicle).b) + 0.4) return true;
+    }
+  }
+  for (const slot of boxCars[cr.node] ?? []) {
+    const o = slots[slot];
+    if (!o || o.box !== cr.node) continue;
+    const entry = o.legs[o.boxLi], exit = o.legs[o.boxLi + 1];
+    if (entry?.seg === cr.seg || exit?.seg === cr.seg) return true;
+  }
+  // A car about to turn in off another road, moving too fast to have stopped for them.
+  for (const a of nodeIn[cr.node] ?? []) {
+    if (a.seg === cr.seg) continue;
+    for (let l = 0; l < Math.max(1, dirLanes[a.seg * 2 + (a.fwd ? 0 : 1)]); l++) for (const slot of laneCars[laneKey(a.seg, a.fwd, l)]) {
+      const o = slots[slot], next = o?.legs[o.li + 1];
+      if (!o || !next || next.seg !== cr.seg || o.v < 0.5) continue;
+      if ((o.legs[o.li].p1 - o.p) / o.v < 1.5) return true;
+    }
+  }
+  return false;
+}
+
+/** People on a crossing car `c` will pass over at `node` (its own zebra coming in, the next road's going out): it must wait. */
+function walkersBlock(c: Car, node: number): boolean {
+  const leg = c.legs[c.li], next = c.legs[c.li + 1];
+  const on = (index: number, arriving: boolean): boolean => {
+    if (index < 0) return false;
+    const cr = crossings[index];
+    const [a, b] = crossingHalf(cr, arriving);
+    // Anyone in its half, or walking towards it and not yet across it, will be in its way.
+    if (cr.walkers.some(w => (w.dir > 0 ? w.u < b + 0.15 : w.u > a - 0.15))) return true;
+    // At a signal, people waiting on the walk have the right of way over traffic turning across them.
+    return !arriving && nodeType[node] === J_LIGHT && (cr.waiting[0] > 0 || cr.waiting[1] > 0) && crossingSignal(cr) === 'walk';
+  };
+  return on(crossingAt[leg.seg * 2 + (leg.fwd ? 1 : 0)], true) || (!!next && on(crossingAt[next.seg * 2 + (next.fwd ? 0 : 1)], false));
+}
+
+/** People arrive at the kerbs, step out when their crossing lets them, and walk across. */
+function stepWalkers(dt: number): void {
+  const hour = (tick / 20) % 24, night = hour < 6 || hour > 22 ? 0.3 : 1;
+  for (const cr of crossings) {
+    for (const end of [0, 1] as const) {
+      if (walkersOut < MAX_WALKERS && cr.waiting[end] < MAX_WAITING && Math.random() < cr.rate * trafficScale * night * dt) { cr.waiting[end]++; walkersOut++; }
+    }
+    if (cr.waiting[0] || cr.waiting[1]) {
+      const allowed = nodeType[cr.node] !== J_LIGHT || crossingSignal(cr) === 'walk';
+      if (allowed && !crossingBusy(cr)) for (const end of [0, 1] as const) {
+        if (!cr.waiting[end] || simTime - cr.lastStep[end] < 0.7) continue;
+        cr.waiting[end]--; cr.lastStep[end] = simTime;
+        cr.walkers.push({ u: end === 0 ? cr.lo - 0.05 : cr.hi + 0.05, dir: end === 0 ? 1 : -1, v: WALK_SPEED * (0.85 + Math.random() * 0.3), id: ++walkerSeq });
+      }
+    }
+    for (let k = cr.walkers.length - 1; k >= 0; k--) {
+      const w = cr.walkers[k];
+      w.u += w.dir * w.v * dt;
+      if (w.u > cr.hi + 0.06 || w.u < cr.lo - 0.06) { cr.walkers.splice(k, 1); walkersOut--; }
+    }
+  }
+}
+
+/** How many people come to each crossing: more among busy buildings, a trickle among quiet ones. */
+function refreshCrossingRates(): void {
+  for (const cr of crossings) {
+    let busy = 0;
+    const x0 = Math.floor(cr.cx), z0 = Math.floor(cr.cz);
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+      const x = x0 + dx, z = z0 + dz;
+      if (x < 0 || z < 0 || x >= GRID || z >= GRID) continue;
+      const i = z * GRID + x;
+      if (isZone(kind[i])) busy += level[i];
+    }
+    cr.rate = walkRateOverride >= 0 ? walkRateOverride : Math.min(0.2, Math.max(0.01, busy * 0.004));
+  }
+}
+
+/** Everyone at or on a crossing, for drawing: x, z, heading, 1 waiting or 2 crossing, and who. */
+function walkerFrame(): Float32Array {
+  const out: number[] = [], half = GRID / 2;
+  for (const cr of crossings) {
+    const tx = cr.uz, tz = -cr.ux;
+    for (const w of cr.walkers) out.push(cr.cx + cr.ux * w.u - half, cr.cz + cr.uz * w.u - half, Math.atan2(cr.ux * w.dir, cr.uz * w.dir), 2, w.id);
+    for (const end of [0, 1] as const) for (let k = 0; k < Math.min(3, cr.waiting[end]); k++) {
+      const u = end === 0 ? cr.lo - 0.1 : cr.hi + 0.1, along = (k - 1) * 0.07, dir = end === 0 ? 1 : -1;
+      out.push(cr.cx + cr.ux * u + tx * along - half, cr.cz + cr.uz * u + tz * along - half, Math.atan2(cr.ux * dir, cr.uz * dir), 1, (cr.seg * 7 + end * 3 + k) * 2654435761 % 100000);
+    }
+  }
+  return new Float32Array(out);
+}
+
 /** A car leaves its leg: count it, and its delay there, against that direction of the road. */
 function countLeft(c: Car): void {
   const leg = c.legs[c.li], dk = leg.seg * 2 + (leg.fwd ? 0 : 1);
@@ -2090,11 +2252,13 @@ function writeFrame(): void {
   const signals = new Float32Array(lit);
   // The water level changes slowly, so it rides along every third frame.
   const wet = frames++ % 3 === 0 ? river.frame() : undefined, flooded = wet ? river.flooded.slice() : undefined;
-  post({ type: 'frame', carHeights, carPitch, carIds, carFlags, cars: out, segCong: cong, signals, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, carFlags.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
+  const walkers = walkerFrame();
+  post({ type: 'frame', carHeights, carPitch, carIds, carFlags, walkers, cars: out, segCong: cong, signals, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, carFlags.buffer, walkers.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
 }
 
 // ---- census, utilities, pollution, growth --------------------------------------------------------
 function census(): void {
+  refreshCrossingRates();
   parkReach = parkAccess(kind, roadConnected);
   pop = 0; comJobs = 0; indJobs = 0; officeJobs = 0; buildings = 0;
   resTiles = []; resW = []; jobTiles = []; jobW = [];
@@ -2637,6 +2801,7 @@ function substep(scale = 1): void {
   simTime += dt;
   stepSignals(dt);
   stepCars(dt);
+  stepWalkers(dt);
   spawn(dt);
   for (let k = 0; k < WATER_HZ / SIM_HZ; k++) river.step(scale);
   subCount += scale;
@@ -2818,6 +2983,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       postInspection();
       break;
     case 'probe': {
+      if (typeof m.walkRate === 'number') { walkRateOverride = m.walkRate; for (const cr of crossings) cr.rate = m.walkRate; }
       const index = new Map(segs.map((s, i) => [s.id, i]));
       for (const t of m.trips ?? []) {
         const a = index.get(t.a), b = index.get(t.b);
@@ -2845,8 +3011,9 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         return { car: desc(c), node: nodeIds[node], type: nodeType[node], wait: boxWait[node] >= 0 ? `${boxWait[node]}: ${desc(slots[boxWait[node]])}` : '-', box: (boxCars[node] ?? []).map(o => `${o}: ${desc(slots[o])}`), want: wantedLanes(c) };
       });
       // And, when asked, every car's state: its road, how far along, and how fast.
-      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent }] : []) : undefined;
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits }, detail } as never);
+      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent, x: trafficSpace.poses.get(slot)?.x ?? 0, z: trafficSpace.poses.get(slot)?.z ?? 0, angle: trafficSpace.poses.get(slot)?.angle ?? 0 }] : []) : undefined;
+      const walkers = m.detail ? walkerFrame() : undefined;
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits }, detail, walkers } as never);
       break;
     }
     case 'warm': {

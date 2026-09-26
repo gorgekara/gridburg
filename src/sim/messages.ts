@@ -106,14 +106,14 @@ export type MainToWorker =
   | { type: 'loan'; action: 'take' | 'repay' }
   | { type: 'inspect'; tile: number; /** A road to inspect instead, by segment id. */ seg?: number }
   /** Tests only: start these trips (by segment id and distance along it) and report traffic counters. */
-  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number; callout?: boolean }[]; watch?: number[]; detail?: boolean };
+  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number; callout?: boolean }[]; watch?: number[]; detail?: boolean; walkRate?: number };
 
 export type WorkerToMain =
   | { type: 'notice'; message: string }
   | { type: 'probe'; arrived: number; gaveUp: number; cars: number; lanes: Record<number, number[]>; nearLine: number; rightLane: number; trips: Record<string, number> }
   | { type: 'inspection'; report: TileReport | null }
   | { type: 'state'; incidents: IncidentView; incidentSave: IncidentSnapshot; neglect: Uint8Array; level: Uint8Array; flags: Uint8Array; pollution: Uint8Array; riverPollution: Uint8Array; maps?: CityMaps; disaster?: DisasterView | null; stats: Stats }
-  | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; /** Each vehicle's lamps: CAR_BRAKE, CAR_LEFT, CAR_RIGHT, CAR_BLUE, CAR_LEAVING. */ carFlags: Uint8Array; cars: Float32Array; segCong: Uint8Array; /** Each signal's clock: node id, phase, seconds into it, and its green length, four numbers per light. */ signals: Float32Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface height of every tile holding water worth drawing (NaN elsewhere) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };
+  | { type: 'frame'; carHeights: Float32Array; carPitch: Float32Array; carIds: Uint32Array; /** Each vehicle's lamps: CAR_BRAKE, CAR_LEFT, CAR_RIGHT, CAR_BLUE, CAR_LEAVING. */ carFlags: Uint8Array; /** People at and on crossings: x, z, heading, 1 waiting or 2 crossing, and an id, five numbers each. */ walkers: Float32Array; cars: Float32Array; segCong: Uint8Array; /** Each signal's clock: node id, phase, seconds into it, and its green length, four numbers per light. */ signals: Float32Array; serial: number; cityTime: number; simTime: number; /** Every few frames: the water surface height of every tile holding water worth drawing (NaN elsewhere) and which land is under floodwater. */ water?: Float32Array; flooded?: Uint8Array };
 
 /** Frame flags for a vehicle's lamps: braking or standing, indicating left or right, blue lights, about to be removed. */
 export const CAR_BRAKE = 1, CAR_LEFT = 2, CAR_RIGHT = 4, CAR_BLUE = 8, CAR_LEAVING = 16;

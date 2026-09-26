@@ -75,6 +75,8 @@ export class Game {
   carPitch: Float32Array = new Float32Array(MAX_CARS);
   /** Each vehicle's lamps in the latest frame (CAR_BRAKE and the rest in sim/messages). */
   carFlags: Uint8Array = new Uint8Array(MAX_CARS);
+  /** People at and on crossings in the latest frame (see the frame message). */
+  walkers: Float32Array = new Float32Array(0);
   simTime = 0;
   cityTime = 0;
   /** Segment ids in the order last sent to the worker; congestion frames are indexed the same way. */
@@ -134,7 +136,7 @@ export class Game {
         this.carsNext = m.cars;
         this.prevTime = this.nextTime;
         this.nextTime = performance.now();
-        this.prevCarHeights = this.carHeights; this.carHeights = m.carHeights; this.carPitch = m.carPitch; this.carFlags = m.carFlags ?? this.carFlags;
+        this.prevCarHeights = this.carHeights; this.carHeights = m.carHeights; this.carPitch = m.carPitch; this.carFlags = m.carFlags ?? this.carFlags; this.walkers = m.walkers ?? this.walkers;
         this.simTime = m.simTime;
         this.cityTime = m.cityTime;
         if (m.water && m.flooded) { this.waterSurface = m.water; this.flooded = m.flooded; this.onWater?.(); }

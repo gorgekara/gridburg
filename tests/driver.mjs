@@ -277,7 +277,8 @@ test('a crossroads of two equal streets has no priority, and keeps flowing', () 
   ], 150);
   console.log(`  equal crossroads: ${r.flows.map(f => f.arrived).join('/')} trips, ${r.gaveUp} gave up`);
   assert.equal(r.gaveUp, 0);
-  for (const f of r.flows.slice(0, 4)) assert.ok(f.arrived >= 35, `${f.arrived} trips`);
+  // (People crossing at its zebras take a little of its capacity.)
+  for (const f of r.flows.slice(0, 4)) assert.ok(f.arrived >= 30, `${f.arrived} trips`);
 });
 
 test('the road inspector reports each direction\'s flow, speed, queue, delay and control', () => {
@@ -405,6 +406,68 @@ test('traffic makes way for blue lights: a callout gets through a queue on a sin
   const busy = throughQueue(true, true);
   console.log(`  with oncoming traffic: a callout ${busy.time.toFixed(1)} s, passing ${busy.passed} cars, ${busy.gaveUp} gave up in all`);
   assert.ok(Number.isFinite(busy.time) && busy.time < 30, 'it gets through');
+});
+
+// ---- people crossing ------------------------------------------------------------------------------
+/**
+ * Run traffic and people through a junction; count the people who crossed, the trips, and any moment a
+ * car's body was over someone on a crossing.
+ */
+function crossingRun(net, flows, seconds) {
+  load(net);
+  ask([], false);
+  send({ type: 'probe', trips: [], walkRate: 0.15 });
+  const start = ask([]);
+  const crossed = new Set(), next = flows.map(() => 0);
+  let hits = 0, t = 0;
+  for (let i = 0; i < seconds * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trips = [];
+    flows.forEach((f, k) => { if (t >= next[k]) { next[k] += -Math.log(1 - Math.random()) * f.every; trips.push({ a: f.from.seg, as: f.from.far, b: f.to.seg, bs: f.to.far }); } });
+    const r = ask(trips, true);
+    const w = r.walkers;
+    for (let k = 0; k < w.length; k += 5) {
+      if (w[k + 3] !== 2) continue;
+      crossed.add(w[k + 4]);
+      const px = w[k] + C.GRID / 2, pz = w[k + 1] + C.GRID / 2;
+      for (const c of r.detail) {
+        // In the car's own frame: along its heading, and across it.
+        const dx = px - c.x, dz = pz - c.z, sa = Math.sin(c.angle), ca = Math.cos(c.angle);
+        const along = dx * sa + dz * ca, across = dx * ca - dz * sa;
+        if (Math.abs(along) < 0.2 && Math.abs(across) < 0.13) { hits++; if (process.env.DBG && hits < 8) console.log('HIT t', t.toFixed(2), 'car', JSON.stringify({ seg: c.seg, fwd: c.fwd, p: +c.p.toFixed(2), li: c.li, legs: c.legs, v: +c.v.toFixed(2), box: c.box }), 'walker', w[k + 4], 'along', along.toFixed(2), 'across', across.toFixed(2)); }
+      }
+    }
+  }
+  const end = ask([]);
+  send({ type: 'probe', trips: [], walkRate: -1 });
+  return { crossed: crossed.size, hits, arrived: end.arrived - start.arrived, gaveUp: end.gaveUp - start.gaveUp };
+}
+
+test('people cross at the zebras, and cars wait for them: nobody is ever under a car', () => {
+  Math.random = C.mulberry32(41);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], N.KIND_ROAD);
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), sth = arm(net, 40, 40, 40, 62);
+  const r = crossingRun(net, [{ from: w, to: e, every: 3 }, { from: e, to: w, every: 3 }, { from: sth, to: w, every: 7 }, { from: w, to: sth, every: 7 }], 150);
+  console.log(`  zebras: ${r.crossed} people crossed, ${r.arrived} trips, ${r.gaveUp} gave up, ${r.hits} times a car was over someone`);
+  assert.ok(r.crossed >= 30, `${r.crossed} crossed`);
+  assert.equal(r.hits, 0);
+  assert.ok(r.arrived >= 60 && r.gaveUp <= 2, 'traffic still flows');
+});
+
+test('at a signal, people cross on their walk and turning cars give way to them', () => {
+  Math.random = C.mulberry32(42);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 16 }, { x: 40, z: 64 }], N.KIND_ROAD);
+  net.nearestNode(40, 40, 0.1).light = true;
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), n = arm(net, 40, 40, 40, 16), sth = arm(net, 40, 40, 40, 64);
+  const r = crossingRun(net, [{ from: w, to: e, every: 2 }, { from: e, to: w, every: 2 }, { from: w, to: sth, every: 5 }, { from: n, to: e, every: 5 }, { from: sth, to: n, every: 5 }], 150);
+  console.log(`  signal: ${r.crossed} people crossed, ${r.arrived} trips, ${r.gaveUp} gave up, ${r.hits} times a car was over someone`);
+  assert.ok(r.crossed >= 30, `${r.crossed} crossed`);
+  assert.equal(r.hits, 0);
+  assert.ok(r.arrived >= 80 && r.gaveUp <= 3, 'traffic still flows');
 });
 
 console.log(`${checks} driver checks passed; ${failures} failed`);

@@ -5,8 +5,11 @@ import { isMotorway } from '../roads/network';
 import type { Network, RSeg } from '../roads/network';
 import { roadHeight } from '../roads/structures';
 
-/** Most people the streets ever hold at once; the city's population sets how many are out. */
+/** Most people the pavements ever hold at once; the city's population sets how many are out. */
 const MAX_PEOPLE = 700;
+/** Room for the people at and on crossings too, which the simulation moves. */
+const MAX_CROSSING = 400;
+const MAX_ALL = MAX_PEOPLE + MAX_CROSSING;
 /** A person is about 0.13 tall against a car 0.31 long. */
 const HIP = 0.058;
 const CURB_TOP = 0.031;
@@ -41,9 +44,10 @@ function box(w: number, h: number, d: number, y: number, shade = 1, x = 0, z = 0
 
 /**
  * People on the pavements. They walk the kerbside strip of every street, avenue and lane (not the
- * expressways), turn onto another street at each junction, and stop now and then. How many are out
- * follows the population and thins after dark. Pure scenery, like the boats: the simulation's trips
- * are the cars.
+ * expressways), keep to their own corner at each junction (carrying on round it, or turning back), and
+ * stop now and then. How many are out follows the population and thins after dark. They are scenery;
+ * the people crossing at the zebras come from the simulation, which makes the traffic wait for them,
+ * and are drawn here with the same figures.
  */
 export class PedestrianLayer {
   readonly group = new THREE.Group();
@@ -94,13 +98,13 @@ export class PedestrianLayer {
     // A leg with its shoe at the foot.
     const leg = mergeBoxes([box(0.013, HIP - 0.006, 0.014, -HIP + 0.006), box(0.014, 0.007, 0.022, -HIP, 0.18, 0, 0.004)]);
     const bag = mergeBoxes([box(0.03, 0.03, 0.012, HIP + 0.006, 1, 0, -0.017), box(0.028, 0.003, 0.02, HIP + 0.041, 0.7, 0, -0.006)]);
-    this.torso = new THREE.InstancedMesh(torso, mat(), MAX_PEOPLE);
-    this.head = new THREE.InstancedMesh(head, mat(), MAX_PEOPLE);
-    this.hair = new THREE.InstancedMesh(hair, mat(), MAX_PEOPLE);
-    this.bag = new THREE.InstancedMesh(bag, mat(), MAX_PEOPLE);
-    this.legs = new THREE.InstancedMesh(leg, mat(), MAX_PEOPLE * 2);
-    this.arms = new THREE.InstancedMesh(arm, mat(), MAX_PEOPLE * 2);
-    this.hands = new THREE.InstancedMesh(hand, mat(), MAX_PEOPLE * 2);
+    this.torso = new THREE.InstancedMesh(torso, mat(), MAX_ALL);
+    this.head = new THREE.InstancedMesh(head, mat(), MAX_ALL);
+    this.hair = new THREE.InstancedMesh(hair, mat(), MAX_ALL);
+    this.bag = new THREE.InstancedMesh(bag, mat(), MAX_ALL);
+    this.legs = new THREE.InstancedMesh(leg, mat(), MAX_ALL * 2);
+    this.arms = new THREE.InstancedMesh(arm, mat(), MAX_ALL * 2);
+    this.hands = new THREE.InstancedMesh(hand, mat(), MAX_ALL * 2);
     for (const m of this.meshes) {
       m.count = 0; m.frustumCulled = false; m.castShadow = true;
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.instanceMatrix.count * 3), 3);
@@ -161,17 +165,25 @@ export class PedestrianLayer {
   private turn(p: Person): void {
     const net = this.net!;
     const node = p.dir > 0 ? p.seg.b : p.seg.a;
-    const options = net.segsAt(node).filter(s => s.id !== p.seg.id && this.walkable(s));
-    if (!options.length || this.random() < 0.08) { p.dir = -p.dir; p.side = -p.side; return; }
-    const next = options[Math.floor(this.random() * options.length)];
-    const fromA = next.a === node;
-    // Keep to the same hand of the person's own direction of travel.
+    // Keep to the same hand of the person's own direction of travel, and to their own corner: the road
+    // the kerb bends round to on that hand. Crossing a road is left to the people at the zebras.
     const hand = p.side * p.dir;
+    const inAt = sample(p.seg, p.dir > 0 ? p.seg.len : 0), dx = inAt.tx * p.dir, dz = inAt.tz * p.dir;
+    let next: RSeg | null = null, best = Infinity;
+    for (const s of net.segsAt(node)) {
+      if (s.id === p.seg.id || !this.walkable(s)) continue;
+      const out = sample(s, s.a === node ? 0 : s.len), ox = s.a === node ? out.tx : -out.tx, oz = s.a === node ? out.tz : -out.tz;
+      // Turning towards its hand (right is a positive cross in this map's axes), the sharpest such turn.
+      const turn = Math.atan2(dx * oz - dz * ox, dx * ox + dz * oz) * hand;
+      if (turn > 0.05 && Math.PI - turn < best) { best = Math.PI - turn; next = s; }
+    }
+    if (!next || this.random() < 0.08) { p.dir = -p.dir; p.side = -p.side; return; }
+    const fromA = next.a === node;
     p.seg = next; p.dir = fromA ? 1 : -1; p.s = fromA ? 0.05 : next.len - 0.05; p.side = hand * p.dir;
-    if (this.random() < 0.3) p.pause = 0.6 + this.random() * 2.2; // waiting to cross
+    if (this.random() < 0.15) p.pause = 0.4 + this.random() * 1.2; // a glance down the road
   }
 
-  update(dt: number, time: number): void {
+  update(dt: number, time: number, walkers?: Float32Array): void {
     if (!this.net) return;
     // Late at night only a third of the crowd is out.
     const target = Math.round(this.wanted * (1 - this.night * 0.65));
@@ -224,8 +236,32 @@ export class PedestrianLayer {
         this.hands.setMatrixAt(i * 2 + k, leg.matrix);
       }
     });
-    this.torso.count = this.head.count = this.hair.count = this.bag.count = this.people.length;
-    this.legs.count = this.arms.count = this.hands.count = this.people.length * 2;
+    // The people at and on the crossings, after the pavement crowd: standing at the kerb or striding across.
+    let n = this.people.length;
+    const col = new THREE.Color();
+    for (let k = 0; walkers && k + 4 < walkers.length && n < MAX_ALL; k += 5, n++) {
+      const id = walkers[k + 4] >>> 0, moving = walkers[k + 3] === 2;
+      const h = Math.imul(id ^ (id >>> 13), 0x5bd1e995) >>> 0;
+      const stride = moving ? Math.sin(time * 9 + (h % 7)) : 0;
+      obj.position.set(walkers[k], CURB_TOP * (moving ? 0.2 : 1) + Math.abs(stride) * 0.004, walkers[k + 1]);
+      obj.rotation.set(0, walkers[k + 2], 0);
+      obj.scale.setScalar(0.9 + (h % 20) / 100);
+      obj.updateMatrix();
+      this.torso.setMatrixAt(n, obj.matrix); this.head.setMatrixAt(n, obj.matrix);
+      this.hair.setMatrixAt(n, h % 10 ? obj.matrix : hidden); this.bag.setMatrixAt(n, h % 3 ? hidden : obj.matrix);
+      this.torso.setColorAt(n, col.setHex(SHIRTS[h % SHIRTS.length])); this.head.setColorAt(n, col.setHex(SKIN[(h >>> 4) % SKIN.length]));
+      this.hair.setColorAt(n, col.setHex(HAIR[(h >>> 8) % HAIR.length])); this.bag.setColorAt(n, col.setHex(BAGS[(h >>> 12) % BAGS.length]));
+      for (const j of [0, 1]) {
+        leg.position.set(j ? 0.009 : -0.009, HIP, 0); leg.rotation.set((j ? 1 : -1) * stride * 0.45, 0, 0); leg.updateMatrix(); leg.matrix.premultiply(obj.matrix);
+        this.legs.setMatrixAt(n * 2 + j, leg.matrix); this.legs.setColorAt(n * 2 + j, col.setHex(TROUSERS[(h >>> 16) % TROUSERS.length]));
+        leg.position.set(j ? 0.0225 : -0.0225, HIP + 0.042, 0); leg.rotation.set((j ? -1 : 1) * stride * 0.5, 0, (j ? 1 : -1) * 0.06); leg.updateMatrix(); leg.matrix.premultiply(obj.matrix);
+        this.arms.setMatrixAt(n * 2 + j, leg.matrix); this.hands.setMatrixAt(n * 2 + j, leg.matrix);
+        this.arms.setColorAt(n * 2 + j, col.setHex(SHIRTS[h % SHIRTS.length])); this.hands.setColorAt(n * 2 + j, col.setHex(SKIN[(h >>> 4) % SKIN.length]));
+      }
+    }
+    if (n > this.people.length) for (const m of this.meshes) if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    this.torso.count = this.head.count = this.hair.count = this.bag.count = n;
+    this.legs.count = this.arms.count = this.hands.count = n * 2;
     for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
   }
 }

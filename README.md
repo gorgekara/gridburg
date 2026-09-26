@@ -453,6 +453,14 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   blinking out.
 - Only callouts (a fire engine to a fire, a patrol to a crash or a robbery) run red lights and clear
   the way. Routine patrols and bin lorries drive like everyone else.
+- **People cross at the zebras** (worker crossings, drawn by `src/render/pedestrians.ts`):
+  - They arrive in proportion to the buildings around each crossing, wait at the kerb and walk across.
+  - At a signal they cross on their walk, beside the parallel traffic. Each end has a pedestrian head
+    showing walk, a flashing hand when it is too late to start, and a steady hand.
+  - Elsewhere they have priority but never step in front of a car that could not stop.
+  - No car enters a junction while anyone on a crossing it will pass over is in its way, so turning
+    cars wait for them.
+  - Pavement walkers keep to their own corner. Every zebra has curb ramps with tactile paving.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

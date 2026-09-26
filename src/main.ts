@@ -847,7 +847,7 @@ renderer.setAnimationLoop((now: number) => {
   helicopters.update(now / 1000);
   balloons.update(dt, light.night);
   boats.update(now / 1000, (x, z) => { const s = game.waterSurface, tx = Math.floor(x + GRID / 2), tz = Math.floor(z + GRID / 2); if (!s || tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) return -0.25; const v = s[tz * GRID + tx]; return v === v ? v : -0.25; });
-  pedestrians.update(dt, now / 1000);
+  pedestrians.update(dt, now / 1000, game.walkers);
   cyclists.update(dt);
   disasterLayer.update(now / 1000);
   flood.update(now / 1000);

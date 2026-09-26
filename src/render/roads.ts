@@ -12,7 +12,7 @@ import { junctionPaint, chevronSpots } from './junctionMarks';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
-import { planFor, movements, stateIn, fixedClock, moveKey } from '../roads/signals';
+import { planFor, movements, stateIn, fixedClock, moveKey, crossingState } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 
 /** Each side's edge at every sample of a segment, following any taper. */
@@ -42,6 +42,8 @@ const m4 = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const v3 = new THREE.Vector3();
 const one = new THREE.Vector3(0.72, 0.72, 0.72);
+const TACTILE = 0xe2b93b;
+const WALK = new THREE.Color(0xf4f1e8), DONT_WALK = new THREE.Color(0xff7a1a), PED_OFF = new THREE.Color(0x2a2a2a);
 const LAMP_RED = new THREE.Color(0xff3b30);
 const LAMP_AMBER = new THREE.Color(0xffbf35);
 const LAMP_OFF = new THREE.Color(0x28312e);
@@ -64,7 +66,11 @@ export class RoadLayer {
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
   /** What the last rebuild painted and put up at junctions and curves. */
-  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0 };
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0 };
+  /** Pedestrian signal heads: a box on a post at each end of a signalled crossing, and its lamp. */
+  readonly pedHeads: THREE.InstancedMesh;
+  private pedLamps: THREE.InstancedMesh;
+  pedInfo: { node: number; plan: SignalPlan; from: string[]; crossTime: number }[] = [];
   readonly yieldSigns: THREE.InstancedMesh;
   readonly heads: THREE.InstancedMesh;
   readonly arms: THREE.InstancedMesh;
@@ -148,6 +154,16 @@ export class RoadLayer {
     }
     this.chevrons = new THREE.InstancedMesh(chevronBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
     for (const m of [this.yieldSigns, this.chevrons]) { m.count = 0; m.frustumCulled = false; m.castShadow = true; this.group.add(m); }
+    // Pedestrian heads: a small box on a short post, its lamp facing across the road.
+    const pedBody = new Builder(6);
+    pedBody.box(0.025, 0.42, 0.025, 0, 0, 0, 0x707b7e);
+    pedBody.box(0.1, 0.12, 0.06, 0, 0.4, 0, 0x20282d);
+    this.pedHeads = new THREE.InstancedMesh(pedBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
+    const pedLamp = new THREE.PlaneGeometry(0.07, 0.08);
+    pedLamp.rotateY(Math.PI); pedLamp.translate(0, 0.46, -0.032);
+    this.pedLamps = new THREE.InstancedMesh(pedLamp, new THREE.MeshBasicMaterial({ color: 0xffffff }), MAX_LAMPS);
+    this.pedLamps.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LAMPS * 3), 3);
+    for (const m of [this.pedHeads, this.pedLamps]) { m.count = 0; m.frustumCulled = false; this.group.add(m); }
 
     // Highway signs: one beside each road coming in from outside, on the verge to the right of it.
     const green = new THREE.MeshStandardMaterial({ color: 0x1f7a4d }), white = new THREE.MeshStandardMaterial({ color: 0xffffff }), grey = new THREE.MeshStandardMaterial({ color: 0x777777 });
@@ -174,7 +190,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
-    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0 };
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -422,6 +438,12 @@ export class RoadLayer {
           const px = x - pose.tz * across, pz = z + pose.tx * across;
           b.ribbon([px - pose.tx * 0.17, pz - pose.tz * 0.17, px + pose.tx * 0.17, pz + pose.tz * 0.17], 2, spacing * 0.28, 0.06, WHITE);
         }
+        // The kerb dips to a ramp at each end, with a strip of yellow tactile paving.
+        for (const side of [1, -1]) {
+          const off = side > 0 ? hwR + 0.045 : -(hwL + 0.045), px = x - pose.tz * off, pz = z + pose.tx * off;
+          b.ribbon([px - pose.tx * 0.15, pz - pose.tz * 0.15, px + pose.tx * 0.15, pz + pose.tz * 0.15], 2, 0.038, 0.036, TACTILE);
+          this.marks.ramps++;
+        }
       }
     }
 
@@ -565,6 +587,35 @@ export class RoadLayer {
     this.arms.count = armCount;
     this.lamps.count = h * 3;
     for (const m of [this.poles, this.heads, this.arms, this.lamps]) m.instanceMatrix.needsUpdate = true;
+    // Pedestrian heads at both ends of every signalled crossing, facing the people waiting across.
+    this.pedInfo = [];
+    let p = 0;
+    for (const [id, ends] of crossings) {
+      const seg = net.segs.get(id)!;
+      for (let end = 0; end < 2; end++) {
+        const nodeId = end ? seg.b : seg.a, node = net.nodes.get(nodeId);
+        if (!ends[end] || !node?.light || p + 2 > MAX_LAMPS) continue;
+        const plan = planFor(net, nodeId);
+        if (!plan.phases.length) continue;
+        const prefix = `${seg.id}${end ? 'f' : 'b'}>`;
+        const from = [...new Set(plan.phases.flatMap(ph => Object.keys(ph.moves).filter(k => k.startsWith(prefix))))];
+        const hwR = sideHalf(seg, 1), hwL = sideHalf(seg, -1);
+        Network.poseAt(seg, end ? seg.len - ends[end] : ends[end], pose);
+        for (const side of [1, -1]) {
+          const off = side > 0 ? hwR + 0.13 : -(hwL + 0.13);
+          v3.set(pose.x - half - pose.tz * off, Math.max(0, levelY(node.level ?? 0)), pose.z - half + pose.tx * off);
+          // Facing across the road, towards the far kerb, where people waiting on this side look.
+          q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-pose.tz * side, pose.tx * side));
+          m4.compose(v3, q, one);
+          this.pedHeads.setMatrixAt(p, m4); this.pedLamps.setMatrixAt(p, m4);
+          this.pedInfo.push({ node: nodeId, plan, from, crossTime: (hwR + hwL + 0.1) / 0.3 });
+          p++;
+        }
+      }
+    }
+    this.pedHeads.count = this.pedLamps.count = p;
+    this.marks.pedHeads = p;
+    this.pedHeads.instanceMatrix.needsUpdate = true; this.pedLamps.instanceMatrix.needsUpdate = true;
     this.updateLights(0);
   }
 
@@ -590,6 +641,14 @@ export class RoadLayer {
       this.lamps.setColorAt(i * 3 + 2, best === 'green' ? LAMP_GREEN : LAMP_OFF);
     }
     if (this.lamps.instanceColor) this.lamps.instanceColor.needsUpdate = true;
+    // Walk, flashing don't-walk, don't-walk.
+    for (let i = 0; i < this.pedInfo.length; i++) {
+      const info = this.pedInfo[i];
+      const c = clock.get(info.node) ?? fixedClock(info.plan, simTime + info.node * 3.7);
+      const st = crossingState(info.plan, c.phase, c.t, c.len, info.from, info.crossTime);
+      this.pedLamps.setColorAt(i, st === 'walk' ? WALK : st === 'stop' || Math.floor(wall * 2) % 2 === 0 ? DONT_WALK : PED_OFF);
+    }
+    if (this.pedLamps.instanceColor) this.pedLamps.instanceColor.needsUpdate = true;
   }
 
   /** Tint asphalt by congestion. `order` lists segment ids in the same order as `cong`. */

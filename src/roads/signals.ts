@@ -119,6 +119,25 @@ export function stateIn(plan: SignalPlan, phase: number, t: number, len: number,
   return t < len + AMBER ? 'amber' : 'red';
 }
 
+/** A crossing's pedestrian signal: walk, flashing don't-walk (too little green left to start), or stop. */
+export type CrossingState = 'walk' | 'flash' | 'stop';
+
+/**
+ * What the pedestrian heads of a crossing show. People cross a road while none of the traffic arriving
+ * along it may move (beside the traffic running parallel), and may start only while enough of that
+ * lasts to get across: `fromKeys` are the movements arriving along the crossed road, `crossTime` how
+ * long crossing takes. Traffic turning into the road meets people on the crossing and gives way to them.
+ */
+export function crossingState(plan: SignalPlan, phase: number, t: number, len: number, fromKeys: string[], crossTime: number): CrossingState {
+  const p = plan.phases[phase];
+  if (!p) return 'stop';
+  for (const k of fromKeys) if (stateIn(plan, phase, t, len, k) !== 'red') return 'stop';
+  // It lasts to the end of this phase, or on through the next if that keeps the road stopped too.
+  const next = plan.phases[(phase + 1) % plan.phases.length];
+  const left = fromKeys.some(k => next.moves[k]) ? len + AMBER + ALL_RED - t : len + AMBER + ALL_RED - t + next.green;
+  return left >= crossTime ? 'walk' : 'flash';
+}
+
 export const cycleOf = (plan: SignalPlan): number => plan.phases.reduce((t, p) => t + p.green + AMBER + ALL_RED, 0);
 
 /** Where a fixed-time plan is at `time` seconds into its cycle. */

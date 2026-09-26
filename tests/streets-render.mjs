@@ -72,7 +72,7 @@ roads.mesh.geometry.addEventListener('dispose', () => { disposed = true; });
 net.version++;
 roads.rebuild(net, terrain);
 assert.ok(disposed, 'road rebuild disposes previous geometry');
-assert.equal(roads.group.children.length, 13, 'fixed mesh count independent of network size (road, lamps, stop signs, yield signs, chevrons, overhead heads and arms, island details, four entry signs...)');
+assert.equal(roads.group.children.length, 15, "fixed mesh count independent of network size (road, lamps, stop signs, yield signs, chevrons, overhead heads and arms, pedestrian heads and their lamps, island details, four entry signs...)");
 const river = new RiverLayer();
 river.rebuild(terrain);
 const water = river.group.children.find(m => m.material?.opacity === 0.84);

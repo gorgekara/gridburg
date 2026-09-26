@@ -313,6 +313,32 @@ test('car lamps: brake lamps while braking, indicators blink, beacons swap, noth
   assert.ok(!lamp(1, 'brake') && !lamp(1, 'right'), 'nothing lit when idle');
 });
 
+test('pedestrian signals: walk beside the parallel traffic, flashing when too late to start, then stop', () => {
+  const plan = { phases: [{ green: 10, moves: { a: 1 } }, { green: 10, moves: { x: 1 } }] };
+  // Crossing the road whose traffic is `x`: walk while phase 0 runs, flash near its end, stop in phase 1.
+  assert.equal(S.crossingState(plan, 0, 1, 10, ['x'], 4), 'walk');
+  assert.equal(S.crossingState(plan, 0, 9, 10, ['x'], 4), 'flash');
+  assert.equal(S.crossingState(plan, 1, 2, 10, ['x'], 4), 'stop');
+  // If the next phase keeps that road stopped too, the walk runs on into it.
+  const long = { phases: [{ green: 10, moves: { a: 1 } }, { green: 10, moves: { b: 1 } }, { green: 10, moves: { x: 1 } }] };
+  assert.equal(S.crossingState(long, 0, 9, 10, ['x'], 4), 'walk');
+});
+
+test('signalled crossings get a pedestrian head at each end; every zebra gets tactile ramps', () => {
+  const j = junction(['W', 'E', 'N', 'S']);
+  const layer = new RoadLayer();
+  layer.rebuild(j.net, flat());
+  assert.equal(layer.marks.pedHeads, 8);
+  assert.equal(layer.marks.ramps, 8);
+  const plain = new Network();
+  plain.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD);
+  plain.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD);
+  const zebra = new RoadLayer();
+  zebra.rebuild(plain, flat());
+  assert.equal(zebra.marks.pedHeads, 0);
+  assert.equal(zebra.marks.ramps, 8);
+});
+
 const Ctl = await import('../src/roads/control.ts');
 const { crossingApproaches } = await import('../src/roads/crossings.ts');
 const { speedLimitKmh } = await import('../src/render/streetDetail.ts');
