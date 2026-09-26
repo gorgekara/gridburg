@@ -184,6 +184,9 @@ function run(net, flows, seconds) {
   load(net);
   const start = ask([]);
   const flowOf = new Map(), still = new Map(), stats = flows.map(() => ({ cars: new Set(), stood: 0 }));
+  // Braking harder than any driver would: a body the driver model failed to see.
+  const lastV = new Map();
+  let hard = 0, steps = 0;
   let t = 0;
   const next = flows.map(() => 0);
   for (let i = 0; i < seconds * C.SIM_HZ; i++) {
@@ -197,6 +200,9 @@ function run(net, flows, seconds) {
     const fresh = r.detail.filter(c => !known.has(c.uid));
     fresh.forEach((c, n) => flowOf.set(c.uid, who[n] ?? who[0]));
     for (const c of r.detail) {
+      const before = lastV.get(c.uid);
+      if (before !== undefined) { steps++; if ((before - c.v) * C.SIM_HZ > D.MAX_BRAKE + 0.5) hard++; }
+      lastV.set(c.uid, c.v);
       const k = flowOf.get(c.uid);
       if (k === undefined) continue;
       stats[k].cars.add(c.uid);
@@ -205,7 +211,7 @@ function run(net, flows, seconds) {
   }
   const end = ask([]);
   const got = (f) => (end.trips[`${f.from.seg}>${f.to.seg}`] ?? 0) - (start.trips[`${f.from.seg}>${f.to.seg}`] ?? 0);
-  return { flows: flows.map((f, k) => ({ arrived: got(f), wait: stats[k].stood / Math.max(1, stats[k].cars.size) })), gaveUp: end.gaveUp - start.gaveUp };
+  return { flows: flows.map((f, k) => ({ arrived: got(f), wait: stats[k].stood / Math.max(1, stats[k].cars.size) })), gaveUp: end.gaveUp - start.gaveUp, hard, steps };
 }
 
 test('where a street meets an avenue, the avenue has priority and the street waits for gaps', () => {
@@ -261,6 +267,41 @@ test('the road inspector reports each direction\'s flow, speed, queue, delay and
   const side = inspection.details.find(d => d.startsWith('Northbound'));
   assert.ok(side && /minor road/.test(side), side);
   console.log(`  inspector: ${toward} | ${side}`);
+  send({ type: 'inspect', tile: -1 });
+});
+
+test('drivers see what is ahead: no one brakes harder than a car can on a busy signalled avenue crossing', () => {
+  Math.random = C.mulberry32(24);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 16 }, { x: 40, z: 64 }], N.KIND_AVENUE);
+  net.nearestNode(40, 40, 0.1).light = true;
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), n = arm(net, 40, 40, 40, 16), sth = arm(net, 40, 40, 40, 64);
+  const r = run(net, [
+    { from: w, to: e, every: 1.2 }, { from: w, to: sth, every: 3 }, { from: w, to: n, every: 3 },
+    { from: e, to: w, every: 1.2 }, { from: e, to: n, every: 3 }, { from: n, to: sth, every: 1.5 }, { from: sth, to: e, every: 3 },
+  ], 150);
+  console.log(`  hard stops: ${r.hard} in ${r.steps} car-steps, ${r.gaveUp} gave up`);
+  // A few remain where path-based following and the bodies' real shapes part company (lane tapers,
+  // corners): about one car-step in two thousand. This guards against the model going blind again.
+  assert.ok(r.hard <= r.steps * 6e-4, `${r.hard} hard stops in ${r.steps} car-steps`);
+});
+
+test('a turn pocket on the side street, or a slip road ending at a junction, does not take priority', () => {
+  Math.random = C.mulberry32(25);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], N.KIND_ROAD);
+  const side = net.segsAt(net.nearestNode(40, 40, 0.1).id).find(s => { const o = net.nodes.get(s.a === net.nearestNode(40, 40, 0.1).id ? s.b : s.a); return o.z > 41; });
+  if (side.b === net.nearestNode(40, 40, 0.1).id) side.addR = 1; else side.addL = 1;
+  net.insertPath([{ x: 40, z: 16 }, { x: 40, z: 40 }], N.KIND_RAMP, true);
+  load(net);
+  send({ type: 'inspect', tile: 40 * C.GRID + 30, seg: arm(net, 40, 40, 16, 40).seg });
+  assert.ok(/major road/.test(inspection.details.find(d => d.startsWith('Eastbound'))), inspection.details.join(' | '));
+  send({ type: 'inspect', tile: 50 * C.GRID + 40, seg: side.id });
+  assert.ok(/minor road/.test(inspection.details.find(d => d.startsWith('Northbound'))), inspection.details.join(' | '));
+  send({ type: 'inspect', tile: 30 * C.GRID + 40, seg: arm(net, 40, 40, 40, 16).seg });
+  assert.ok(inspection.details.some(d => /minor road/.test(d)), inspection.details.join(' | '));
   send({ type: 'inspect', tile: -1 });
 });
 

@@ -302,6 +302,10 @@ let laneCars: number[][] = [];
 let laneTail = new Float32Array(0);
 let laneFresh = new Float32Array(0); // lowest p of a car that crossed into the lane during this step
 let laneTailV = new Float32Array(0); // speed of the rearmost car in each lane
+/** Per lane: the last car to leave it, still crossing the junction beyond, whatever way it went. */
+let laneLeft = new Int32Array(0);
+/** Per lane: cars part-way through a change out of it, still partly in it. */
+const laneGhosts = new Map<number, number[]>();
 let spawnBudget = 0;
 let extBudget = 0;
 let tripRate = 0;
@@ -503,7 +507,7 @@ function applyNetwork(p: EditPayload): void {
         const sg = segs[i], fromA = segA[i] === ni;
         Network.poseAt(sg, fromA ? Math.min(0.3, sg.len / 2) : Math.max(sg.len / 2, sg.len - 0.3), pose);
         const tx = fromA ? pose.tx : -pose.tx, tz = fromA ? pose.tz : -pose.tz;
-        return { rank: roadRank(sg.kind, lanesFor(net, sg, true) + (sg.oneway ? 0 : lanesFor(net, sg, false))), angle: Math.atan2(tz, tx) };
+        return { rank: roadRank(sg.kind), angle: Math.atan2(tz, tx) };
       });
       const pair = majorPair(arms);
       if (!pair) continue;
@@ -516,6 +520,7 @@ function applyNetwork(p: EditPayload): void {
   laneTail = new Float32Array(segs.length * 2 * MAXL);
   laneFresh = new Float32Array(segs.length * 2 * MAXL);
   laneTailV = new Float32Array(segs.length * 2 * MAXL);
+  laneLeft = new Int32Array(segs.length * 2 * MAXL).fill(-1);
   // Lanes: how many each way, where each sits, and where along the road each is open at full width.
   // A lane that begins where a narrower road hands over opens after the taper; one that has nothing
   // to carry on into at the far end closes before it, and its traffic has to move over first.
@@ -1404,6 +1409,7 @@ function stepCars(dt: number): void {
   laneTail.fill(1e9);
   laneFresh.fill(1e9);
   laneJoin.clear();
+  laneGhosts.clear();
   for (let s = 0; s < MAX_CARS; s++) {
     const c = slots[s];
     if (!c) continue;
@@ -1411,6 +1417,10 @@ function stepCars(dt: number): void {
     const key = laneKey(leg.seg, leg.fwd, c.lane);
     laneCars[key].push(s);
     if (c.p < laneTail[key]) { laneTail[key] = c.p; laneTailV[key] = c.v; }
+    if (c.chT >= 0 && c.chLane !== c.lane) {
+      const from = laneKey(leg.seg, leg.fwd, c.chLane), list = laneGhosts.get(from);
+      if (list) list.push(s); else laneGhosts.set(from, [s]);
+    }
   }
   const speedSum = new Float32Array(segs.length);
   const speedN = new Uint16Array(segs.length);
@@ -1526,10 +1536,11 @@ function stepCars(dt: number): void {
           else canGo = false;
         }
         // In a lane that does not go its way: hold at the line a while for a chance to move over.
-        if (type !== J_PLAIN && type !== J_RING && !pastStop && c.p >= stopP - 0.3) {
+        // Seen from braking distance, so the car slows for it rather than stopping dead at the line.
+        if (type !== J_PLAIN && type !== J_RING && !pastStop && c.p >= stopP - reach) {
           const want = wantedLanes(c);
           // Fire engines, patrols and other callouts take the turn from whatever lane they are in.
-          if (want && !want.includes(c.lane) && c.laneWait < 8 && !c.mission) { c.laneWait += dt; canGo = false; }
+          if (want && !want.includes(c.lane) && c.laneWait < 8 && !c.mission) { if (c.p >= stopP - 0.3) c.laneWait += dt; canGo = false; }
           // Finish sliding into a lane before turning out of it.
           if (c.chT >= 0) canGo = false;
         }
@@ -1599,7 +1610,7 @@ function stepCars(dt: number): void {
           // Right behind a car already let into the box on the same path, a car follows it in: a queue
           // pulls away as a platoon, not one standing start at a time.
           const ahead = leaderSlot >= 0 ? slots[leaderSlot] : null;
-          const platoon = !front && !!ahead && ahead.box === node && ahead.boxLi === ahead.li && ahead.legs[ahead.li].seg === leg.seg && ahead.legs[ahead.li].fwd === leg.fwd && ahead.lane === c.lane && ahead.nextLane === c.nextLane;
+          const platoon = !front && !!ahead && ahead.box === node && ahead.boxLi === ahead.li && ahead.legs[ahead.li].seg === leg.seg && ahead.legs[ahead.li].fwd === leg.fwd && ahead.lane === c.lane && ahead.nextLane === c.nextLane && ahead.legs[ahead.li + 1]?.seg === next.seg && ahead.legs[ahead.li + 1]?.fwd === next.fwd;
           const atLine = (front || platoon) && c.p >= stopP - reach;
           const list = boxCars[node];
           for (let k = list.length - 1; k >= 0; k--) { const o = slots[list[k]]; if (!o || o.box !== node) list.splice(k, 1); }
@@ -1639,7 +1650,7 @@ function stepCars(dt: number): void {
           } else {
             // Waiting on the car in front, or not yet near enough to ask: that car or nothing is what
             // it drives by, and the line only stops it if it ever gets there.
-            if (canGo && !pastStop) pending = true;
+            if (canGo && !pastStop && (front || platoon)) pending = true;
             canGo = false;
             if (boxWait[node] === slot) boxWait[node] = -1;
           }
@@ -1648,12 +1659,34 @@ function stepCars(dt: number): void {
           const hold = pastStop ? legEnd - 0.02 : stopP;
           maxP = Math.min(maxP, hold);
           if (!pending) idmMax = Math.min(idmMax, hold);
-        } else if (leaderP === Infinity && laneTail[nextKey] < 1e8) {
-          aheadRoom = legEnd - c.p + (laneTail[nextKey] - next.p0) - clear;
+        }
+        // Not yet asked for the junction counts as going: it will, and must slow in time for that queue.
+        if ((canGo || pending) && leaderP === Infinity && laneTail[nextKey] < 1e8) {
+          // Round a corner, bodies swing wider than the distance along the path suggests.
+          const corner = turnKind(leg, next) === 0 ? 0 : 0.15;
+          aheadRoom = legEnd - c.p + (laneTail[nextKey] - next.p0) - clear - corner;
           aheadV = laneTailV[nextKey];
         }
       }
 
+      // Bodies the lane order does not show: a car sliding out of this lane still half in it, and the
+      // car that last left this lane, still crossing the junction whichever way it went.
+      const myKey = laneKey(leg.seg, leg.fwd, c.lane), myLen = vehicleLength(c.vehicle);
+      const bodyGap = (o: Car): number => Math.max(GAP[seg.kind], (myLen + vehicleLength(o.vehicle)) / 2 + 0.06);
+      for (const g of laneGhosts.get(myKey) ?? []) {
+        const o = slots[g];
+        if (!o || o.p <= c.p) continue;
+        const r = o.p - c.p - bodyGap(o);
+        if (r < aheadRoom) { aheadRoom = r; aheadV = o.v; }
+      }
+      if (leaderP === Infinity && laneLeft[myKey] >= 0) {
+        const o = slots[laneLeft[myKey]];
+        const prev = o && o.li > 0 ? o.legs[o.li - 1] : null;
+        if (o && prev && prev.seg === leg.seg && prev.fwd === leg.fwd && o.p - o.legs[o.li].p0 < 1.5) {
+          const r = legEnd - c.p + (o.p - o.legs[o.li].p0) - bodyGap(o);
+          if (r < aheadRoom) { aheadRoom = r; aheadV = o.v; }
+        } else laneLeft[myKey] = -1;
+      }
       // Drive: IDM towards the nearest thing ahead, never past the hard limit.
       const room = Math.min(idmMax - c.p, aheadRoom);
       const followingLeader = idmMax >= leaderHold - 1e-6 && room === idmMax - c.p;
@@ -1710,6 +1743,7 @@ function stepCars(dt: number): void {
           const target = vehiclePose(c, c.li + 1, nextP);
           if (!trafficSpace.canMove(slot, target)) continue;
           countLeft(c);
+          laneLeft[laneKey(leg.seg, leg.fwd, c.lane)] = slot;
           c.li++;
           c.p = nextP;
           c.stuck = 0;

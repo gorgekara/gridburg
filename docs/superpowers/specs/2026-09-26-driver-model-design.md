@@ -75,9 +75,9 @@ discharges about 1.7–2 vehicles per game second from a queue. Today it is abou
 
 ## Junction priority (`src/sim/priority.ts`, new)
 
-- **Major and minor arms:** at an uncontrolled junction (`J_YIELD`), every arm gets a rank.
-  - Class first: motorway kinds, then expressway, then avenue, then street, then lane. Then the number
-    of lanes.
+- **Major and minor arms:** at an uncontrolled junction (`J_YIELD`), every arm gets a rank by its
+  class alone: motorway kinds, then expressway, then avenue, then street, then lane, with a slip road
+  ending at the junction lowest. Added lanes and turn pockets do not count.
   - The major road is the pair of top-ranked arms that runs most nearly straight through (at least
     150° apart).
   - There is no major road when the top rank is shared by more arms than that pair and another pair is
@@ -134,6 +134,10 @@ discharges about 1.7–2 vehicles per game second from a queue. Today it is abou
   driver's patience.
 
 ## Known limits
+
+- A few hard stops remain, about one car-step in two thousand on a busy signalled avenue crossing.
+  They happen where path-based following and the cars' real 2D shapes part company: lane tapers and
+  corners. The collision check catches them. A test guards the rate.
 
 - A single-lane roundabout carries about one vehicle a second when flooded. That is somewhat under a
   real one. Its lock-and-booking scheme is the next thing to replace.

@@ -63,7 +63,8 @@ export function stepMotion(p: number, v: number, a: number, dt: number, maxP: nu
     np = a < 0 ? p + (v * v) / (-2 * a) : p;
     nv = 0;
   } else np = p + (v + nv) * 0.5 * dt;
-  if (np >= maxP) { np = Math.max(p, maxP); nv = Math.min(nv, (np - p) / dt); }
+  // Brought up at the hold point: standing there, not still moving at the step's average speed.
+  if (np >= maxP) { np = Math.max(p, maxP); nv = 0; }
   else if (maxP - np < CREEP_DIST && nv < CREEP_SPEED) { np = maxP; nv = 0; }
   return { p: Math.max(p, np), v: Math.max(0, nv) };
 }

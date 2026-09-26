@@ -3,10 +3,13 @@
 
 import { KIND_ROAD, KIND_AVENUE, KIND_LANE, KIND_HIGHWAY, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2 } from '../roads/network';
 
-/** How important a road is at a junction: its class first, then its lanes. */
-export function roadRank(kind: number, lanes: number): number {
-  const cls = kind === KIND_HIGHWAY ? 5 : kind === KIND_MOTORWAY || kind === KIND_HIGHWAY2 ? 6 : kind === KIND_RAMP ? 4 : kind === KIND_AVENUE ? 3 : kind === KIND_ROAD ? 2 : kind === KIND_LANE ? 1 : 2;
-  return cls * 10 + Math.min(9, lanes);
+/**
+ * How important a road is at a junction, by its class alone: a turn pocket or an added lane on a side
+ * street does not make it the main road. A slip road that ends at a surface junction joins it from the
+ * side, so it ranks lowest.
+ */
+export function roadRank(kind: number): number {
+  return kind === KIND_MOTORWAY || kind === KIND_HIGHWAY2 ? 6 : kind === KIND_HIGHWAY ? 5 : kind === KIND_AVENUE ? 3 : kind === KIND_ROAD ? 2 : kind === KIND_LANE ? 1 : kind === KIND_RAMP ? 0 : 2;
 }
 
 /** An arm of a junction: its rank, and the direction it leaves the node in (radians). */
