@@ -496,5 +496,70 @@ test('a wide avenue with busy zebras: cars wait for people but are not starved, 
   assert.ok(busy.gaveUp <= 5, `${busy.gaveUp} gave up`);
 });
 
+// ---- when and where people go ---------------------------------------------------------------------
+const Dm = await import('../src/sim/demand.ts');
+test('the day has a morning and an evening peak and a quiet night, and the same trips overall', () => {
+  let mean = 0;
+  for (let k = 0; k < 240; k++) mean += Dm.dayProfile(k / 10) / 240;
+  assert.ok(Math.abs(mean - 1) < 0.01, `mean ${mean}`);
+  assert.ok(Dm.dayProfile(8) > 1.7 && Dm.dayProfile(17.5) > 1.6, 'peaks');
+  assert.ok(Dm.dayProfile(3) < 0.45, 'the small hours');
+  const share = (h, p) => { let n = 0; for (let k = 0; k < 1000; k++) if (Dm.purposeAt(h, k / 1000) === p) n++; return n / 1000; };
+  assert.ok(share(8, 'work') > 0.7, 'mornings go to work');
+  assert.ok(share(17, 'home') > 0.6, 'evenings go home');
+  assert.ok(share(13, 'shop') > 0.4, 'middays run errands');
+  // Nearer destinations are likelier.
+  let near = 0;
+  for (let k = 0; k < 1000; k++) if (Dm.pickByDistance([2, 30], k / 1000) === 0) near++;
+  assert.ok(near > 750, `${near} of 1000 picked the near one`);
+});
+
+test('drivers spread over two routes that cost about the same, and routes still join up after rerouting', () => {
+  Math.random = C.mulberry32(51);
+  const net = new N.Network();
+  net.insertPath([{ x: 8, z: 40 }, { x: 16, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 44, z: 40 }, { x: 52, z: 40 }], N.KIND_ROAD);
+  const [north] = net.insertPath([{ x: 16, z: 40 }, { x: 44, z: 40 }], N.KIND_ROAD);
+  net.bendSeg(north, 30, 34);
+  const [south] = net.insertPath([{ x: 16, z: 40 }, { x: 44, z: 40 }], N.KIND_ROAD);
+  net.bendSeg(south, 30, 46);
+  load(net);
+  const from = arm(net, 16, 40, 8, 40), to = arm(net, 44, 40, 52, 40);
+  const segAt = (z) => [...net.segs.values()].find(sg => Math.abs(sg.pts[Math.floor(sg.n / 2) * 2 + 1] - z) < 2 && sg.pts[Math.floor(sg.n / 2) * 2] > 20);
+  const n = segAt(37), sth = segAt(43);
+  const seen = { n: new Set(), s: new Set() };
+  let broken = 0;
+  for (let i = 0; i < 100 * C.SIM_HZ; i++) {
+    clock();
+    const r = ask(i % 45 === 0 ? [{ a: from.seg, as: from.far, b: to.seg, bs: to.far }] : [], true);
+    broken = Math.max(broken, r.broken);
+    for (const c of r.detail) { if (c.seg === n.id) seen.n.add(c.uid); if (c.seg === sth.id) seen.s.add(c.uid); }
+  }
+  const total = seen.n.size + seen.s.size;
+  console.log(`  two equal routes: ${seen.n.size} north, ${seen.s.size} south`);
+  assert.ok(total > 40 && Math.min(seen.n.size, seen.s.size) > total * 0.2, 'both routes used');
+  assert.equal(broken, 0);
+});
+
+test('a bus pulls in at its far stop and stands there before the run back', () => {
+  Math.random = C.mulberry32(52);
+  const net = new N.Network();
+  net.insertPath([{ x: 10, z: 40 }, { x: 60, z: 40 }], N.KIND_ROAD);
+  load(net);
+  const sg = [...net.segs.values()][0];
+  ask([{ a: sg.id, as: 2, b: sg.id, bs: 40, vehicle: 4, loop: true }]);
+  let stood = 0, maxP = 0, back = false;
+  for (let i = 0; i < 60 * C.SIM_HZ; i++) {
+    clock();
+    const r = ask([], true), bus = r.detail[0];
+    if (!bus) break;
+    if (bus.fwd) { maxP = Math.max(maxP, bus.p); if (bus.v < 0.01 && bus.p > 39) stood += 1 / C.SIM_HZ; }
+    else back = true;
+  }
+  assert.ok(Math.abs(maxP - 40) < 0.1, `stopped at ${maxP}`);
+  assert.ok(stood >= 2.5, `stood ${stood.toFixed(1)} s`);
+  assert.ok(back, 'and then drove back');
+});
+
 console.log(`${checks} driver checks passed; ${failures} failed`);
 if (failures) process.exit(1);

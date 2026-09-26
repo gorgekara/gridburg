@@ -8,6 +8,7 @@ import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from '../roads/crossings';
+import { stopLine } from '../roads/control';
 import { junctionPaint, chevronSpots } from './junctionMarks';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
@@ -74,6 +75,7 @@ export class RoadLayer {
   private pedLamps: THREE.InstancedMesh;
   pedInfo: { node: number; plan: SignalPlan; from: string[]; crossTime: number }[] = [];
   readonly yieldSigns: THREE.InstancedMesh;
+  readonly rails: THREE.Mesh;
   readonly heads: THREE.InstancedMesh;
   readonly arms: THREE.InstancedMesh;
   readonly chevrons: THREE.InstancedMesh;
@@ -89,6 +91,9 @@ export class RoadLayer {
     this.islands.receiveShadow = true;
     this.islands.frustumCulled = false;
     this.group.add(this.islands);
+    this.rails = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 }));
+    this.rails.frustumCulled = false;
+    this.group.add(this.rails);
 
     const body = new Builder(1);
     body.box(0.08, 0.08, 0.08, 0, 0, 0, 0x4d585d);
@@ -336,9 +341,14 @@ export class RoadLayer {
         decorations.taper(0, r * 0.11, scale * 0.32, tx, 0.06 + scale * 0.36, z, 0x579163, 7);
       }
     }
-    roadsideSafety(net, decorations, this.marks);
     this.islands.geometry.dispose();
     this.islands.geometry = decorations.build();
+    // Barriers and guardrails: their own mesh, which casts no shadow, as it is long and thin.
+    const rails = new Builder(18, 0);
+    roadsideSafety(net, rails, this.marks);
+    this.rails.geometry.dispose();
+    this.rails.geometry = rails.build();
+    this.rails.visible = this.rails.geometry.hasAttribute('position');
     this.islands.visible = this.islands.geometry.hasAttribute('position');
 
     // Markings.
@@ -418,7 +428,8 @@ export class RoadLayer {
           strip(m0 + 0.04, m1 - 0.04, divider - 0.005, 0, MEDIAN_GRASS, 0.07);
           for (const [a, c] of [[from, m0], [m1, to]]) if (c - a > 0.05) { strip(a, c, 0.022, -divider, LINE); strip(a, c, 0.022, divider, LINE); }
           this.marks.medians++;
-        } else if (!highway) {
+        } else if (!highway || s.structure) {
+          // (An expressway on a bridge has no barrier on the deck: it keeps its double line.)
           strip(from, to, 0.022, -divider, LINE);
           strip(from, to, 0.022, divider, LINE);
         }
@@ -690,17 +701,36 @@ export class RoadLayer {
  * and guardrails on posts along the outer edges of expressways, motorway carriageways and slip roads.
  * They stop short of junctions and open for ramp mouths; bridges have their own parapets.
  */
+/** How far along `seg` from `node` the other roads meeting there, and the kerbed corners between them, reach. */
+function junctionClear(net: Network, seg: RSeg, node: number): number {
+  const p = { x: 0, z: 0, tx: 0, tz: 0 };
+  const dir = (s: RSeg): [number, number] => { Network.poseAt(s, s.a === node ? 0 : s.len, p); const k = s.a === node ? 1 : -1; return [p.tx * k, p.tz * k]; };
+  const [tx, tz] = dir(seg), hw = roadHalf(seg);
+  let reach = 0, widest = 0;
+  for (const o of net.segsAt(node)) {
+    widest = Math.max(widest, roadHalf(o));
+    if (o === seg) continue;
+    const [ox, oz] = dir(o), dot = tx * ox + tz * oz, cross = Math.abs(tx * oz - tz * ox);
+    if (dot < -0.98) continue; // the road carrying straight on
+    reach = Math.max(reach, cross < 0.18 ? roadHalf(o) + hw : (roadHalf(o) + hw * Math.abs(dot)) / cross);
+  }
+  return reach + 0.35 + 0.45 * widest + 0.1;
+}
+
 function roadsideSafety(net: Network, d: Builder, marks: JunctionMarks): void {
   const half = GRID / 2, p = { x: 0, z: 0, tx: 0, tz: 0 }, trims = rampTrims(net);
   for (const s of net.segs.values()) {
     if (s.structure || !(s.kind === KIND_HIGHWAY || isCarriageway(s.kind) || s.kind === KIND_RAMP)) continue;
     if (net.nodes.get(s.a)?.ring && net.nodes.get(s.b)?.ring) continue; // not round a roundabout
+    // Beyond the map edge (the motorway's approaches) nobody sees them.
+    if (s.maxX < -1 || s.minX > GRID + 1 || s.maxZ < -1 || s.minZ > GRID + 1) continue;
     const ramp = s.kind === KIND_RAMP, rt = ramp ? trims.get(s.id) : undefined;
-    const endTrim = (node: number, t: number | undefined): number => t || (net.degree(node) >= 3 ? 1.0 : 0.05);
+    // Clear of every road crossing at the junction, and of its corner kerbs.
+    const endTrim = (node: number, t: number | undefined): number => t || (net.degree(node) >= 3 ? junctionClear(net, s, node) : 0.05);
     const mouthA = !ramp ? rampMouth(net, s, s.a) : null, mouthB = !ramp ? rampMouth(net, s, s.b) : null;
     const run = (s0: number, s1: number, off: number, y: number, t: number, color: number, posts: boolean): boolean => {
       if (s1 - s0 < 0.6) return false;
-      const steps = Math.max(1, Math.ceil((s1 - s0) / 0.5));
+      const steps = Math.max(1, Math.ceil((s1 - s0) / 1.0));
       let px = 0, pz = 0;
       for (let k = 0; k <= steps; k++) {
         Network.poseAt(s, s0 + ((s1 - s0) * k) / steps, p);
@@ -716,7 +746,9 @@ function roadsideSafety(net: Network, d: Builder, marks: JunctionMarks): void {
       const s0 = Math.max(endTrim(s.a, rt?.[0]), openA), s1 = s.len - Math.max(endTrim(s.b, rt?.[1]), openB);
       if (run(s0, s1, side * (sideHalf(s, side) + 0.08), 0.085, 0.016, 0xc9cdd0, true)) marks.guardrails++;
     }
-    if (s.kind === KIND_HIGHWAY && !s.oneway && run(endTrim(s.a, undefined), s.len - endTrim(s.b, undefined), 0, 0.055, 0.05, 0xbdbdb5, false)) marks.barriers++;
+    // The barrier stops short of a roundabout, where the splitter island takes over.
+    const barrierTrim = (node: number): number => net.nodes.get(node)?.ring ? 3.6 : endTrim(node, undefined);
+    if (s.kind === KIND_HIGHWAY && !s.oneway && run(barrierTrim(s.a), s.len - barrierTrim(s.b), 0, 0.055, 0.05, 0xbdbdb5, false)) marks.barriers++;
   }
 }
 
@@ -739,7 +771,8 @@ function splitterIslands(net: Network, b: MeshBuilder): number {
       // Clear of the inner lanes' cars on both sides.
       const inner = Math.min(Math.abs(laneCentre(net, s, true, lanesFor(net, s, true) - 1)), Math.abs(laneCentre(net, s, false, lanesFor(net, s, false) - 1)));
       const w0 = Math.max(0.03, Math.min(0.16, inner - 0.13));
-      const start = ringHw + 0.1, len = Math.min(2.2, s.len * 0.4 - start);
+      // From just behind the give-way line (which runs up to it) back up the arm.
+      const start = Math.max(ringHw + 0.1, stopLine(net, n.id) + 0.05), len = Math.min(2.2, s.len * 0.4 - start);
       if (len < 0.5) continue;
       const k = s.a === n.id ? 1 : s.n - 1, e = s.a === n.id ? 0 : s.n;
       let ux = s.pts[k * 2] - s.pts[e * 2], uz = s.pts[k * 2 + 1] - s.pts[e * 2 + 1];

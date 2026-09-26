@@ -375,6 +375,24 @@ test('roundabouts get splitter islands on two-way arms; avenues get medians shor
   assert.equal(exLayer.marks.medians, 0);
 });
 
+test('where two expressways meet, no guardrail or barrier stands on either carriageway', () => {
+  const net = new Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], 3);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 66 }], 3);
+  const layer = new RoadLayer();
+  layer.rebuild(net, flat());
+  const pos = layer.rails.geometry.attributes.position;
+  assert.ok(pos.count > 0);
+  // Guardrail vertices (not the median barrier, which runs down the centre line on purpose).
+  let on = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) + 40, z = pos.getZ(i) + 40;
+    const centre = Math.min(...[...net.segs.values()].map(sg => Network.nearestOn(sg, x, z).dist));
+    if (centre > 0.3 && net.onRoad(x, z, -1, -0.12)) on++;
+  }
+  assert.equal(on, 0, `${on} guardrail vertices inside a carriageway`);
+});
+
 const Ctl = await import('../src/roads/control.ts');
 const { crossingApproaches } = await import('../src/roads/crossings.ts');
 const { speedLimitKmh } = await import('../src/render/streetDetail.ts');

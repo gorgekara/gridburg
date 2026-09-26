@@ -7,6 +7,7 @@ import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { driverFor, idmAccel, stepMotion, curveSpeed, turnRadius, approachSpeed, segMinRadius } from './driver';
 import { turnOf, criticalGap } from './priority';
+import { dayProfile, purposeAt, pickByDistance } from './demand';
 import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE, SOLID_STRETCH, ZEBRA_HALF } from '../roads/control';
 import { crossingApproaches } from '../roads/crossings';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
@@ -301,7 +302,9 @@ let roadLength = 0;
 
 // ---- cars ---------------------------------------------------------------------------------------
 /** A stretch of one segment on a route. On a motorway, which side the slip road ahead or behind is on (±1), if any. */
-interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number }
+interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number;
+  /** A bus stop at the end of this leg: the bus pulls in and stands there a while. */
+  dwell?: boolean }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
 interface Car {
   uid: number; legs: Leg[]; li: number; p: number; time: number;
@@ -317,6 +320,8 @@ interface Car {
   yieldUntil: number; yieldTo: number;
   /** Stuck past its patience: it no longer waits on bookings, gaps or give-way, only on bodies in the way. */
   insistent: boolean;
+  /** At a bus stop: until when it stands there, and the leg whose stop it has already made. */
+  dwellUntil?: number; dwellLi?: number;
   /** A callout's view of the road ahead: an oncoming car close enough that it must not pull out. */
   oncoming?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
@@ -728,8 +733,12 @@ function segTime(i: number): number {
   return (segs[i].len / segSpeed(segs[i])) * (1 + 2.5 * segCong[i]);
 }
 
-/** Fastest route between two road positions as a list of legs, or null. */
-function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null {
+/**
+ * Fastest route between two road positions as a list of legs, or null. With `seed`, each road's cost
+ * is varied a little (±ROUTE_JITTER/2) for this trip: drivers do not all judge the same way, so a
+ * route that is only barely the fastest does not take everyone.
+ */
+function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0): Leg[] | null {
   const S = segs[sSeg];
   const G = segs[gSeg];
   if (!S || !G) return null;
@@ -793,7 +802,8 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number): Leg[] | null
     for (const e of nodeEdges[cur]) {
       const t = nodeType[e.to];
       const penalty = t === J_LIGHT ? 2.5 : t === J_STOP ? 1.4 : t === J_YIELD ? 0.8 : 0;
-      relax(e.to, g + segTime(e.seg) + penalty, cur, e.seg, e.fwd);
+      const jitter = seed ? 1 + ROUTE_JITTER * (((Math.sin(e.seg * 12.9898 + seed) * 43758.5453) % 1 + 1) % 1 - 0.5) : 1;
+      relax(e.to, g + segTime(e.seg) * jitter + penalty, cur, e.seg, e.fwd);
     }
   }
   return null;
@@ -885,17 +895,21 @@ function drivingPace(vehicle: number): number {
   }
 }
 
-function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission, taxiStop?: number): boolean {
+function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle = 1, line?: number, mission?: Mission, taxiStop?: number, loop = false): boolean {
   // The last few slots are kept for fire engines, patrols, bin lorries and buses, so a gridlocked
   // city full of commuters can still send out its services.
   const reserve = mission || line !== undefined ? 0 : SERVICE_RESERVE;
   if (freeList.length <= reserve || sSeg < 0 || gSeg < 0) return false;
-  const findRoute = vehicle === 8 ? wiredRoute : route;
+  // Everyone but a callout judges the roads a little differently.
+  const seed = mission ? 0 : 1 + Math.random() * 1000;
+  const findRoute = vehicle === 8 ? wiredRoute : (a: number, b: number, c: number, d: number) => route(a, b, c, d, seed);
   let legs = findRoute(sSeg, sS, gSeg, gS);
   if (!legs || legs.length === 0) { noPath++; return false; }
-  if (line !== undefined) {
+  if (line !== undefined || loop) {
     const back = findRoute(gSeg, gS, sSeg, sS);
     if (!back) return false;
+    // The far stop: the bus pulls in there and stands a while before the run back.
+    legs[legs.length - 1].dwell = true;
     legs.push(...back);
   }
   // A trip that starts or ends right on a node has an empty leg there, pointing along a road the car
@@ -969,6 +983,25 @@ function taxiTrip(origin: number, destination: number): boolean {
   return stop >= 0 && spawnTrip(accSeg[stop], accS[stop], accSeg[destination], accS[destination], 9, undefined, undefined, stop);
 }
 
+/** Of a few candidates drawn by weight, the one a person picks: nearer ones likelier (a gravity model). */
+function nearby(tiles: number[], w: number[], from: number): number {
+  const cands = [0, 1, 2, 3].map(() => pickWeighted(tiles, w));
+  const fx = from % GRID, fz = Math.floor(from / GRID);
+  return cands[pickByDistance(cands.map(t => Math.hypot(t % GRID - fx, Math.floor(t / GRID) - fz)), Math.random())];
+}
+/** The shops among the job tiles, with their weights, for errands. */
+let comCache: { stamp: number; tiles: number[]; w: number[] } | null = null;
+function comTiles(): { tiles: number[]; w: number[] } {
+  if (!comCache || comCache.stamp !== jobTiles.length + jobW.length * 7) {
+    // Job weights are running totals (for pickWeighted); the shops get running totals of their own.
+    const tiles: number[] = [], w: number[] = [];
+    let total = 0;
+    jobTiles.forEach((t, k) => { if (zoneBase(kind[t]) === T_COM) { total += jobW[k] - (k ? jobW[k - 1] : 0); tiles.push(t); w.push(total); } });
+    comCache = { stamp: jobTiles.length + jobW.length * 7, tiles, w };
+  }
+  return comCache;
+}
+
 function spawn(dt: number): void {
   taxiWindow *= Math.exp(-dt / 60);
   airTokens = Math.min(transit.airports.length * 240, airTokens + transit.airports.length * 4 * dt);
@@ -988,8 +1021,10 @@ function spawn(dt: number): void {
     raceUntil = simTime + 45;
     startRace();
   }
-  spawnBudget = Math.min(8, spawnBudget + tripRate * dt * trafficScale);
-  extBudget = Math.min(4, extBudget + extRate * dt * trafficScale);
+  // The day's rhythm: peaks morning and evening, a trickle in the small hours, the same trips in all.
+  const hour = ((tick + subCount / SIM_HZ) / 20) % 24, rhythm = dayProfile(hour);
+  spawnBudget = Math.min(8, spawnBudget + tripRate * dt * trafficScale * rhythm);
+  extBudget = Math.min(4, extBudget + extRate * dt * trafficScale * rhythm);
   // Through traffic keeps rolling whatever the city does; it never counts towards commutes.
   throughBudget = Math.min(2, throughBudget + THROUGH_RATE * dt * trafficScale);
   if (throughBudget >= 1 && freeList.length > 60 && !racing) { throughBudget -= 1; throughTrip(); }
@@ -1013,8 +1048,15 @@ function spawn(dt: number): void {
   while (spawnBudget >= 1 && n < 4 && resTiles.length && jobTiles.length) {
     spawnBudget -= 1;
     n++;
-    const o = pickWeighted(resTiles, resW);
-    const d = pickWeighted(jobTiles, jobW);
+    // What the trip is for at this hour: to work, home again, or to the shops, mostly not far.
+    const purpose = purposeAt(hour, Math.random());
+    let o: number, d: number;
+    if (purpose === 'home') { const work = pickWeighted(jobTiles, jobW); o = work; d = nearby(resTiles, resW, work); }
+    else {
+      o = pickWeighted(resTiles, resW);
+      const shops = purpose === 'shop' ? comTiles() : null;
+      d = shops && shops.tiles.length ? nearby(shops.tiles, shops.w, o) : nearby(jobTiles, jobW, o);
+    }
     const line = transitLineForTrip(transit, o, d);
     if (line >= 0 && transitTokens[line] >= 1 && Math.random() < Math.min(0.98, (['bus', 'trolley'].includes(transit.lines[line].mode) ? 0.65 : 0.9) * effects.transitShare)) {
       transitTokens[line]--; riderWindow++; money += 0.08 * effects.fare;
@@ -1606,18 +1648,26 @@ function stepCars(dt: number): void {
         if (lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
         c.lock = -1;
       }
-      if (c.box >= 0 && c.li > c.boxLi && c.p > Math.min(0.8, seg.len * 0.5)) leaveBox(slot);
+      // Out of the box once its tail is clear of the junction: on a wide one that is further than 0.8.
+      if (c.box >= 0 && c.li > c.boxLi && c.p > Math.min(Math.max(0.8, nodeHalf[c.box] + vehicleLength(c.vehicle) / 2 + 0.1), seg.len * 0.5)) leaveBox(slot);
       // A finished lane change; one that has been stuck for a while goes back to where it was.
       if (c.chT >= 0) {
         if (Math.max((c.p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME) >= 1) c.chT = -1;
         else if (c.stuck > 3 && c.box < 0) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
       }
+      // A bus at its stop: pull in, stand there, then carry on.
+      const atStop = !!leg.dwell && c.dwellLi !== c.li;
+      if (atStop && c.p >= leg.p1 - 0.03) {
+        if (!((c.dwellUntil ?? 0) > simTime)) c.dwellUntil = simTime + BUS_DWELL;
+        else if ((c.dwellUntil ?? 0) <= simTime + dt) { c.dwellLi = c.li; c.dwellUntil = 0; }
+      }
+      if (atStop && leg.p1 - c.p < 1.2) c.sideGoal = Math.max(c.sideGoal, 0.08);
       // Pulled over for a callout, it comes to a stop at the kerb until it has passed.
-      const vWant = pullingOver ? 0 : desiredSpeed(c);
+      const vWant = pullingOver || (atStop && (c.dwellUntil ?? 0) > simTime) ? 0 : atStop ? Math.min(desiredSpeed(c), approachSpeed(0.2, leg.p1 - c.p, driver.b)) : desiredSpeed(c);
       considerLaneChange(c, slot, leaderP - c.p, leaderStuck || (leaderP - c.p < 1.5 && leaderV < 0.6 * vWant));
 
       const leaderHold = leaderP - gap;
-      let maxP = leaderHold;
+      let maxP = leg.dwell && c.dwellLi !== c.li ? Math.min(leaderHold, leg.p1) : leaderHold;
       // What the driver reacts to: the hard limits, less a junction it has not yet asked for.
       let idmMax = leaderHold;
       // The car it follows when nothing on its own leg is ahead: the back of the queue in the lane it
@@ -1695,6 +1745,9 @@ function stepCars(dt: number): void {
         // the exit filled up): it gives its place in the box back, or it blocks the crossing traffic
         // it is no longer going to get in front of.
         if (!canGo && c.box === node && c.boxLi === c.li && !pastStop) leaveBox(slot);
+        // Let in early, and still short of its line: if a car already past its own line is now crossing
+        // its path (it went ahead in the gap this one left), this one gives its place back and waits.
+        if (canGo && c.box === node && c.boxLi === c.li && !pastStop && committedConflict(c, slot, node)) { leaveBox(slot); canGo = false; }
         // Roundabout priority: circulating traffic goes first, so a car joining the ring waits while
         // any vehicle is on the arc feeding this node. Filling the ring from the arms is what gridlocked it.
         const entering = type === J_RING && !ringArc[leg.seg];
@@ -1886,7 +1939,7 @@ function stepCars(dt: number): void {
             arrivedBy.set(trip, (arrivedBy.get(trip) ?? 0) + 1);
             freeCar(slot); leaderP = Infinity; leaderSlot = -1; }
         }
-      } else if (c.p >= legEnd - 1e-4) {
+      } else if (c.p >= legEnd - 1e-4 && !(leg.dwell && c.dwellLi !== c.li)) {
         // Carry the unused travel into the next link, in the lane chosen for it. Polyline links meet
         // with a small kink, so the exact start of the next link can sit a hair behind and to the side
         // of where this one ended; on a roundabout the follower is close enough that this one pose was
@@ -1899,6 +1952,7 @@ function stepCars(dt: number): void {
         for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
           const target = vehiclePose(c, c.li + 1, nextP);
           if (!trafficSpace.canMove(slot, target)) continue;
+          const delayed = c.stood;
           countLeft(c);
           laneLeft[laneKey(leg.seg, leg.fwd, c.lane)] = slot;
           c.li++;
@@ -1909,6 +1963,7 @@ function stepCars(dt: number): void {
           if (c.p < laneTail[nextKey]) { laneTail[nextKey] = c.p; laneTailV[nextKey] = c.v; }
           if (c.p < laneFresh[nextKey]) laneFresh[nextKey] = c.p;
           leaderP = Infinity; leaderStuck = false; leaderSlot = -1;
+          if (delayed > REROUTE_DELAY && !c.mission && c.line === undefined && c.vehicle !== 8) reroute(c);
           break;
         }
       }
@@ -2003,8 +2058,63 @@ function boxGapFor(c: Car, node: number): number {
 }
 const BOX_GAP = 1.6;
 
+/** Whether a car in the box that is already past its stop line (or on its way out) is making a movement that crosses `c`'s. */
+function committedConflict(c: Car, slot: number, node: number): boolean {
+  const mine = movementOf(c, node);
+  for (const other of boxCars[node] ?? []) {
+    if (other === slot) continue;
+    const o = slots[other];
+    if (!o || o.box !== node) continue;
+    const ol = o.legs[o.li];
+    const past = o.li > o.boxLi || ol.p1 - o.p < approachSetback[ol.seg * 2 + (ol.fwd ? 0 : 1)] - 0.05;
+    if (!past) continue;
+    const m = heldMovement(other, node);
+    if (m && conflicts(mine, m)) return true;
+  }
+  return false;
+}
+
 /** How fast a car turns off the road at the end of its trip. */
 const ARRIVE_SPEED = 0.8;
+/** How much each driver's judgement of a road's time varies, as a share of it. */
+const ROUTE_JITTER = 0.3;
+/** Held up this long on a road, a driver looks again for a better way from the next junction. */
+const REROUTE_DELAY = 6;
+/** How long a bus stands at its stop. */
+const BUS_DWELL = 3;
+
+/** What a stretch of route costs a driver now, as the route search counts it. */
+function legsCost(legs: Leg[]): number {
+  let t = 0;
+  legs.forEach((l, k) => {
+    const sg = segs[l.seg];
+    t += ((l.p1 - l.p0) / segSpeed(sg)) * (1 + 2.5 * segCong[l.seg]);
+    if (k < legs.length - 1) { const nt = nodeType[legEndNode(l)]; t += nt === J_LIGHT ? 2.5 : nt === J_STOP ? 1.4 : nt === J_YIELD ? 0.8 : 0; }
+  });
+  return t;
+}
+
+/**
+ * A car held up on the road it has just left looks for a better way on from here, as drivers do when
+ * they hit a jam: it takes the new route if it is clearly quicker (by a tenth) and carries on the way
+ * it is already facing.
+ */
+function reroute(c: Car): void {
+  const cur = c.legs[c.li], last = c.legs[c.legs.length - 1];
+  if (c.li >= c.legs.length - 2) return;
+  const sg = segs[cur.seg], gl = segs[last.seg];
+  const fresh = route(cur.seg, cur.fwd ? c.p : sg.len - c.p, last.seg, last.fwd ? last.p1 : gl.len - last.p1, 1 + Math.random() * 1000);
+  if (!fresh || fresh.length < 2 || fresh[0].seg !== cur.seg || fresh[0].fwd !== cur.fwd) return;
+  const rest = fresh.slice(1);
+  if (rest.every((l, k) => c.legs[c.li + 1 + k]?.seg === l.seg && c.legs[c.li + 1 + k]?.fwd === l.fwd)) return;
+  if (legsCost([{ ...cur, p0: c.p }, ...rest]) > legsCost([{ ...cur, p0: c.p }, ...c.legs.slice(c.li + 1)]) * 0.9) return;
+  c.legs = [...c.legs.slice(0, c.li + 1), ...rest];
+  markRampLegs(c.legs);
+  alignRingLegs(c.legs, c.vehicle);
+  c.nextLane = -1;
+  reroutes++;
+}
+let reroutes = 0;
 
 // ---- people crossing -------------------------------------------------------------------------------
 /** The sideways band (lo, hi in the crossing's across direction) of the traffic arriving at, or leaving, its junction. */
@@ -3006,7 +3116,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       const index = new Map(segs.map((s, i) => [s.id, i]));
       for (const t of m.trips ?? []) {
         const a = index.get(t.a), b = index.get(t.b);
-        if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1, undefined, t.callout ? { kind: 'heist', origin: 0, tile: 0, work: 0 } : undefined);
+        if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1, undefined, t.callout ? { kind: 'heist', origin: 0, tile: 0, work: 0 } : undefined, undefined, !!t.loop);
       }
       const lanes: Record<number, number[]> = {};
       for (const c of slots) {
@@ -3032,7 +3142,13 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       // And, when asked, every car's state: its road, how far along, and how fast.
       const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent, x: trafficSpace.poses.get(slot)?.x ?? 0, z: trafficSpace.poses.get(slot)?.z ?? 0, angle: trafficSpace.poses.get(slot)?.angle ?? 0 }] : []) : undefined;
       const walkers = m.detail ? walkerFrame() : undefined;
-      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits }, detail, walkers } as never);
+      // Every car's route still joins up, leg to leg, after any rerouting.
+      let broken = 0;
+      for (const c of slots) if (c) for (let k = 0; k + 1 < c.legs.length; k++) {
+        const a = c.legs[k], b = c.legs[k + 1];
+        if (legEndNode(a) !== legStart(b) && !(ringArc[a.seg] || ringArc[b.seg]) && a.seg !== b.seg) broken++;
+      }
+      post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits }, detail, walkers, reroutes, broken } as never);
       break;
     }
     case 'warm': {

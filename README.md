@@ -461,6 +461,12 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   - No car enters a junction while anyone on a crossing it will pass over is in its way, so turning
     cars wait for them.
   - Pavement walkers keep to their own corner. Every zebra has curb ramps with tactile paving.
+- **The day has a rhythm** (`src/sim/demand.ts`):
+  - A morning peak to work, an evening peak home again (return trips), and errands in between.
+  - Destinations are mostly local (a simple gravity model).
+  - Drivers judge roads a little differently, so they spread over routes that cost about the same, and
+    a driver held up for a while reroutes from the next junction.
+  - Buses stand at their far stop before the run back.
 - **Built like real roads:**
   - Every two-way road into a roundabout has a splitter island, and the central island a truck apron.
   - Two-way avenues have a raised, planted median that stops short of each junction for its turn bay.
