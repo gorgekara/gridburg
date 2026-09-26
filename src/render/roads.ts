@@ -7,10 +7,12 @@ import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, K
 import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
-import { crossingApproaches } from './crossings';
+import { crossingApproaches } from '../roads/crossings';
+import { junctionPaint, chevronSpots } from './junctionMarks';
+import type { JunctionMarks } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
-import { planFor, movements, stateIn, fixedClock } from '../roads/signals';
+import { planFor, movements, stateIn, fixedClock, moveKey } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 
 /** Each side's edge at every sample of a segment, following any taper. */
@@ -61,6 +63,12 @@ export class RoadLayer {
   private builtVersion = -1;
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
+  /** What the last rebuild painted and put up at junctions and curves. */
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0 };
+  readonly yieldSigns: THREE.InstancedMesh;
+  readonly heads: THREE.InstancedMesh;
+  readonly arms: THREE.InstancedMesh;
+  readonly chevrons: THREE.InstancedMesh;
 
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
@@ -92,6 +100,17 @@ export class RoadLayer {
       this.group.add(m);
     }
     this.poles.castShadow = true;
+    // Overhead heads, and the mast arms that carry them (a unit length along +x, stretched per arm).
+    const head = new Builder(5);
+    // Placed at the ground plus 0.62 and scaled like the poles (0.72): the box holds the lenses (drawn
+    // separately, 0.55–0.73 up) and a hanger rises to the arm at 0.95.
+    head.box(0.14, 0.36, 0.1, 0, -0.16, 0, 0x20282d);
+    head.box(0.02, 0.26, 0.02, 0, 0.2, 0, 0x707b7e);
+    this.heads = new THREE.InstancedMesh(head.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
+    const armGeo = new THREE.BoxGeometry(1, 0.035, 0.035);
+    armGeo.translate(0.5, 0.95, 0);
+    this.arms = new THREE.InstancedMesh(armGeo, new THREE.MeshStandardMaterial({ color: 0x707b7e }), MAX_LAMPS);
+    for (const m of [this.heads, this.arms]) { m.count = 0; m.frustumCulled = false; m.castShadow = true; this.group.add(m); }
 
     // Stop signs: a small octagonal plate on a post, one per approach.
     const signBody = new Builder(2);
@@ -104,6 +123,31 @@ export class RoadLayer {
     this.stopSigns.frustumCulled = false;
     this.stopSigns.castShadow = true;
     this.group.add(this.stopSigns);
+
+    // Yield signs: a red-rimmed white triangle, point down, on a post.
+    const yieldBody = new Builder(3);
+    yieldBody.box(0.03, 0.62, 0.03, 0, 0, 0, 0x8d949a);
+    const tri = (r: number, z: number): THREE.BufferGeometry => {
+      const shape = new THREE.Shape();
+      for (let k = 0; k < 3; k++) { const a = -Math.PI / 2 + (k * 2 * Math.PI) / 3; if (k) shape.lineTo(Math.cos(a) * r, Math.sin(a) * r); else shape.moveTo(Math.cos(a) * r, Math.sin(a) * r); }
+      const g = new THREE.ShapeGeometry(shape);
+      g.translate(0, 0.52, z);
+      return g;
+    };
+    yieldBody.add(tri(0.17, 0.018), 0xc0392b);
+    yieldBody.add(tri(0.11, 0.022), 0xf6f2ea);
+    this.yieldSigns = new THREE.InstancedMesh(yieldBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }), MAX_LAMPS);
+    // Chevron boards: yellow, with a black arrowhead, on a post.
+    const chevronBody = new Builder(4);
+    chevronBody.box(0.025, 0.5, 0.025, 0, 0, 0, 0x8d949a);
+    chevronBody.box(0.2, 0.22, 0.02, 0, 0.42, 0, 0xe8c547);
+    for (const [dy, turn] of [[0.05, 0.6], [-0.05, -0.6]] as const) {
+      const bar = new THREE.BoxGeometry(0.12, 0.035, 0.024);
+      bar.rotateZ(turn); bar.translate(0, 0.42 + dy, 0);
+      chevronBody.add(bar, 0x1d1d1d);
+    }
+    this.chevrons = new THREE.InstancedMesh(chevronBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
+    for (const m of [this.yieldSigns, this.chevrons]) { m.count = 0; m.frustumCulled = false; m.castShadow = true; this.group.add(m); }
 
     // Highway signs: one beside each road coming in from outside, on the verge to the right of it.
     const green = new THREE.MeshStandardMaterial({ color: 0x1f7a4d }), white = new THREE.MeshStandardMaterial({ color: 0xffffff }), grey = new THREE.MeshStandardMaterial({ color: 0x777777 });
@@ -130,6 +174,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -230,7 +275,7 @@ export class RoadLayer {
     b.heightAt = null;
     roundaboutFlares(net, b);
     junctionFillets(net, b, tapers);
-    rampGores(net, b);
+    rampGores(net, b, this.marks);
 
     // All island details share one geometry and material, independent of roundabout count.
     for (const rb of net.roundabouts()) {
@@ -359,6 +404,10 @@ export class RoadLayer {
 
     b.heightAt = null;
     turnArrows(net, b, crossings);
+    // Stop lines, give-way teeth and solid approach lines, from the same junction rules the traffic obeys.
+    const { yieldSpots } = junctionPaint(net, crossings, b, (s) => { b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null; }, this.marks);
+    b.heightAt = null;
+    const chevronAt = chevronSpots(net, this.marks);
     // Crossings belong to ordinary junctions, whether signalized or uncontrolled.
     for (const [id, ends] of crossings) {
       const seg = net.segs.get(id)!;
@@ -434,11 +483,35 @@ export class RoadLayer {
     }
     this.stopSigns.count = signCount;
     this.stopSigns.instanceMatrix.needsUpdate = true;
+    // Yield signs beside every give-way line, and chevrons round tight curves, facing the traffic.
+    const place = (mesh: THREE.InstancedMesh, spots: { x: number; z: number; tx: number; tz: number }[], face: (tx: number, tz: number) => number): void => {
+      let k = 0;
+      for (const spot of spots) {
+        if (k >= MAX_LAMPS) break;
+        const onRoad = net.nearestSeg(spot.x, spot.z, 2);
+        const y = onRoad?.seg.structure === 1 ? Math.max(0, roadHeight(onRoad.seg, onRoad.s)) : 0;
+        v3.set(spot.x - half, y, spot.z - half);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), face(spot.tx, spot.tz));
+        m4.compose(v3, q, one);
+        mesh.setMatrixAt(k++, m4);
+      }
+      mesh.count = k;
+      mesh.instanceMatrix.needsUpdate = true;
+    };
+    place(this.yieldSigns, yieldSpots, (tx, tz) => Math.atan2(-tx, -tz));
+    place(this.chevrons, chevronAt, (tx, tz) => Math.atan2(tx, tz));
 
-    // Traffic signals: one lamp per approach, on the right-hand side at the stop line.
+    // Traffic signals: a head on a pole on the right-hand side at the stop line, and where two or more
+    // lanes arrive, a mast arm over the road with a head above each lane showing that lane's own state.
     this.lampInfo = [];
-    let n = 0;
+    let n = 0, h = 0, armCount = 0;
     q.identity();
+    const lensAt = (x: number, y0: number, z: number): void => {
+      for (let lens = 0; lens < 3; lens++) {
+        v3.set(x, y0 + (0.84 - lens * 0.12) * 0.72, z); m4.compose(v3, q, one);
+        this.lamps.setMatrixAt(h * 3 + lens, m4);
+      }
+    };
     for (const node of net.nodes.values()) {
       if (!node.light || net.degree(node.id) < 3) continue;
       const plan = planFor(net, node.id), moves = movements(net, node.id);
@@ -450,23 +523,48 @@ export class RoadLayer {
         const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
-        v3.set(spot.x - half, Math.max(0, levelY(node.level ?? 0)), spot.z - half);
+        const ground = Math.max(0, levelY(node.level ?? 0));
+        v3.set(spot.x - half, ground, spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(tx, tz));
         m4.compose(v3, q, one);
         this.poles.setMatrixAt(n, m4);
-        for (let lens = 0; lens < 3; lens++) {
-          v3.y = Math.max(0, levelY(node.level ?? 0)) + (0.84 - lens * 0.12) * 0.72; m4.compose(v3, q, one);
-          this.lamps.setMatrixAt(n * 3 + lens, m4);
-        }
+        lensAt(spot.x - half, ground, spot.z - half);
         const fwd = s.b === node.id;
         this.lampInfo.push({ node: node.id, plan, keys: moves.filter(m => m.inSeg === s.id && m.inFwd === fwd).map(m => m.key) });
-        n++;
+        n++; h++;
+        // The mast arm: from the pole out over every arriving lane, a head centred over each.
+        const lanes = lanesFor(net, s, fwd);
+        if (lanes < 2 || h + lanes >= MAX_LAMPS || armCount >= MAX_LAMPS) continue;
+        const back = Math.min(1.0, s.len * 0.4);
+        Network.poseAt(s, fwd ? s.len - back : back, pose);
+        const dx = fwd ? pose.tx : -pose.tx, dz = fwd ? pose.tz : -pose.tz, rx = -dz, rz = dx;
+        const serve = approachLanes(net, node.id, s, fwd);
+        let far = Infinity;
+        for (let lane = 0; lane < lanes; lane++) {
+          const off = laneCentre(net, s, fwd, lane);
+          far = Math.min(far, off);
+          const hx = pose.x - half + rx * off, hz = pose.z - half + rz * off;
+          v3.set(hx, ground + 0.62, hz); m4.compose(v3, q, one);
+          this.heads.setMatrixAt(h - n, m4);
+          lensAt(hx, ground + 0.12, hz);
+          const keys = [...new Set((serve.serve[lane] ?? []).map(e => moveKey(s.id, fwd, serve.exits[e].seg, serve.exits[e].fwd)))];
+          this.lampInfo.push({ node: node.id, plan, keys: keys.length ? keys : this.lampInfo[h - 1].keys });
+          h++;
+        }
+        // The arm runs from the pole across to beyond the furthest lane's head.
+        const px = spot.x - half, pz = spot.z - half, qx = pose.x - half + rx * (far - 0.12), qz = pose.z - half + rz * (far - 0.12);
+        const len = Math.hypot(qx - px, qz - pz);
+        v3.set(px, ground, pz);
+        const armQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-(qz - pz), qx - px));
+        m4.compose(v3, armQ, new THREE.Vector3(len, 1, 1));
+        this.arms.setMatrixAt(armCount++, m4);
       }
     }
     this.poles.count = n;
-    this.lamps.count = n * 3;
-    this.poles.instanceMatrix.needsUpdate = true;
-    this.lamps.instanceMatrix.needsUpdate = true;
+    this.heads.count = h - n;
+    this.arms.count = armCount;
+    this.lamps.count = h * 3;
+    for (const m of [this.poles, this.heads, this.arms, this.lamps]) m.instanceMatrix.needsUpdate = true;
     this.updateLights(0);
   }
 
@@ -484,10 +582,11 @@ export class RoadLayer {
       const c = clock.get(l.node) ?? fixedClock(l.plan, simTime + l.node * 3.7);
       let best: SignalState = 'red';
       for (const key of l.keys) { const st = stateIn(l.plan, c.phase, c.t, c.len, key); if (rank[st] > rank[best]) best = st; }
-      const phase = best === 'yield' ? 'green' : best;
-      this.lamps.setColorAt(i * 3, phase === 'red' ? LAMP_RED : LAMP_OFF);
-      this.lamps.setColorAt(i * 3 + 1, phase === 'amber' ? LAMP_AMBER : LAMP_OFF);
-      this.lamps.setColorAt(i * 3 + 2, phase === 'green' ? LAMP_GREEN : LAMP_OFF);
+      // A turn that may go but must give way shows a flashing amber, not a green that looks protected.
+      const flash = best === 'yield', lit = Math.floor(simTime * 1.6) % 2 === 0;
+      this.lamps.setColorAt(i * 3, best === 'red' ? LAMP_RED : LAMP_OFF);
+      this.lamps.setColorAt(i * 3 + 1, best === 'amber' || (flash && lit) ? LAMP_AMBER : LAMP_OFF);
+      this.lamps.setColorAt(i * 3 + 2, best === 'green' ? LAMP_GREEN : LAMP_OFF);
     }
     if (this.lamps.instanceColor) this.lamps.instanceColor.needsUpdate = true;
   }
@@ -823,7 +922,7 @@ function junctionFillets(net: Network, b: MeshBuilder, tapers: Tapers): void {
  * Where a slip road splits from or joins a carriageway, pave the sliver between the two so the ramp
  * reads as a lane added to the highway that then peels away, rather than a separate road grazing it.
  */
-function rampGores(net: Network, b: MeshBuilder): void {
+function rampGores(net: Network, b: MeshBuilder, marks: JunctionMarks): void {
   const half = GRID / 2, p = { x: 0, z: 0, tx: 0, tz: 0 };
   for (const ramp of net.segs.values()) {
     if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
@@ -864,6 +963,17 @@ function rampGores(net: Network, b: MeshBuilder): void {
       }
       const n = net.nodes.get(node)!;
       b.fan(n.x - half, n.z - half, pts, pts.length / 2, 0.045, ASPHALT);
+      // The gore painted as drivers know it: a white V round its edges, hatched across inside.
+      const edgeRoad = pts.slice(0, (steps + 1) * 2), edgeRamp: number[] = [];
+      for (let k = 0; k <= steps; k++) edgeRamp.push(pts[(steps + 1 + (steps - k)) * 2], pts[(steps + 1 + (steps - k)) * 2 + 1]);
+      b.ribbon(edgeRoad, steps + 1, 0.018, 0.058, WHITE);
+      b.ribbon(edgeRamp, steps + 1, 0.018, 0.058, WHITE);
+      for (let k = 2; k < steps; k++) {
+        const ax = edgeRoad[k * 2], az = edgeRoad[k * 2 + 1], bx = edgeRamp[(k + 1) * 2], bz = edgeRamp[(k + 1) * 2 + 1];
+        if (Math.hypot(edgeRamp[k * 2] - ax, edgeRamp[k * 2 + 1] - az) < 0.12) continue;
+        b.ribbon([ax, az, bx, bz], 2, 0.014, 0.058, WHITE);
+      }
+      marks.gores++;
     }
   }
 }

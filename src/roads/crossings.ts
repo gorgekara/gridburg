@@ -1,6 +1,6 @@
-import { isMotorway, Network } from '../roads/network';
-import { roadHalf } from '../roads/lanes';
-import type { Pose, RSeg } from '../roads/network';
+import { isMotorway, Network } from './network';
+import { roadHalf } from './lanes';
+import type { Pose, RSeg } from './network';
 
 /** Distance from each junction to its zebra crossing, indexed by segment and endpoint. */
 export function crossingApproaches(net: Network): Map<number, [number, number]> {

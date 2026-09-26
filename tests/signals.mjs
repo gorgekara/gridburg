@@ -57,16 +57,19 @@ test('an irregular junction gets one phase per arm', () => {
   assert.equal(plan.phases.length, 5);
 });
 
-test('the timeline: green, amber into red, no amber where it stays green', () => {
+test('the timeline: green, amber, all-red, then the next phase; no amber where it stays green', () => {
   const plan = { phases: [{ green: 8, moves: { a: 1, b: 1, c: 2 } }, { green: 5, moves: { b: 1 } }] };
   assert.equal(S.stateIn(plan, 0, 2, 8, 'a'), 'green');
   assert.equal(S.stateIn(plan, 0, 2, 8, 'c'), 'yield');
   assert.equal(S.stateIn(plan, 0, 8.5, 8, 'a'), 'amber');
   assert.equal(S.stateIn(plan, 0, 8.5, 8, 'b'), 'green', 'green in the next phase too');
   assert.equal(S.stateIn(plan, 1, 1, 5, 'a'), 'red');
-  assert.equal(S.cycleOf(plan), 8 + 1 + 5 + 1);
-  assert.deepEqual(S.fixedClock(plan, 10), { phase: 1, t: 1, len: 5 });
-  assert.deepEqual(S.fixedClock(plan, 15.5), { phase: 0, t: 0.5, len: 8 });
+  // After the amber, a moment of all-red before the next phase moves off.
+  assert.equal(S.stateIn(plan, 0, 9.2, 8, 'a'), 'red');
+  assert.equal(S.stateIn(plan, 0, 9.2, 8, 'b'), 'green', 'still green if it is green next phase too');
+  assert.equal(S.cycleOf(plan), 8 + 1 + 0.5 + 5 + 1 + 0.5);
+  assert.deepEqual(S.fixedClock(plan, 10.5), { phase: 1, t: 1, len: 5 });
+  assert.deepEqual(S.fixedClock(plan, 16.5), { phase: 0, t: 0.5, len: 8 });
 });
 
 test('a plan survives a split and a reversal of an arm, and falls back when the junction changes', () => {
@@ -194,6 +197,119 @@ test('a plan that leaves a movement red in every phase does not fit', () => {
   const key = Object.keys(plan.phases[0].moves)[0];
   delete plan.phases[0].moves[key];
   assert.equal(S.planFits(j.net, j.node.id, plan), false);
+});
+
+// ---- paint and signs ------------------------------------------------------------------------------
+const flat = () => { const t = generateTerrain(3); t.water.fill(0); return t; };
+test('a signal crossroads has a stop line on each approach; an avenue with a side street, a give-way line and a yield sign', () => {
+  const j = junction(['W', 'E', 'N', 'S']);
+  const layer = new RoadLayer();
+  layer.rebuild(j.net, flat());
+  assert.equal(layer.marks.stopLines, 4);
+  assert.equal(layer.marks.giveWays, 0);
+  const t = new Network();
+  t.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], KIND_AVENUE);
+  t.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], KIND_ROAD);
+  const tee = new RoadLayer();
+  tee.rebuild(t, flat());
+  assert.equal(tee.marks.giveWays, 1, 'only the side street gives way');
+  assert.equal(tee.marks.yieldSigns, 1);
+  assert.equal(tee.yieldSigns.count, 1);
+  assert.equal(tee.marks.stopLines, 0);
+});
+
+test('every road into a roundabout gives way; a crossroads of equal streets paints no priority', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD);
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD);
+  const equal = new RoadLayer();
+  equal.rebuild(net, flat());
+  assert.equal(equal.marks.giveWays + equal.marks.stopLines, 0);
+  assert.ok(net.addRoundabout(40, 40, 2.3, KIND_ROAD));
+  const ring = new RoadLayer();
+  ring.rebuild(net, flat());
+  assert.equal(ring.marks.giveWays, 4);
+});
+
+test('a curve too tight for its road gets chevrons; a gentle one does not', () => {
+  const net = new Network();
+  const [a] = net.insertPath([{ x: 10, z: 20 }, { x: 40, z: 20 }], KIND_AVENUE);
+  net.bendSeg(a, 25, 70);
+  const tight = new RoadLayer();
+  tight.rebuild(net, flat());
+  assert.ok(tight.marks.chevrons > 0, JSON.stringify(tight.marks));
+  assert.equal(tight.chevrons.count, tight.marks.chevrons);
+  const gentle = new Network();
+  const [g] = gentle.insertPath([{ x: 10, z: 20 }, { x: 40, z: 20 }], KIND_AVENUE);
+  gentle.bendSeg(g, 25, 23);
+  const easy = new RoadLayer();
+  easy.rebuild(gentle, flat());
+  assert.equal(easy.marks.chevrons, 0);
+});
+
+test('an avenue approach gets a mast arm with a head over each lane; a left-turn pocket flashes amber on its yield green', () => {
+  const j = junction(['W', 'E', 'N', 'S'], KIND_AVENUE);
+  // An extra lane for traffic arriving from the west: added on its own side of the centre line (addR
+  // for a→b traffic), it becomes the turn lane for the leftmost exit.
+  const west = j.net.segsAt(j.node.id).find(s => j.name(`${s.id}f>${s.id}f`).startsWith('W'));
+  if (west.b === j.node.id) west.addR = 1; else west.addL = 1;
+  j.net.version++;
+  const layer = new RoadLayer();
+  layer.rebuild(j.net, flat());
+  assert.equal(layer.arms.count, 4, 'an arm per approach');
+  assert.equal(layer.heads.count, 3 + 2 + 2 + 2, `a head over each arriving lane: ${layer.heads.count}, lanes ${JSON.stringify(j.net.segsAt(j.node.id).map(s => [s.addL ?? 0, s.addR ?? 0, s.a === j.node.id]))}`);
+  const plan = S.planFor(j.net, j.node.id);
+  const ew = plan.phases.findIndex(p => Object.keys(p.moves).some(k => j.name(k) === 'W>E'));
+  const pocket = layer.lampInfo.findIndex(l => l.keys.length && l.keys.every(k => j.name(k) === 'W>N'));
+  assert.ok(pocket >= 0, 'the pocket has its own head, for the left turn only');
+  assert.equal(plan.phases[ew].moves[layer.lampInfo[pocket].keys[0]], 2, 'the left turn yields in that phase');
+  const lens = (t, i, k) => { layer.updateLights(t, new Float32Array([j.node.id, ew, 2, 8])); const c = new THREE.Color(); layer.lamps.getColorAt(i * 3 + k, c); return c; };
+  assert.ok(lens(0, pocket, 2).g < 0.5, 'no green for a turn that must give way');
+  assert.ok(lens(0, pocket, 1).r > 0.5, 'amber lit');
+  assert.ok(lens(0.7, pocket, 1).r < 0.5, 'and then dark: it flashes');
+  const through = layer.lampInfo.findIndex(l => l.keys.length && l.keys.every(k => j.name(k) === 'W>E'));
+  if (through >= 0) assert.ok(lens(0, through, 2).g > 0.5, 'the through lane shows green');
+});
+
+const Ctl = await import('../src/roads/control.ts');
+const { crossingApproaches } = await import('../src/roads/crossings.ts');
+const { speedLimitKmh } = await import('../src/render/streetDetail.ts');
+test('junction facts the paint and the traffic share: kinds, the major road, stop lines behind the zebra', () => {
+  const t = new Network();
+  t.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], KIND_AVENUE);
+  t.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], KIND_ROAD);
+  const node = t.nearestNode(40, 40, 0.1);
+  assert.equal(Ctl.junctionKind(t, node.id), 'yield');
+  const major = Ctl.majorArms(t, node.id);
+  assert.ok(major && major.size === 2 && [...major].every(id => t.segs.get(id).kind === KIND_AVENUE));
+  node.light = true;
+  assert.equal(Ctl.junctionKind(t, node.id), 'light');
+  assert.equal(Ctl.majorArms(t, node.id), null, 'signals decide there, not priority');
+  const zebras = crossingApproaches(t);
+  for (const s of t.segsAt(node.id)) {
+    const zebra = zebras.get(s.id)?.[s.b === node.id ? 1 : 0] ?? 0;
+    assert.ok(zebra > 0, 'this junction has zebras');
+    assert.ok(Ctl.stopLine(t, node.id, zebra) >= zebra + Ctl.ZEBRA_HALF + 0.05, 'the line is before the crossing');
+  }
+  assert.equal(Ctl.junctionKind(t, t.nearestNode(16, 40, 0.1).id), 'plain');
+});
+
+test('speed limit signs show what the traffic drives, in km/h', () => {
+  assert.equal(speedLimitKmh({ kind: 0, calm: false }), 50);
+  assert.equal(speedLimitKmh({ kind: 1, calm: false }), 80);
+  assert.equal(speedLimitKmh({ kind: 2, calm: false }), 40);
+  assert.equal(speedLimitKmh({ kind: 0, calm: true }), 30);
+  assert.equal(speedLimitKmh({ kind: 3, calm: false }), 110);
+});
+
+const { demoCity } = await import('../src/demo.ts');
+test('the demo city is painted: stop lines, give-way lines, yield signs and hatched gores', () => {
+  const layer = new RoadLayer();
+  const net = Network.fromPlain(demoCity().net);
+  layer.rebuild(net, flat());
+  const m = layer.marks;
+  console.log(`  demo city marks: ${JSON.stringify(m)}`);
+  assert.ok(m.stopLines > 10 && m.giveWays > 10 && m.yieldSigns > 5, JSON.stringify(m));
 });
 
 console.log(`${checks} signal checks passed; ${failures} failed`);

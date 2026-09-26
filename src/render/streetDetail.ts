@@ -4,7 +4,7 @@ import {
   GRID, idx, inBounds, tileHash, isService, isZone, SERVICES,
   T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE, T_PARK,
 } from '../constants';
-import { KIND_LANE, KIND_ROAD, KIND_AVENUE, isMotorway } from '../roads/network';
+import { KIND_LANE, KIND_ROAD, KIND_AVENUE, SPEED, isMotorway } from '../roads/network';
 import type { Network } from '../roads/network';
 import type { RSeg } from '../roads/network';
 import type { Raster } from '../roads/raster';
@@ -547,14 +547,26 @@ class ChunkBuilder {
       x: p.x - p.tz * off * side - HALF, z: p.z + p.tx * off * side - HALF, face: Math.atan2(p.tz * side, -p.tx * side),
     });
 
-    // Traffic signs every few cells, alternating sides.
-    for (let s = Math.max(gapA, 0.9) + segHash * 2; s < gapB - 0.4; s += 3.1 + rnd()) {
+    // The speed limit, as the traffic drives it, at the start of the road for each way it is driven:
+    // on the right-hand kerb, facing the traffic setting off along it.
+    const limit = speedLimitKmh(seg);
+    for (const fwd of seg.oneway ? [true] : [true, false]) {
+      const s = fwd ? Math.max(gapA, 0.9) : Math.min(gapB, seg.len - 0.9);
+      if (s <= 0 || s >= seg.len) continue;
+      const p = at(s);
+      if (!this.inside(p.x, p.z)) continue;
+      const side = fwd ? 1 : -1, k = kerbAt(p, side);
+      if (this.src.net.onRoad(k.x + HALF, k.z + HALF, seg.id, 0.02)) continue;
+      this.sign(k.x, k.z, Math.atan2(-p.tx * side, -p.tz * side), 'limit', limit);
+    }
+    // Other signs every few cells, alternating sides.
+    for (let s = Math.max(gapA, 0.9) + 2.2 + segHash * 2; s < gapB - 2.2; s += 3.1 + rnd()) {
       const p = at(s);
       if (!this.inside(p.x, p.z)) continue;
       const side = rnd() < 0.5 ? -1 : 1, k = kerbAt(p, side);
       if (this.src.net.onRoad(k.x + HALF, k.z + HALF, seg.id, 0.02)) continue;
       // Facing the traffic that comes towards it on its own side of the road.
-      this.sign(k.x, k.z, Math.atan2(-p.tx * side, -p.tz * side), seg.oneway ? 'oneway' : pick(rnd, seg.kind === KIND_AVENUE ? ['limit', 'noparking', 'limit', 'crossing'] : ['limit', 'noparking', 'children', 'limit']));
+      this.sign(k.x, k.z, Math.atan2(-p.tx * side, -p.tz * side), seg.oneway ? 'oneway' : pick(rnd, seg.kind === KIND_AVENUE ? ['noparking', 'crossing'] : ['noparking', 'children']));
     }
 
     // Parking meters outside shops and offices.
@@ -678,20 +690,22 @@ class ChunkBuilder {
     }
   }
 
-  /** A traffic sign on a pole, its face towards the traffic. */
-  private sign(x: number, z: number, face: number, what: string): void {
+  /** A traffic sign on a pole, its face towards the traffic. A limit sign shows `limit` km/h. */
+  private sign(x: number, z: number, face: number, what: string, limit = 50): void {
     const kit = this.kit;
     kit.jitter = 0;
     kit.at(x, PAVE, z, face);
     kit.box(0, 0, 0, 0.005, 0.17, 0.005, POLE);
     const y = 0.15;
     switch (what) {
-      case 'limit':
+      case 'limit': {
         kit.box(0, y, 0.004, 0.036, 0.036, 0.002, 0xd8453b);
         kit.box(0, y + 0.004, 0.0052, 0.028, 0.028, 0.0005, 0xf2f2ee);
-        kit.box(-0.005, y + 0.011, 0.0056, 0.004, 0.014, 0.0005, DARK);
-        kit.box(0.005, y + 0.011, 0.0056, 0.008, 0.014, 0.0005, DARK);
+        // The number, in seven-segment strokes, centred on the plate.
+        const digits = String(limit), w = 0.0075, gap = 0.0025, total = digits.length * w + (digits.length - 1) * gap;
+        [...digits].forEach((d, k) => sevenSegment(kit, -total / 2 + k * (w + gap) + w / 2, y + 0.011, 0.0056, w, 0.013, +d));
         break;
+      }
       case 'noparking':
         kit.box(0, y, 0.004, 0.034, 0.034, 0.002, 0xc8382f);
         kit.box(0, y + 0.004, 0.0052, 0.026, 0.026, 0.0005, 0x2f5f9f);
@@ -1862,3 +1876,21 @@ export function bodyOfGeometry(geometry: THREE.BufferGeometry): Body | null {
   return Number.isFinite(x0) ? { x0, x1, z0, z1, h, roof, r } : null;
 }
 
+
+/** A road's speed limit as a sign would show it, in km/h: a game second is about three real seconds and a cell about 13 m, so 3 cells/s is 50. */
+export function speedLimitKmh(seg: { kind: number; calm: boolean }): number {
+  return Math.max(10, Math.round((SPEED[seg.kind] * (seg.calm ? 0.55 : 1) * 50) / 3 / 10) * 10);
+}
+
+/** Which of a seven-segment digit's strokes are lit: top, top-right, bottom-right, bottom, bottom-left, top-left, middle. */
+const SEGMENTS = ['1111110', '0110000', '1101101', '1111001', '0110011', '1011011', '1011111', '1110000', '1111111', '1111011'];
+
+/** Draw digit `d` with its bottom centre at (x, y, z), `w` wide and `h` tall, in dark strokes. */
+function sevenSegment(kit: { box(x: number, y: number, z: number, w: number, h: number, d: number, color: number): void }, x: number, y: number, z: number, w: number, h: number, d: number): void {
+  const t = 0.0014, on = SEGMENTS[d] ?? SEGMENTS[0];
+  const bars: [number, number, number, number][] = [
+    [x, y + h - t, w, t], [x + w / 2 - t / 2, y + h / 2, t, h / 2], [x + w / 2 - t / 2, y, t, h / 2], [x, y, w, t],
+    [x - w / 2 + t / 2, y, t, h / 2], [x - w / 2 + t / 2, y + h / 2, t, h / 2], [x, y + h / 2 - t / 2, w, t],
+  ];
+  bars.forEach(([bx, by, bw, bh], k) => { if (on[k] === '1') kit.box(bx, by, z, bw, bh, 0.0005, 0x1f2226); });
+}

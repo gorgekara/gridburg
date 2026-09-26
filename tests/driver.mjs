@@ -137,6 +137,37 @@ test('a queue at a red light pulls away one car at a time, at a real discharge r
   assert.ok(rate >= 1.2 && rate <= 2.5, `${rate.toFixed(2)} cars/s`);
 });
 
+const Ctl = await import('../src/roads/control.ts');
+const { crossingApproaches } = await import('../src/roads/crossings.ts');
+const { vehicleLength } = await import('../src/sim/trafficSpace.ts');
+test('at a red light the first car stops behind the painted stop line, off the zebra', () => {
+  Math.random = C.mulberry32(26);
+  const net = new N.Network();
+  net.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 30 }, { x: 40, z: 50 }], N.KIND_ROAD);
+  const node = net.nearestNode(40, 40, 0.1);
+  node.light = true;
+  load(net);
+  const west = arm(net, 40, 40, 20, 40), east = arm(net, 40, 40, 60, 40);
+  const seg = net.segs.get(west.seg), toward = seg.b === node.id;
+  const zebra = crossingApproaches(net).get(west.seg)?.[toward ? 1 : 0] ?? 0;
+  const line = Ctl.stopLine(net, node.id, zebra);
+  let front = -Infinity;
+  for (let i = 0; i < 40 * C.SIM_HZ; i++) {
+    clock();
+    const r = ask(i % 60 === 0 ? [{ a: west.seg, as: west.far, b: east.seg, bs: east.far }] : [], true);
+    for (const c of r.detail) {
+      if (c.seg !== west.seg || c.v > 0.01) continue;
+      const toNode = toward ? seg.len - c.p : c.p;
+      if (toNode < 3) front = Math.max(front, -(toNode - vehicleLength(c.vehicle) / 2));
+    }
+  }
+  assert.ok(front > -Infinity, 'a car waited at the light');
+  const nose = -front; // how far the stopped car's nose was from the node
+  assert.ok(nose >= line - 1e-3 && nose <= line + 0.3, `nose ${nose.toFixed(2)} from the node, line at ${line.toFixed(2)}, zebra ${zebra.toFixed(2)}`);
+  assert.ok(nose > zebra + Ctl.ZEBRA_HALF, 'clear of the zebra');
+});
+
 test('a car slows for a tight bend and for a turn, and goes straight on at speed', () => {
   const net = new N.Network();
   const [bent] = net.insertPath([{ x: 10, z: 20 }, { x: 40, z: 20 }], N.KIND_AVENUE);

@@ -428,6 +428,18 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   traffic (the Highway Capacity Manual's, scaled to the game clock) and force their way in only after
   12 s. A crossroads of two equal roads is first come, first served. Roundabout entry judges
   circulating cars by when they would arrive.
+- **Paint and signs follow the rules** (`src/roads/control.ts`, `src/render/junctionMarks.ts`). The
+  renderer and the simulation read the same junction facts, so what is painted is what happens:
+  - A stop line on every approach to a signal or an all-way stop, just short of the zebra. Cars stop
+    behind it, not on the crossing.
+  - Give-way "shark teeth" and a yield sign on every minor arm and every roundabout entry.
+  - Solid lines between lanes on the last 1.5 cells before a line, where nobody overtakes.
+  - Hatched gores where slip roads leave and join, and chevron boards round curves too tight for
+    their road's speed.
+  - Signals: an avenue approach gets a mast arm with a head over each lane showing that lane's own
+    state, and a turn that must give way flashes amber instead of showing green. Every phase ends
+    with amber and then half a second of all-red.
+  - In street view, speed signs at the start of each road show its real limit in km/h.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

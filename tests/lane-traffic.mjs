@@ -104,12 +104,13 @@ test('an avenue crossing, with two lanes each way, carries well over a street cr
   assert.ok(avenue.gaveUp <= avenue.arrived * 0.1, `${avenue.gaveUp} gave up`);
 });
 test('a street crossing carries about a car a second', () => {
-  assert.ok(street.arrived >= 140, `${street.arrived} trips`);
+  // Cars stop before the zebra now, so each one crosses a little more junction: about 0.9 a second.
+  assert.ok(street.arrived >= 125, `${street.arrived} trips`);
   assert.ok(street.gaveUp <= street.arrived * 0.1, `${street.gaveUp} gave up`);
 });
 test('cars queued at a red light do not hold up the green traffic', () => {
-  // Two 8 s phases with amber: each approach has green for under half the time.
-  assert.ok(signalled.arrived >= 125, `${signalled.arrived} trips`);
+  // Two 8 s phases, each with amber and all-red: each approach has green for under half the time.
+  assert.ok(signalled.arrived >= 105, `${signalled.arrived} trips`);
   assert.ok(signalled.gaveUp <= signalled.arrived * 0.05, `${signalled.gaveUp} gave up`);
 });
 test('both lanes of an avenue carry traffic', () => {

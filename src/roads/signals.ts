@@ -11,6 +11,8 @@ import { approachLanes, oneWay } from './lanes';
 
 /** Seconds of amber after each phase, for the movements that go red next. */
 export const AMBER = 1;
+/** Then seconds of all-red, so the junction clears before the next phase's traffic moves off. */
+export const ALL_RED = 0.5;
 export const MIN_GREEN = 3, MAX_GREEN = 60, DEFAULT_GREEN = 8;
 /** 1: protected green. 2: green, but give way to traffic that has it protected. Missing: red. */
 export type MoveState = 1 | 2;
@@ -113,10 +115,11 @@ export function stateIn(plan: SignalPlan, phase: number, t: number, len: number,
   const now = p.moves[key];
   const on: SignalState = now === 1 ? 'green' : now === 2 ? 'yield' : 'red';
   if (t < len || !now) return on;
-  return plan.phases[(phase + 1) % plan.phases.length].moves[key] ? on : 'amber';
+  if (plan.phases[(phase + 1) % plan.phases.length].moves[key]) return on;
+  return t < len + AMBER ? 'amber' : 'red';
 }
 
-export const cycleOf = (plan: SignalPlan): number => plan.phases.reduce((t, p) => t + p.green + AMBER, 0);
+export const cycleOf = (plan: SignalPlan): number => plan.phases.reduce((t, p) => t + p.green + AMBER + ALL_RED, 0);
 
 /** Where a fixed-time plan is at `time` seconds into its cycle. */
 export function fixedClock(plan: SignalPlan, time: number): { phase: number; t: number; len: number } {
@@ -124,7 +127,7 @@ export function fixedClock(plan: SignalPlan, time: number): { phase: number; t: 
   if (!plan.phases.length || cycle <= 0) return { phase: 0, t: 0, len: 0 };
   let t = ((time % cycle) + cycle) % cycle;
   for (let i = 0; i < plan.phases.length; i++) {
-    const span = plan.phases[i].green + AMBER;
+    const span = plan.phases[i].green + AMBER + ALL_RED;
     if (t < span || i === plan.phases.length - 1) return { phase: i, t, len: plan.phases[i].green };
     t -= span;
   }

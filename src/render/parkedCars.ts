@@ -10,7 +10,7 @@ import { KIND_AVENUE, KIND_ROAD } from '../roads/network';
 import { Network } from '../roads/network';
 import { vehicleColor, vehicleGeometry } from './cars';
 import { sample } from './pedestrians';
-import { crossingApproaches } from './crossings';
+import { crossingApproaches } from '../roads/crossings';
 
 const CAP = 3000;
 /** Parked cars are drawn a touch smaller than traffic so they tuck in against the kerb. */

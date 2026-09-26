@@ -6,7 +6,9 @@ import { T_FIRE, T_POLICE, T_POLICE_HQ, T_DOCKS, DOCK_JOBS, DOCK_CATCH } from '.
 import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { driverFor, idmAccel, stepMotion, curveSpeed, turnRadius, approachSpeed, segMinRadius } from './driver';
-import { roadRank, majorPair, turnOf, criticalGap } from './priority';
+import { turnOf, criticalGap } from './priority';
+import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE } from '../roads/control';
+import { crossingApproaches } from '../roads/crossings';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute } from './transit';
 import type { TransitNetwork } from './transit';
@@ -26,8 +28,8 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, ROAD_LABEL, isMotorway, isCarriageway } from '../roads/network';
-import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, AMBER, MIN_GREEN } from '../roads/signals';
+import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, ROAD_LABEL, isCarriageway } from '../roads/network';
+import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, AMBER, ALL_RED, MIN_GREEN } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
 import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
@@ -253,6 +255,8 @@ let turnK = new Map<number, number>();
 let nodePriority = new Uint8Array(0);
 let majorIn = new Uint8Array(0);
 let nodeIn: { seg: number; fwd: boolean }[][] = [];
+/** Per approach (seg·2 + dir): how far before its end node traffic holds. */
+let approachSetback = new Float32Array(0);
 /**
  * Traffic counts per direction of each segment (seg·2 + dir): vehicles leaving it this second, the
  * smoothed flow in vehicles a minute, and the smoothed delay per vehicle (time spent standing on it).
@@ -357,12 +361,9 @@ function applyNetwork(p: EditPayload): void {
     nodeX.push(n.x);
     nodeZ.push(n.z);
     nodeEdges.push([]);
-    const deg = net.degree(n.id);
-    // Where only highway-class roads meet (a ramp leaving or joining a carriageway) traffic merges and
-    // splits on the move, like a real motorway, instead of taking turns through a junction box.
-    // A four-way meeting of highways is a level crossing, and still takes turns.
-    const interchange = deg === 3 && net.segsAt(n.id).every(q => isMotorway(q.kind));
-    nodeType.push(n.ring ? J_RING : deg >= 3 && !interchange ? (n.light ? J_LIGHT : n.stop ? J_STOP : J_YIELD) : J_PLAIN);
+    // What controls the junction, by the rules the renderer paints it with (roads/control.ts).
+    const kind = junctionKind(net, n.id);
+    nodeType.push(kind === 'ring' ? J_RING : kind === 'light' ? J_LIGHT : kind === 'stop' ? J_STOP : kind === 'yield' ? J_YIELD : J_PLAIN);
     if (n.entry) entryNodes.push(nodeIds.length - 1);
   }
   gates = mapGates(net);
@@ -498,22 +499,26 @@ function applyNetwork(p: EditPayload): void {
     nodeIn[segB[i]].push({ seg: i, fwd: true });
     if (!sg.oneway) nodeIn[segA[i]].push({ seg: i, fwd: false });
   });
+  const segIdx = new Map(segs.map((sg, i) => [sg.id, i]));
+  for (let ni = 0; ni < nodeIds.length; ni++) {
+    const major = nodeType[ni] === J_YIELD ? majorArms(net, nodeIds[ni]) : null;
+    if (!major) continue;
+    nodePriority[ni] = 1;
+    for (const id of major) { const i = segIdx.get(id)!; majorIn[i * 2 + (segB[i] === ni ? 0 : 1)] = 1; }
+  }
+  // Where each approach holds its traffic: just behind the stop line the renderer paints, which sits
+  // short of the zebra crossing, so no car stands on it.
+  approachSetback = new Float32Array(segs.length * 2).fill(STOP_SETBACK);
   {
-    const pose = { x: 0, z: 0, tx: 0, tz: 0 };
-    for (let ni = 0; ni < nodeIds.length; ni++) {
-      if (nodeType[ni] !== J_YIELD) continue;
-      const at = segs.map((_, i) => i).filter(i => (segA[i] === ni) !== (segB[i] === ni));
-      const arms = at.map(i => {
-        const sg = segs[i], fromA = segA[i] === ni;
-        Network.poseAt(sg, fromA ? Math.min(0.3, sg.len / 2) : Math.max(sg.len / 2, sg.len - 0.3), pose);
-        const tx = fromA ? pose.tx : -pose.tx, tz = fromA ? pose.tz : -pose.tz;
-        return { rank: roadRank(sg.kind), angle: Math.atan2(tz, tx) };
-      });
-      const pair = majorPair(arms);
-      if (!pair) continue;
-      nodePriority[ni] = 1;
-      for (const k of pair) { const i = at[k]; majorIn[i * 2 + (segB[i] === ni ? 0 : 1)] = 1; }
-    }
+    const zebras = crossingApproaches(net);
+    segs.forEach((sg, i) => {
+      for (const fwd of [true, false]) {
+        const end = fwd ? segB[i] : segA[i];
+        if (ringArc[i]) continue;
+        const zebra = zebras.get(sg.id)?.[fwd ? 1 : 0] ?? 0;
+        approachSetback[i * 2 + (fwd ? 0 : 1)] = Math.max(STOP_SETBACK * 0.5, stopLine(net, nodeIds[end], zebra) + HOLD_BEHIND_LINE);
+      }
+    });
   }
   laneCars = new Array(segs.length * 2 * MAXL);
   for (let i = 0; i < laneCars.length; i++) laneCars[i] = [];
@@ -568,7 +573,7 @@ function applyNetwork(p: EditPayload): void {
     if (!plan) return;
     const old = oldClock.get(id);
     if (old && old.plan === JSON.stringify(plan)) { sigPhase[ni] = old.phase; sigT[ni] = old.t; sigLen[ni] = old.len; }
-    else if (old && old.phase < plan.phases.length) { sigPhase[ni] = old.phase; sigLen[ni] = plan.phases[old.phase].green; sigT[ni] = Math.min(old.t, sigLen[ni] + AMBER - 0.01); }
+    else if (old && old.phase < plan.phases.length) { sigPhase[ni] = old.phase; sigLen[ni] = plan.phases[old.phase].green; sigT[ni] = Math.min(old.t, sigLen[ni] + AMBER + ALL_RED - 0.01); }
     else { const clock = fixedClock(plan, simTime + id * 3.7); sigPhase[ni] = clock.phase; sigT[ni] = clock.t; sigLen[ni] = clock.len; }
     const seen = new Set<string>();
     for (const m of nodeMovements(net, id)) {
@@ -1188,6 +1193,14 @@ function gapIn(c: Car, slot: number, lane: number): boolean {
   return true;
 }
 
+/** The last stretch before a junction's stop line, where the lines between lanes are solid (see roads/control.ts). */
+export const SOLID_STRETCH = 1.5;
+function onSolidStretch(c: Car): boolean {
+  const leg = c.legs[c.li];
+  if (!c.legs[c.li + 1] || nodeType[legEndNode(leg)] === J_PLAIN || nodeType[legEndNode(leg)] === J_RING) return false;
+  return leg.p1 - c.p < approachSetback[leg.seg * 2 + (leg.fwd ? 0 : 1)] - HOLD_BEHIND_LINE + SOLID_STRETCH;
+}
+
 /**
  * Change lanes when the car is in a lane that does not lead where it is going (mandatory, tried
  * often), or when it could get past a slow or stopped car ahead in another lane that also leads
@@ -1211,7 +1224,7 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
     const goal = goals.reduce((b, l) => Math.abs(l - c.lane) < Math.abs(b - c.lane) ? l : b, goals[0]);
     target = c.lane + Math.sign(goal - c.lane);
     if (!(target >= 0 && target < n && laneOpen(leg, target, c.p))) target = -1;
-  } else if (leaderGap < 1.2 && leaderStuck) {
+  } else if (leaderGap < 1.2 && leaderStuck && !onSolidStretch(c)) {
     // Try the neighbour with the longer clear run ahead.
     let room = leaderGap + 1.5;
     for (const l of [c.lane - 1, c.lane + 1]) {
@@ -1237,12 +1250,12 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
  * its lane from the stop line, round the same corner curve the cars drive, and on into its lane on
  * the far side. Sampled finely enough that two bodies cannot slip between samples.
  */
-function movementPath(inSeg: number, inFwd: boolean, inLane: number, outSeg: number, outFwd: boolean, outLane: number, node: number): VehiclePose[] {
+function movementPath(inSeg: number, inFwd: boolean, inLane: number, outSeg: number, outFwd: boolean, outLane: number, _node: number): VehiclePose[] {
   const id = `${inSeg}:${+inFwd}:${inLane}>${outSeg}:${+outFwd}:${outLane}`;
   let path = movePaths.get(id);
   if (path) return path;
   const a: Leg = { seg: inSeg, fwd: inFwd, p0: 0, p1: segs[inSeg].len }, b: Leg = { seg: outSeg, fwd: outFwd, p0: 0, p1: segs[outSeg].len };
-  const setback = Math.max(STOP_SETBACK, nodeHalf[node] + 0.45);
+  const setback = approachSetback[inSeg * 2 + (inFwd ? 0 : 1)];
   const back = Math.min(a.p1 * 0.5, setback), on = Math.min(b.p1 * 0.5, setback);
   // A stand-in car on this movement, so the corner is drawn by the very code that moves real cars.
   const ghost = { legs: [a, b], li: 0, p: 0, vehicle: 1, lane: inLane, nextLane: outLane, prevLane: inLane, chT: -1, chFrom: 0, chP: 0 } as unknown as Car;
@@ -1355,7 +1368,7 @@ function yieldBlocked(c: Car, node: number): boolean {
       for (const slot of laneCars[laneKey(a.seg, a.fwd, l)]) { const o = slots[slot]; if (o && (!front || o.p > front.p)) front = o; }
       if (!front || front.li >= front.legs.length - 1) continue;
       const fl = front.legs[front.li];
-      if (fl.p1 - front.p > Math.max(STOP_SETBACK, nodeHalf[node] + 0.45) + 2.5) continue;
+      if (fl.p1 - front.p > approachSetback[fl.seg * 2 + (fl.fwd ? 0 : 1)] + 2.5) continue;
       if (signalFor(front, node) !== 'green') continue;
       if (conflicts(mine, movementOf(front, node))) return true;
     }
@@ -1396,8 +1409,8 @@ function stepSignals(dt: number): void {
       if (sigT[n] >= MIN_GREEN && !here && plan.phases.some((_, k) => k !== sigPhase[n] && signalDemand(n, k))) sigLen[n] = sigT[n];
       else if (here && sigLen[n] - sigT[n] < 0.5 && sigLen[n] < 2 * green) sigLen[n] = Math.min(2 * green, sigLen[n] + 0.5);
     }
-    if (sigT[n] >= sigLen[n] + AMBER) {
-      sigT[n] -= sigLen[n] + AMBER;
+    if (sigT[n] >= sigLen[n] + AMBER + ALL_RED) {
+      sigT[n] -= sigLen[n] + AMBER + ALL_RED;
       sigPhase[n] = (sigPhase[n] + 1) % plan.phases.length;
       sigLen[n] = plan.phases[sigPhase[n]].green;
     }
@@ -1492,7 +1505,7 @@ function stepCars(dt: number): void {
         // A car waiting at a junction must stand clear of the corridor it is about to cross, so the
         // setback scales with the widest road at the node. On a roundabout arc the car is already inside
         // the ring corridor and only has to keep its own distance, so it keeps the plain setback.
-        const setback = ringArc[leg.seg] ? STOP_SETBACK : Math.max(STOP_SETBACK, nodeHalf[node] + 0.45);
+        const setback = ringArc[leg.seg] ? STOP_SETBACK : approachSetback[leg.seg * 2 + (leg.fwd ? 0 : 1)];
         const span = legEnd - leg.p0;
         const stopP = span > Math.max(1.8, setback * 2) ? legEnd - setback : leg.p0 + span * 0.5;
         const pastStop = c.p > stopP + 1e-3;
