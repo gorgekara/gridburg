@@ -88,3 +88,5 @@ export function stopLine(net: Network, nodeId: number, crossing = 0): number {
 
 /** Where a car's centre stands when it stops at a stop line: half the longest vehicle behind it. */
 export const HOLD_BEHIND_LINE = 0.3;
+/** The stretch before a stop line where the lines between lanes are solid and nobody overtakes. */
+export const SOLID_STRETCH = 1.5;

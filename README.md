@@ -440,6 +440,19 @@ The city autosaves in your browser, and **Share** copies a link that contains th
     state, and a turn that must give way flashes amber instead of showing green. Every phase ends
     with amber and then half a second of all-red.
   - In street view, speed signs at the start of each road show its real limit in km/h.
+- **Vehicles signal** (`carFlags` in each frame, lamps in `src/render/cars.ts`):
+  - Brake lamps light while braking and standing.
+  - Indicators blink before a turn and through a lane change, and a crashed car shows hazards.
+  - Police cars and fire engines flash blue and red.
+- **Blue lights clear the way:**
+  - A junction a callout is about to reach lets no one else in.
+  - On a road with more lanes, cars ahead move out of its lane.
+  - On a single lane, cars pull over and stop, and the callout eases out and passes them.
+- **Stuck vehicles:** two-thirds of the way to its patience, a stuck car stops waiting on bookings and
+  give-way (never on a body in its way). At its patience it is removed, and it shrinks away rather than
+  blinking out.
+- Only callouts (a fire engine to a fire, a patrol to a crash or a robbery) run red lights and clear
+  the way. Routine patrols and bin lorries drive like everyone else.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

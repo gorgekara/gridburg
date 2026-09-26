@@ -9,7 +9,7 @@ import type { Terrain } from '../terrain';
 import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from '../roads/crossings';
 import { junctionPaint, chevronSpots } from './junctionMarks';
-import type { JunctionMarks } from './junctionMarks';
+import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
 import { planFor, movements, stateIn, fixedClock, moveKey } from '../roads/signals';
@@ -484,12 +484,12 @@ export class RoadLayer {
     this.stopSigns.count = signCount;
     this.stopSigns.instanceMatrix.needsUpdate = true;
     // Yield signs beside every give-way line, and chevrons round tight curves, facing the traffic.
-    const place = (mesh: THREE.InstancedMesh, spots: { x: number; z: number; tx: number; tz: number }[], face: (tx: number, tz: number) => number): void => {
+    const place = (mesh: THREE.InstancedMesh, spots: SignSpot[], face: (tx: number, tz: number) => number): void => {
       let k = 0;
       for (const spot of spots) {
         if (k >= MAX_LAMPS) break;
-        const onRoad = net.nearestSeg(spot.x, spot.z, 2);
-        const y = onRoad?.seg.structure === 1 ? Math.max(0, roadHeight(onRoad.seg, onRoad.s)) : 0;
+        // On the ground, or on the deck of the very road it belongs to (never a bridge passing nearby).
+        const y = spot.seg && spot.seg.structure === 1 ? Math.max(0, roadHeight(spot.seg, spot.s ?? 0)) : 0;
         v3.set(spot.x - half, y, spot.z - half);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), face(spot.tx, spot.tz));
         m4.compose(v3, q, one);
@@ -519,7 +519,7 @@ export class RoadLayer {
       for (const s of net.segsAt(node.id)) {
         // A road that only leaves the junction has no traffic to control, so no head faces it.
         if (!moves.some(m => m.inSeg === s.id && m.inFwd === (s.b === node.id))) continue;
-        if (n >= MAX_LAMPS) break;
+        if (h >= MAX_LAMPS) break; // every head, on a pole or an arm, takes three lenses
         const spot = net.vergeSpot(s, node.id, sideHalf(s, s.b === node.id ? 1 : -1) + 0.16, Math.min(1.0, s.len * 0.4));
         if (!spot) continue;
         const { tx, tz } = spot;
@@ -534,7 +534,7 @@ export class RoadLayer {
         n++; h++;
         // The mast arm: from the pole out over every arriving lane, a head centred over each.
         const lanes = lanesFor(net, s, fwd);
-        if (lanes < 2 || h + lanes >= MAX_LAMPS || armCount >= MAX_LAMPS) continue;
+        if (lanes < 2 || h + lanes > MAX_LAMPS || armCount >= MAX_LAMPS) continue;
         const back = Math.min(1.0, s.len * 0.4);
         Network.poseAt(s, fwd ? s.len - back : back, pose);
         const dx = fwd ? pose.tx : -pose.tx, dz = fwd ? pose.tz : -pose.tz, rx = -dz, rz = dx;
@@ -573,7 +573,7 @@ export class RoadLayer {
    * numbers per signal, as the simulation sends them), or from the fixed timeline until it has.
    * A head shows the most permissive state of the movements it controls.
    */
-  updateLights(simTime: number, clocks?: Float32Array | null): void {
+  updateLights(simTime: number, clocks?: Float32Array | null, wall = simTime): void {
     const clock = new Map<number, { phase: number; t: number; len: number }>();
     if (clocks) for (let k = 0; k + 3 < clocks.length; k += 4) clock.set(clocks[k], { phase: clocks[k + 1], t: clocks[k + 2], len: clocks[k + 3] });
     const rank: Record<SignalState, number> = { red: 0, amber: 1, yield: 2, green: 3 };
@@ -583,7 +583,8 @@ export class RoadLayer {
       let best: SignalState = 'red';
       for (const key of l.keys) { const st = stateIn(l.plan, c.phase, c.t, c.len, key); if (rank[st] > rank[best]) best = st; }
       // A turn that may go but must give way shows a flashing amber, not a green that looks protected.
-      const flash = best === 'yield', lit = Math.floor(simTime * 1.6) % 2 === 0;
+      // Flashing by the wall clock, so a paused city's yield heads still flash instead of freezing dark.
+      const flash = best === 'yield', lit = Math.floor(wall * 1.6) % 2 === 0;
       this.lamps.setColorAt(i * 3, best === 'red' ? LAMP_RED : LAMP_OFF);
       this.lamps.setColorAt(i * 3 + 1, best === 'amber' || (flash && lit) ? LAMP_AMBER : LAMP_OFF);
       this.lamps.setColorAt(i * 3 + 2, best === 'green' ? LAMP_GREEN : LAMP_OFF);

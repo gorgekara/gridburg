@@ -271,6 +271,51 @@ test('an avenue approach gets a mast arm with a head over each lane; a left-turn
   if (through >= 0) assert.ok(lens(0, through, 2).g > 0.5, 'the through lane shows green');
 });
 
+test('a road between two roundabouts gives way at both ends; a big signalled grid never overflows its lamps', () => {
+  const net = new Network();
+  net.insertPath([{ x: 10, z: 40 }, { x: 70, z: 40 }], KIND_ROAD);
+  net.insertPath([{ x: 25, z: 30 }, { x: 25, z: 50 }], KIND_ROAD);
+  net.insertPath([{ x: 55, z: 30 }, { x: 55, z: 50 }], KIND_ROAD);
+  assert.ok(net.addRoundabout(25, 40, 2.3, KIND_ROAD) && net.addRoundabout(55, 40, 2.3, KIND_ROAD));
+  const dumbbell = new RoadLayer();
+  dumbbell.rebuild(net, flat());
+  assert.equal(dumbbell.marks.giveWays, 8);
+  const grid = new Network();
+  for (let k = 0; k < 20; k++) {
+    grid.insertPath([{ x: 3, z: 3 + k * 3.8 }, { x: 77, z: 3 + k * 3.8 }], KIND_AVENUE);
+    grid.insertPath([{ x: 3 + k * 3.8, z: 3 }, { x: 3 + k * 3.8, z: 77 }], KIND_AVENUE);
+  }
+  for (const n of grid.nodes.values()) if (grid.degree(n.id) >= 3) n.light = true;
+  const big = new RoadLayer();
+  big.rebuild(grid, flat());
+  assert.ok(big.lampInfo.length * 3 <= 2048 * 3 && big.heads.count + big.poles.count === big.lampInfo.length, `${big.lampInfo.length} heads`);
+});
+
+const { CarLayer } = await import('../src/render/cars.ts');
+const Msg = await import('../src/sim/messages.ts');
+test('car lamps: brake lamps while braking, indicators blink, beacons swap, nothing lit when idle', () => {
+  const layer = new CarLayer();
+  const frame = new Float32Array(C.MAX_CARS * 4);
+  frame.set([1, 0, 0, 1], 0); // a car
+  frame.set([3, 0, 0, 5], 4); // a police car
+  const flags = new Uint8Array(C.MAX_CARS);
+  const lamp = (type, name, slot = 0) => {
+    const m = layer.mesh.children.find(o => o.isInstancedMesh && o.name === name && o.geometry === layer.signals[type - 1].find(x => x.name === name).geometry);
+    const mat = new THREE.Matrix4(); m.getMatrixAt(slot, mat);
+    return new THREE.Vector3().setFromMatrixScale(mat).x > 0.01;
+  };
+  flags[0] = Msg.CAR_BRAKE | Msg.CAR_RIGHT; flags[1] = Msg.CAR_BLUE;
+  layer.update(frame, frame, 1, undefined, undefined, undefined, undefined, undefined, flags, 0);
+  assert.ok(lamp(1, 'brake') && lamp(1, 'right') && !lamp(1, 'left'));
+  assert.ok(lamp(5, 'blue') && !lamp(5, 'red'));
+  layer.update(frame, frame, 1, undefined, undefined, undefined, undefined, undefined, flags, 0.5);
+  assert.ok(!lamp(1, 'right'), 'the indicator blinks off');
+  assert.ok(lamp(5, 'red') && !lamp(5, 'blue'), 'the beacons swap');
+  flags[0] = 0;
+  layer.update(frame, frame, 1, undefined, undefined, undefined, undefined, undefined, flags, 0);
+  assert.ok(!lamp(1, 'brake') && !lamp(1, 'right'), 'nothing lit when idle');
+});
+
 const Ctl = await import('../src/roads/control.ts');
 const { crossingApproaches } = await import('../src/roads/crossings.ts');
 const { speedLimitKmh } = await import('../src/render/streetDetail.ts');

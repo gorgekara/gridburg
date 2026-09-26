@@ -6,7 +6,7 @@
 import { Network, SPEED } from '../roads/network';
 import { GRID } from '../constants';
 import type { RSeg } from '../roads/network';
-import { junctionKind, majorArms, stopLine } from '../roads/control';
+import { junctionKind, majorArms, stopLine, SOLID_STRETCH, HOLD_BEHIND_LINE } from '../roads/control';
 import { lanesFor, laneCentre, sideHalf, oneWay, roadHalf } from '../roads/lanes';
 import { curveSpeed } from '../sim/driver';
 import type { MeshBuilder } from './meshBuilder';
@@ -14,11 +14,8 @@ import type { MeshBuilder } from './meshBuilder';
 /** How many of each mark a rebuild laid down, for tests and for the curious. */
 export interface JunctionMarks { stopLines: number; giveWays: number; yieldSigns: number; chevrons: number; gores: number }
 
-/** Where a sign stands (map coordinates), which way it faces, and how high the ground is. */
-export interface SignSpot { x: number; z: number; tx: number; tz: number }
-
-/** The stretch before a stop line where the lines between lanes are solid. Matches the simulation. */
-export const SOLID_STRETCH = 1.5;
+/** Where a sign stands (map coordinates), which way it faces, and the road (and distance along it) it serves. */
+export interface SignSpot { x: number; z: number; tx: number; tz: number; seg?: RSeg; s?: number }
 /** A curve slower than this share of its road's speed gets chevrons. */
 export const CHEVRON_SHARE = 0.7;
 
@@ -33,7 +30,9 @@ export function junctionPaint(net: Network, crossings: Map<number, [number, numb
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const yieldSpots: SignSpot[] = [];
   const half = GRID / 2;
-  const isArc = (s: RSeg): boolean => !!net.nodes.get(s.a)?.ring && !!net.nodes.get(s.b)?.ring;
+  // A roundabout's ring, one way between ring nodes: as the simulation has it (a two-way link between
+  // two roundabouts is an ordinary road, and gives way at both ends).
+  const isArc = (s: RSeg): boolean => s.oneway && !!net.nodes.get(s.a)?.ring && !!net.nodes.get(s.b)?.ring;
   for (const node of net.nodes.values()) {
     const kind = junctionKind(net, node.id);
     if (kind === 'plain') continue;
@@ -45,7 +44,9 @@ export function junctionPaint(net: Network, crossings: Map<number, [number, numb
       if (!fwd && oneWay(s)) continue;
       const mark = kind === 'light' || kind === 'stop' ? 'stop' : kind === 'ring' || (major && !major.has(s.id)) ? 'give' : null;
       const line = stopLine(net, node.id, crossings.get(s.id)?.[fwd ? 1 : 0] ?? 0);
-      if (line > s.len * 0.45) continue;
+      // Where the simulation holds traffic at the line (a stretch long enough for it); on a shorter one
+      // cars stop mid-way, so no line is painted that they would stand over.
+      if (!(s.len > Math.max(1.8, 2 * (line + HOLD_BEHIND_LINE)))) continue;
       lift(s);
       const d = fwd ? s.len - line : line;
       // The arriving lanes, as sideways offsets in the a→b frame (positive to the right of a→b).
@@ -68,7 +69,7 @@ export function junctionPaint(net: Network, crossings: Map<number, [number, numb
         }
         marks.giveWays++;
         const spot = net.vergeSpot(s, node.id, sideHalf(s, fwd ? 1 : -1) + 0.2, Math.min(line + 0.2, s.len * 0.4));
-        if (spot) { yieldSpots.push(spot); marks.yieldSigns++; }
+        if (spot) { yieldSpots.push({ ...spot, seg: s, s: d }); marks.yieldSigns++; }
       }
       if (kind === 'ring') continue;
       // Solid lines on the last stretch: between arriving lanes, and down the middle of a street.
@@ -101,7 +102,7 @@ export function chevronSpots(net: Network, marks: JunctionMarks): SignSpot[] {
   const out: SignSpot[] = [];
   for (const s of net.segs.values()) {
     // Not slip roads, and not a roundabout's ring, whose curve everyone expects.
-    if (s.structure === 2 || s.kind === 5 || (net.nodes.get(s.a)?.ring && net.nodes.get(s.b)?.ring)) continue;
+    if (s.structure === 2 || s.kind === 5 || (s.oneway && net.nodes.get(s.a)?.ring && net.nodes.get(s.b)?.ring)) continue;
     const limit = SPEED[s.kind] * CHEVRON_SHARE;
     let last = -Infinity;
     for (let i = 1; i < s.n; i++) {
@@ -114,7 +115,7 @@ export function chevronSpots(net: Network, marks: JunctionMarks): SignSpot[] {
       last = s.cum[i];
       // Turning right (cross > 0 in this frame) puts the outside on the left, and the other way round.
       const tx = (cx - ax) / ac, tz = (cz - az) / ac, side = cross > 0 ? -1 : 1, off = roadHalf(s) + 0.28;
-      out.push({ x: bx + -tz * off * side, z: bz + tx * off * side, tx, tz });
+      out.push({ x: bx + -tz * off * side, z: bz + tx * off * side, tx, tz, seg: s, s: s.cum[i] });
       marks.chevrons++;
     }
   }

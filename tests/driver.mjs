@@ -336,5 +336,70 @@ test('a turn pocket on the side street, or a slip road ending at a junction, doe
   send({ type: 'inspect', tile: -1 });
 });
 
+// ---- vehicles that communicate --------------------------------------------------------------------
+const { CAR_BRAKE, CAR_LEFT, CAR_RIGHT, CAR_BLUE } = await import('../src/sim/messages.ts');
+test('brake lights come on braking for a red and stay on standing; the right indicator before a right turn', () => {
+  Math.random = C.mulberry32(31);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], N.KIND_ROAD);
+  net.nearestNode(40, 40, 0.1).light = true;
+  load(net);
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), sth = arm(net, 40, 40, 40, 62);
+  const seg = net.segs.get(w.seg), toward = seg.b === net.nearestNode(40, 40, 0.1).id;
+  let brakingMoving = false, braking0 = false, idleUnlit = false, rightEarly = false, rightFar = false;
+  for (let i = 0; i < 60 * C.SIM_HZ; i++) {
+    clock();
+    const trips = i % 90 === 0 ? [{ a: w.seg, as: w.far, b: e.seg, bs: e.far }] : i % 90 === 45 ? [{ a: w.seg, as: w.far, b: sth.seg, bs: sth.far }] : [];
+    for (const c of ask(trips, true).detail) {
+      if (c.seg !== w.seg) continue;
+      const toNode = toward ? seg.len - c.p : c.p;
+      if (c.flags & CAR_BRAKE && c.v > 0.5) brakingMoving = true;
+      if (c.flags & CAR_BRAKE && c.v === 0) braking0 = true;
+      if (!(c.flags & CAR_BRAKE) && c.v > 2) idleUnlit = true;
+      if (c.flags & CAR_RIGHT && toNode < 3.5) rightEarly = true;
+      if (c.flags & CAR_RIGHT && toNode > 4.5) rightFar = true;
+    }
+  }
+  assert.ok(brakingMoving, 'lit while slowing');
+  assert.ok(braking0, 'lit while standing');
+  assert.ok(idleUnlit, 'dark while cruising');
+  assert.ok(rightEarly && !rightFar, 'indicating from 3.5 cells out, not before');
+});
+
+/** Time for a car from the back of a queue at a red light to reach the far side, and how many queued cars it passed. */
+function throughQueue(callout) {
+  Math.random = C.mulberry32(32);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 30 }, { x: 40, z: 50 }], N.KIND_ROAD);
+  const node = net.nearestNode(40, 40, 0.1);
+  node.light = true;
+  load(net);
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40);
+  // A queue builds at the light, then the test vehicle joins its back.
+  const arrive = new Map();
+  let test = -1, t = 0, start = 0;
+  for (let i = 0; i < 90 * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trying = test < 0 && i >= 13 * C.SIM_HZ;
+    const trips = i < 12 * C.SIM_HZ && i % 45 === 0 ? [{ a: w.seg, as: w.far, b: e.seg, bs: e.far }] : trying ? [{ a: w.seg, as: w.far, b: e.seg, bs: e.far, vehicle: callout ? 5 : 1, callout }] : [];
+    const before = new Set(ask([], true).detail.map(c => c.uid));
+    const r = ask(trips, true);
+    const fresh = r.detail.find(c => !before.has(c.uid));
+    if (trying && fresh) { test = fresh.uid; start = t; }
+    for (const c of r.detail) if (c.seg === e.seg && !arrive.has(c.uid)) arrive.set(c.uid, t);
+  }
+  const mine = arrive.get(test);
+  return { time: mine - start, passed: [...arrive.entries()].filter(([uid, at]) => uid !== test && uid < test && at > mine).length };
+}
+test('traffic makes way for blue lights: a callout gets through a queue on a single-lane street', () => {
+  const plain = throughQueue(false), blue = throughQueue(true);
+  console.log(`  through a queue at a red light: an ordinary car ${plain.time.toFixed(1)} s, a callout ${blue.time.toFixed(1)} s, passing ${blue.passed} cars`);
+  assert.ok(blue.time < plain.time, 'sooner than a car that waits its turn');
+  assert.ok(blue.passed >= 4, 'it passed the cars that pulled over for it');
+  assert.equal(plain.passed, 0);
+});
+
 console.log(`${checks} driver checks passed; ${failures} failed`);
 if (failures) process.exit(1);

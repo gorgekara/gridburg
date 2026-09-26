@@ -594,7 +594,7 @@ game.onState = () => {
 };
 game.onFrame = () => {
   if (showTraffic) roads.tint(game.segOrder, game.segCong);
-  roads.updateLights(game.simTime, game.signalClocks);
+  roads.updateLights(game.simTime, game.signalClocks, performance.now() / 1000);
 };
 /** Water tiles worth a random ripple: the river, and whatever it has spilled onto. */
 let wetTiles: number[] = [];
@@ -861,7 +861,7 @@ renderer.setAnimationLoop((now: number) => {
   transport.update(game.simTime);
   subway.update(game.simTime);
   transitLines.update(game.simTime);
-  cars.update(game.carsPrev, game.carsNext, alpha, game.carIdsPrev, game.carIdsNext, game.carHeights, game.prevCarHeights, game.carPitch);
+  cars.update(game.carsPrev, game.carsNext, alpha, game.carIdsPrev, game.carIdsNext, game.carHeights, game.prevCarHeights, game.carPitch, game.carFlags, performance.now() / 1000);
   buildings.update(now / 1000);
   overlay.update(now / 1000);
   waves.step(renderer);

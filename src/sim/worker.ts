@@ -7,7 +7,7 @@ import { TrafficSpace, vehicleLength, vehiclesOverlap } from './trafficSpace';
 import type { VehiclePose } from './trafficSpace';
 import { driverFor, idmAccel, stepMotion, curveSpeed, turnRadius, approachSpeed, segMinRadius } from './driver';
 import { turnOf, criticalGap } from './priority';
-import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE } from '../roads/control';
+import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE, SOLID_STRETCH } from '../roads/control';
 import { crossingApproaches } from '../roads/crossings';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute } from './transit';
@@ -37,6 +37,7 @@ import { isOneWayKind } from '../roads/network';
 import { generateTerrain, touchesWater, adjacentFlow } from '../terrain';
 import type { Terrain } from '../terrain';
 import type { EditPayload, MainToWorker, Stats, TileReport } from './messages';
+import { CAR_BRAKE, CAR_LEFT, CAR_RIGHT, CAR_BLUE, CAR_LEAVING } from './messages';
 import { T_RECYCLING, T_BUS, T_SUBWAY } from '../constants';
 import { defaultExtras, shapeTerrain, districtHas, DISTRICT_POLICIES, DISTRICT_POLICY_IDS, DISTRICT_COUNT } from '../extras';
 import { WaterSim, WATER_HZ } from './water';
@@ -255,6 +256,11 @@ let turnK = new Map<number, number>();
 let nodePriority = new Uint8Array(0);
 let majorIn = new Uint8Array(0);
 let nodeIn: { seg: number; fwd: boolean }[][] = [];
+/**
+ * Per node: a callout is about to reach it, or is in it, so nobody else is let in; the approach it is
+ * coming along (seg·2 + dir) is −1 for none, and traffic ahead of it on that same approach goes on.
+ */
+let blueAt = new Uint8Array(0), blueFrom = new Int32Array(0);
 /** Per approach (seg·2 + dir): how far before its end node traffic holds. */
 let approachSetback = new Float32Array(0);
 /**
@@ -277,7 +283,15 @@ interface Car {
   /** Speed along the leg, cells/s. */
   v: number;
   /** Time spent below walking pace on the current leg: its delay there. */
-  stood: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  stood: number;
+  /** Its last acceleration, and when it last braked or stood (for its brake lights). */
+  accel: number; brakeT: number;
+  /** A sideways shift off its lane's centre (pulling over, or passing a car that has), and where it is easing to. */
+  side: number; sideGoal: number;
+  /** Making way for a callout behind it: until when, and for which one. */
+  yieldUntil: number; yieldTo: number;
+  /** Stuck past its patience: it no longer waits on bookings, gaps or give-way, only on bodies in the way. */
+  insistent: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
   lane: number; nextLane: number; prevLane: number;
   /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
@@ -322,6 +336,21 @@ const GAP = [0.42, 0.42, 0.4, 0.46, 0.5, 0.4, 0.48];
 const STOP_SETBACK = 0.85; // how far before a junction a car holds, for a plain one-tile road
 const RING_PATIENCE = 6; // seconds an entering car gives way before it books its turn on the ring
 const MINOR_PATIENCE = 12; // seconds a car off the major road waits for a gap before it forces its way in
+/**
+ * Under blue lights: a fire engine to a fire, a patrol to a crash or a robbery, on its way. A routine
+ * patrol or a bin lorry drives like everyone else.
+ */
+function onCallout(c: Car | null | undefined): boolean {
+  return !!c && !!c.mission && !c.working && (c.mission.kind === 'fire' || c.mission.kind === 'crash' || c.mission.kind === 'heist');
+}
+/** A callout this many seconds from a junction holds everyone else back from it. */
+const BLUE_WARNING = 3;
+/** Cars this far ahead of a callout in its lane make way for it. */
+const MAKE_WAY = 4;
+/** How far a car pulls over towards the kerb, and how far a callout eases out to pass it. */
+const PULL_OVER = 0.15, PASS_OUT = 0.14;
+/** Past this share of its patience a stuck car no longer waits on bookings, gaps or give-way. */
+const INSIST_SHARE = 2 / 3;
 /** A circulating car this soon from a ring node is too close to pull out in front of. */
 const RING_TC = 1.3;
 const RING_GAP = 1.3; // distance before a roundabout node inside which circulating cars have right of way
@@ -508,6 +537,7 @@ function applyNetwork(p: EditPayload): void {
   }
   // Where each approach holds its traffic: just behind the stop line the renderer paints, which sits
   // short of the zebra crossing, so no car stands on it.
+  blueAt = new Uint8Array(nodeIds.length); blueFrom = new Int32Array(nodeIds.length).fill(-1);
   approachSetback = new Float32Array(segs.length * 2).fill(STOP_SETBACK);
   {
     const zebras = crossingApproaches(net);
@@ -516,7 +546,7 @@ function applyNetwork(p: EditPayload): void {
         const end = fwd ? segB[i] : segA[i];
         if (ringArc[i]) continue;
         const zebra = zebras.get(sg.id)?.[fwd ? 1 : 0] ?? 0;
-        approachSetback[i * 2 + (fwd ? 0 : 1)] = Math.max(STOP_SETBACK * 0.5, stopLine(net, nodeIds[end], zebra) + HOLD_BEHIND_LINE);
+        approachSetback[i * 2 + (fwd ? 0 : 1)] = stopLine(net, nodeIds[end], zebra) + HOLD_BEHIND_LINE;
       }
     });
   }
@@ -837,7 +867,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   // Traffic from beyond the map edge arrives already at speed; everyone else pulls away from the kerb.
   const pace = drivingPace(vehicle);
   const rolling = entries.some(e => e.seg === legs[0].seg && Math.abs(e.s - legs[0].p0) < 0.05);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
     lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
@@ -1021,6 +1051,7 @@ function latOf(c: Car, li: number, p: number): number {
   if (li === c.li) {
     lat = centreOf(leg, c.lane);
     if (c.chT >= 0) lat = c.chFrom + (lat - c.chFrom) * smoothstep(Math.max((p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME));
+    lat += c.side ?? 0;
   } else if (li === c.li + 1) lat = centreOf(leg, c.nextLane >= 0 ? c.nextLane : 0);
   else lat = centreOf(leg, c.prevLane);
   // A ramp's own offset is measured along the ramp; on a ring there is only the one lane.
@@ -1193,8 +1224,6 @@ function gapIn(c: Car, slot: number, lane: number): boolean {
   return true;
 }
 
-/** The last stretch before a junction's stop line, where the lines between lanes are solid (see roads/control.ts). */
-export const SOLID_STRETCH = 1.5;
 function onSolidStretch(c: Car): boolean {
   const leg = c.legs[c.li];
   if (!c.legs[c.li + 1] || nodeType[legEndNode(leg)] === J_PLAIN || nodeType[legEndNode(leg)] === J_RING) return false;
@@ -1217,7 +1246,11 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
   const ok = (l: number): boolean => l >= 0 && l < n && laneOpen(leg, l, c.p) && (!want || want.includes(l));
   const closing = c.p > laneToTab[(leg.seg * 2 + (leg.fwd ? 0 : 1)) * MAXL + c.lane] - LC_DIST * 2.5;
   let target = -1, mandatory = false;
-  if ((want && !want.includes(c.lane)) || closing) {
+  if (c.yieldUntil > simTime && slots[c.yieldTo]?.mission) {
+    // A callout behind: move out of its lane, whichever side has room.
+    mandatory = true;
+    for (const l of [c.lane - 1, c.lane + 1]) if (target < 0 && l >= 0 && l < n && laneOpen(leg, l, c.p) && gapIn(c, slot, l)) target = l;
+  } else if ((want && !want.includes(c.lane)) || closing) {
     mandatory = true;
     // Step one lane towards the nearest lane that goes the right way.
     const goals = want ?? Array.from({ length: n }, (_, l) => l).filter(l => l !== c.lane);
@@ -1437,12 +1470,37 @@ function stepCars(dt: number): void {
   }
   const speedSum = new Float32Array(segs.length);
   const speedN = new Uint16Array(segs.length);
+  // Blue lights: junctions a callout is about to reach hold everyone else back, and the cars just
+  // ahead of it in its lane make way.
+  blueAt.fill(0); blueFrom.fill(-1);
+  for (let s = 0; s < MAX_CARS; s++) {
+    const m = slots[s];
+    if (!m || !onCallout(m)) continue;
+    const leg = m.legs[m.li];
+    if (m.li < m.legs.length - 1) {
+      const node = legEndNode(leg);
+      if (nodeType[node] !== J_PLAIN && (leg.p1 - m.p) / Math.max(m.v, 0.5) < BLUE_WARNING) { blueAt[node] = 1; blueFrom[node] = leg.seg * 2 + (leg.fwd ? 0 : 1); }
+    }
+    if (m.box >= 0) blueAt[m.box] = 1;
+    if (m.lock >= 0) blueAt[m.lock] = 1;
+    // Ahead of it, and just passed by it: a car stays pulled over until the callout is a cell clear,
+    // and the callout stays out until then too, or the two would slide back into each other.
+    for (const o of laneCars[laneKey(leg.seg, leg.fwd, m.lane)]) {
+      const oc = slots[o];
+      if (!oc || o === s || onCallout(oc) || oc.p - m.p > MAKE_WAY || m.p - oc.p > 1) continue;
+      if (oc.p <= m.p && !(oc.yieldUntil > simTime && oc.yieldTo === s)) continue;
+      oc.yieldUntil = simTime + 0.5; oc.yieldTo = s;
+      if (oc.p <= m.p + 0.5) m.yieldUntil = simTime + 0.5;
+    }
+  }
 
   for (let key = 0; key < laneCars.length; key++) {
     const lane = laneCars[key];
     if (!lane.length) continue;
     lane.sort((a, b) => slots[b]!.p - slots[a]!.p);
     let leaderP = Infinity, leaderLength = 0.34, leaderStuck = false, leaderV = 0, leaderSlot = -1;
+    // The leader that is not pulled over for a callout: the one a callout itself follows.
+    let firmP = Infinity, firmLength = 0.34, firmStuck = false, firmV = 0, firmSlot = -1;
     const playerP = playerLanes.get(dirKeyOf(key));
     for (const slot of lane) {
       const c = slots[slot]!;
@@ -1451,10 +1509,19 @@ function stepCars(dt: number): void {
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
       const driver = driverFor(c.vehicle);
+      // A callout passes cars that have pulled over for it: it follows the first one that has not.
+      // (A callout marks itself with yieldUntil while it is beside a car that pulled over for it.)
+      const passing = onCallout(c) && (firmP !== leaderP || c.yieldUntil > simTime);
+      if (passing) { leaderP = firmP; leaderLength = firmLength; leaderStuck = firmStuck; leaderV = firmV; leaderSlot = firmSlot; }
+      const yielding = !onCallout(c) && c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
+      const pullingOver = yielding && legLanes(leg) < 2;
+      // Easing towards the kerb to make way, out to pass one that has, or back to the lane's centre.
+      c.sideGoal = pullingOver ? PULL_OVER : passing ? -PASS_OUT : 0;
+      c.side += Math.max(-0.4 * dt, Math.min(0.4 * dt, c.sideGoal - c.side));
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
       if (c.crash !== undefined && incidents.crashes.has(c.crash)) {
-        c.v = 0; leaderP = c.p; leaderLength = vehicleLength(c.vehicle); leaderStuck = true; leaderV = 0; speedN[leg.seg]++; continue;
+        c.v = 0; leaderP = firmP = c.p; leaderLength = firmLength = vehicleLength(c.vehicle); leaderStuck = firmStuck = true; leaderV = firmV = 0; firmSlot = slot; speedN[leg.seg]++; continue;
       }
       c.crash = undefined;
       if (c.working && c.mission) {
@@ -1466,7 +1533,7 @@ function stepCars(dt: number): void {
           else if (c.mission.kind === 'garbage') collectGarbage(c.mission.tile);
           else if (c.mission.crash !== undefined) incidents.crashes.delete(c.mission.crash);
           freeCar(slot);
-        } else { c.v = 0; leaderP = c.p; leaderLength = vehicleLength(c.vehicle); leaderStuck = true; leaderV = 0; }
+        } else { c.v = 0; leaderP = firmP = c.p; leaderLength = firmLength = vehicleLength(c.vehicle); leaderStuck = firmStuck = true; leaderV = firmV = 0; firmSlot = slot; }
         continue;
       }
 
@@ -1484,7 +1551,8 @@ function stepCars(dt: number): void {
         if (Math.max((c.p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME) >= 1) c.chT = -1;
         else if (c.stuck > 3 && c.box < 0) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
       }
-      const vWant = desiredSpeed(c);
+      // Pulled over for a callout, it comes to a stop at the kerb until it has passed.
+      const vWant = pullingOver ? 0 : desiredSpeed(c);
       considerLaneChange(c, slot, leaderP - c.p, leaderStuck || (leaderP - c.p < 1.5 && leaderV < 0.6 * vWant));
 
       const leaderHold = leaderP - gap;
@@ -1527,12 +1595,14 @@ function stepCars(dt: number): void {
         // A car on the far side that is moving will make the room: only a standing queue there needs it
         // already clear, or a car following it in would stop across the box.
         const flowing = laneTailV[nextKey] > 0.5;
-        // Behind a moving car, the way still to go to the node counts: it will have moved on by then.
-        const lead = flowing ? legEnd - c.p : 0;
+        // Behind a moving car, the room it will have made by the time this one gets there counts: judged
+        // by how fast it is really going, so a queue crawling out of the box does not draw more cars in.
+        const lead = flowing ? Math.min(legEnd - c.p, laneTailV[nextKey] * (legEnd - c.p) / Math.max(c.v, 0.5)) : 0;
         let canGo = laneTail[nextKey] - next.p0 + lead > Math.min(Math.max(clear, nodeType[node] === J_PLAIN || nodeType[node] === J_RING || flowing ? 0 : out), span1 * 0.9);
         const type = nodeType[node];
         // Blue lights: a callout goes through on red, and everyone else waits for it.
-        if (type === J_LIGHT && !pastStop && !c.mission) {
+        // Only a callout under blue lights goes through on red: a patrol or a bin lorry waits like anyone.
+        if (type === J_LIGHT && !pastStop && !onCallout(c)) {
           const st = signalFor(c, node);
           // A turner that has waited at the line on its yield green goes at the end of it, once the
           // oncoming traffic has stopped for the amber, as drivers do; otherwise a busy oncoming
@@ -1577,7 +1647,9 @@ function stepCars(dt: number): void {
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
           if (ringClaim[node] === slot && !canGo) ringRoomless[node] = simTime;
         }
-        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
+        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && !c.insistent && ringApproaching(node)) canGo = false;
+        // Blue lights coming: nobody else goes into the junction.
+        if (blueAt[node] && !onCallout(c) && c.lock !== node && c.box !== node && blueFrom[node] !== leg.seg * 2 + (leg.fwd ? 0 : 1)) canGo = false;
         if (type === J_RING && c.lock !== node) {
           const front = leaderP === Infinity;
           const owner = lockOwner[node];
@@ -1596,12 +1668,14 @@ function stepCars(dt: number): void {
             // traffic flows as a stream instead of stopping at every node for the car ahead to clear it.
             // The lock stays with circulating traffic, so no one pulls out in between.
             const through = ringArc[leg.seg] && holder.li > holder.lockLi && front;
-            if (stale || yielding || through) { holder.lock = -1; lockOwner[node] = -1; }
+            // Out of patience, a car takes the lock from one that is not using it.
+            const idle = c.insistent && front && holder.v < 0.05 && holder.stuck > 5;
+            if (stale || yielding || through || idle) { holder.lock = -1; lockOwner[node] = -1; }
           }
           // A booking holds back traffic going on round the circle. Traffic leaving it here only makes room,
           // so while the booker is itself waiting for room on the ring it goes: held behind that booking it
           // would lock the ring. Otherwise it waits its turn too, so a stream leaving cannot starve the arm.
-          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot && (!!ringArc[next.seg] || ringRoomless[node] < simTime - 0.25);
+          const booked = !c.insistent && ringClaim[node] >= 0 && ringClaim[node] !== slot && (!!ringArc[next.seg] || ringRoomless[node] < simTime - 0.25);
           if (canGo && front && !booked && c.p < stopP - reach) {
             pending = true;
             canGo = false;
@@ -1645,12 +1719,12 @@ function stepCars(dt: number): void {
               blocked = true; break;
             }
             // Priority: off the major road, wait for a gap in it; a booking made after long patience forces the way in.
-            if (!blocked && nodePriority[node] && boxWait[node] !== slot && priorityBlocked(c, node, mine)) blocked = true;
+            if (!blocked && nodePriority[node] && boxWait[node] !== slot && !c.insistent && priorityBlocked(c, node, mine)) blocked = true;
             // Whoever has waited longest has booked the box: nothing that would cut across it goes first.
-            if (!blocked && boxWait[node] >= 0 && boxWait[node] !== slot) { const m = heldMovement(boxWait[node], node); if (m && conflicts(mine, m)) blocked = true; }
+            if (!blocked && boxWait[node] >= 0 && boxWait[node] !== slot && !c.insistent) { const m = heldMovement(boxWait[node], node); if (m && conflicts(mine, m)) blocked = true; }
             if (!blocked) {
               c.box = node; c.boxLi = c.li; list.push(slot);
-              if (type === J_LIGHT) { const st = c.mission ? 'callout' : signalFor(c, node); sigAdmits[st] = (sigAdmits[st] ?? 0) + 1; }
+              if (type === J_LIGHT) { const st = onCallout(c) ? 'callout' : signalFor(c, node); sigAdmits[st] = (sigAdmits[st] ?? 0) + 1; }
               if (boxWait[node] === slot) boxWait[node] = -1;
             } else {
               canGo = false;
@@ -1658,7 +1732,7 @@ function stepCars(dt: number): void {
               // Held by crossing traffic alone: book the box once it has waited a while (a callout
               // almost at once), so a busy stream cannot starve it.
               // Off the major road it waits far longer first: priority is real, but no arm starves.
-              if (c.stuck > (c.mission ? 1 : nodePriority[node] && !onMajor(c) ? MINOR_PATIENCE : 4) && boxWait[node] < 0) boxWait[node] = slot;
+              if (c.stuck > (onCallout(c) ? 1 : nodePriority[node] && !onMajor(c) ? MINOR_PATIENCE : 4) && boxWait[node] < 0) boxWait[node] = slot;
             }
           } else {
             // Waiting on the car in front, or not yet near enough to ask: that car or nothing is what
@@ -1720,7 +1794,10 @@ function stepCars(dt: number): void {
       else trafficSpace.set(slot, target);
       const moved = newP - c.p;
       // Stopped short by something the model did not see (another car's body): it has that speed only.
+      const vBefore = c.v;
       c.v = newP < travel - 1e-6 && newP < legEnd - 1e-6 ? moved / dt : motion.v;
+      c.accel = (c.v - vBefore) / dt;
+      if (c.accel < -0.4 || c.v < 0.05) c.brakeT = simTime;
       speedSum[leg.seg] += Math.min(1, moved / (Math.max(vWant, 0.3) * dt));
       speedN[leg.seg]++;
       // Standing still, or edging forward a hair at a time, counts as waiting: creeping must not
@@ -1729,6 +1806,7 @@ function stepCars(dt: number): void {
       if (c.v < 0.3 && (c.li > 0 || c.p > leg.p0 + 0.3)) c.stood += dt;
       c.p = newP;
       leaderP = newP; leaderLength = vehicleLength(c.vehicle); leaderStuck = c.stuck > 0.3; leaderV = c.v; leaderSlot = slot;
+      if (!pullingOver) { firmP = newP; firmLength = leaderLength; firmStuck = leaderStuck; firmV = c.v; firmSlot = slot; }
 
       if (final) {
         if (c.p >= leg.p1 - 1e-3) {
@@ -1771,6 +1849,7 @@ function stepCars(dt: number): void {
       // Waiting out a long red is not being stuck: at a signal, a whole cycle's wait is allowed first.
       const endNode = c.li < c.legs.length - 1 ? legEndNode(c.legs[c.li]) : -1;
       const patience = 30 + (endNode >= 0 && sigPlan[endNode] ? cycleOf(sigPlan[endNode]!) * (sigPlan[endNode]!.adaptive ? 2 : 1) : 0);
+      c.insistent = c.stuck > patience * INSIST_SHARE;
       if (slots[slot] && c.stuck > patience) {
         gaveUp++; gaveUpTotal++;
         commuteAvg = commuteAvg * 0.97 + 90 * 0.03;
@@ -1936,12 +2015,33 @@ function roadReport(segId: number, tile: number): TileReport | null {
   return report;
 }
 
+/** What a vehicle's lamps show, as frame flags: see CAR_BRAKE and the rest in messages.ts. */
+function signalsOf(c: Car): number {
+  let f = 0;
+  if (simTime - c.brakeT < 0.3) f |= CAR_BRAKE;
+  if (c.crash !== undefined && incidents.crashes.has(c.crash)) f |= CAR_LEFT | CAR_RIGHT;
+  else if (c.chT >= 0 && c.lane !== c.chLane) f |= c.lane > c.chLane ? CAR_LEFT : CAR_RIGHT;
+  else {
+    const leg = c.legs[c.li], next = c.legs[c.li + 1];
+    if (next && leg.p1 - c.p < 3.5 && nodeType[legEndNode(leg)] !== J_PLAIN) {
+      const k = turnKind(leg, next);
+      if (k === 1) f |= CAR_RIGHT; else if (k === 2) f |= CAR_LEFT;
+    }
+  }
+  if (c.mission && (c.mission.kind === 'fire' || c.mission.kind === 'crash' || c.mission.kind === 'heist')) f |= CAR_BLUE;
+  const endNode = c.li < c.legs.length - 1 ? legEndNode(c.legs[c.li]) : -1;
+  const patience = 30 + (endNode >= 0 && sigPlan[endNode] ? cycleOf(sigPlan[endNode]!) * (sigPlan[endNode]!.adaptive ? 2 : 1) : 0);
+  if (c.stuck > patience - 0.5) f |= CAR_LEAVING;
+  return f;
+}
+
 let frames = 0;
 function writeFrame(): void {
   const out = new Float32Array(MAX_CARS * 4);
   const carHeights = new Float32Array(MAX_CARS);
   const carPitch = new Float32Array(MAX_CARS);
   const carIds = new Uint32Array(MAX_CARS);
+  const carFlags = new Uint8Array(MAX_CARS);
   spawnSpace.clear();
   const half = GRID / 2;
   for (let s = 0; s < MAX_CARS; s++) {
@@ -1957,6 +2057,7 @@ function writeFrame(): void {
     const leg = c.legs[c.li], seg = segs[leg.seg], d = leg.fwd ? c.p : seg.len - c.p;
     carPitch[s] = Math.atan((roadHeight(seg, Math.min(seg.len, d + 0.1)) - roadHeight(seg, Math.max(0, d - 0.1))) / 0.2) * (leg.fwd ? -1 : 1);
     carIds[s] = c.uid; spawnSpace.set(s, world);
+    carFlags[s] = signalsOf(c);
   }
   const cong = new Uint8Array(segs.length);
   for (let i = 0; i < segs.length; i++) cong[i] = Math.min(255, (segCong[i] * 255) | 0);
@@ -1966,7 +2067,7 @@ function writeFrame(): void {
   const signals = new Float32Array(lit);
   // The water level changes slowly, so it rides along every third frame.
   const wet = frames++ % 3 === 0 ? river.frame() : undefined, flooded = wet ? river.flooded.slice() : undefined;
-  post({ type: 'frame', carHeights, carPitch, carIds, cars: out, segCong: cong, signals, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
+  post({ type: 'frame', carHeights, carPitch, carIds, carFlags, cars: out, segCong: cong, signals, serial, simTime, cityTime: tick + subCount / SIM_HZ, water: wet, flooded }, [out.buffer, carIds.buffer, carFlags.buffer, cong.buffer, carHeights.buffer, carPitch.buffer, ...(wet ? [wet.buffer, flooded!.buffer] : [])]);
 }
 
 // ---- census, utilities, pollution, growth --------------------------------------------------------
@@ -2697,7 +2798,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       const index = new Map(segs.map((s, i) => [s.id, i]));
       for (const t of m.trips ?? []) {
         const a = index.get(t.a), b = index.get(t.b);
-        if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1);
+        if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1, undefined, t.callout ? { kind: 'heist', origin: 0, tile: 0, work: 0 } : undefined);
       }
       const lanes: Record<number, number[]> = {};
       for (const c of slots) {
@@ -2721,7 +2822,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         return { car: desc(c), node: nodeIds[node], type: nodeType[node], wait: boxWait[node] >= 0 ? `${boxWait[node]}: ${desc(slots[boxWait[node]])}` : '-', box: (boxCars[node] ?? []).map(o => `${o}: ${desc(slots[o])}`), want: wantedLanes(c) };
       });
       // And, when asked, every car's state: its road, how far along, and how fast.
-      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck }] : []) : undefined;
+      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent }] : []) : undefined;
       post({ type: 'probe', arrived: arrivedTotal, gaveUp: gaveUpTotal, cars: activeCars, lanes, nearLine: near, rightLane: right, trips: Object.fromEntries(arrivedBy), watch, signalAdmits: { ...sigAdmits }, detail } as never);
       break;
     }

@@ -1,3 +1,4 @@
+import { CAR_BRAKE, CAR_LEFT, CAR_RIGHT, CAR_BLUE, CAR_LEAVING } from '../sim/messages';
 import type { VisualDetail } from './detail';
 import { VEHICLE_SCALE } from '../sim/trafficSpace';
 import * as THREE from 'three';
@@ -259,6 +260,51 @@ function lightGeometry(type: number): THREE.BufferGeometry {
   return g;
 }
 
+/**
+ * Lamps that signal, lit by day and night: brake lamps over the tail lamps, amber indicators at the
+ * corners on one side (left is +x in the car's own frame, facing +z), and on police cars and fire
+ * engines a blue or a red beacon on the light bar.
+ */
+function signalGeometry(type: number, which: 'brake' | 'left' | 'right' | 'blue' | 'red'): THREE.BufferGeometry {
+  const model = type === 5 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
+  const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
+  const pos: number[] = [], col: number[] = [];
+  const lamp = (x: number, y: number, z: number, w: number, h: number, d: number, c: number[]): void => {
+    const g = new THREE.BoxGeometry(w, h, d).toNonIndexed(), p = g.getAttribute('position');
+    for (let i = 0; i < p.count; i++) { pos.push(p.getX(i) + x, p.getY(i) + y, p.getZ(i) + z); col.push(...c); }
+    g.dispose();
+  };
+  // Where the head and tail lamps are, as lightGeometry has them: x, y, z, width, height for each end.
+  const spec = shellSpec(type);
+  let front: [number, number, number, number, number], rear: [number, number, number, number, number];
+  if (spec) {
+    front = [spec.width * 0.32, spec.nose - 0.018 + 0.066, spec.length / 2 + 0.006, 0.058, 0.024];
+    rear = [spec.width * 0.33, spec.deck - 0.021 + 0.066, -spec.length / 2 - 0.004, 0.052, 0.022];
+  } else if (model === 3 || model === 4) {
+    front = [0.25 * 0.33, (model === 4 ? BUS_LAMP_Y : TRUCK_LAMP_Y) + 0.066, length / 2 + 0.006, 0.05, 0.022];
+    rear = [0.1, 0.135 + 0.066, -length / 2 - 0.006, 0.038, 0.032];
+  } else {
+    front = [0.085, 0.158, length / 2 + 0.012, 0.055, 0.04];
+    rear = [0.085, 0.158, -length / 2 - 0.012, 0.05, 0.04];
+  }
+  if (which === 'brake') {
+    for (const side of [-1, 1]) lamp(side * rear[0], rear[1], rear[2] - 0.006, rear[3] * 1.15, rear[4] * 1.35, 0.03, [1, 0.08, 0.05]);
+  } else if (which === 'left' || which === 'right') {
+    const side = which === 'left' ? 1 : -1, amber = [1, 0.6, 0.05];
+    lamp(side * (front[0] + front[3] * 0.75), front[1], front[2] + 0.002, 0.026, front[4], 0.03, amber);
+    lamp(side * (rear[0] + rear[3] * 0.75), rear[1], rear[2] - 0.002, 0.026, rear[4], 0.03, amber);
+  } else {
+    const y = (type === 6 ? 0.43 : 0.32) + 0.025;
+    lamp(which === 'blue' ? -0.05 : 0.05, y + 0.0175, 0.08, 0.09, 0.045, 0.06, which === 'blue' ? [0.3, 0.55, 1] : [1, 0.18, 0.12]);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.scale(VEHICLE_SCALE, VEHICLE_SCALE, VEHICLE_SCALE);
+  return g;
+}
+const SIGNALS = ['brake', 'left', 'right', 'blue', 'red'] as const;
+
 // Still plenty of white, black and silver, but with a good share of colour: reds, blues, greens,
 // yellows, oranges, teals and the odd pastel, so a street reads as a lively mix.
 const CAR_COLORS = [
@@ -278,12 +324,16 @@ export const vehicleColor = (type: number, id: number): number => {
 const matrix = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3();
 const pitchQ = new THREE.Quaternion(), pitchAxis = new THREE.Vector3(1, 0, 0);
 const one = new THREE.Vector3(1, 1, 1), axis = new THREE.Vector3(0, 1, 0), color = new THREE.Color();
+const half = new THREE.Vector3(0.5, 0.5, 0.5), hidden = new THREE.Matrix4().makeScale(0, 0, 0);
 export class CarLayer {
   readonly mesh = new THREE.Group();
   private detail: VisualDetail = 1;
   private vehicles: THREE.InstancedMesh[] = [];
   private lights: THREE.InstancedMesh[] = [];
   private lightMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  /** Per vehicle type, the signalling lamps: brake, left, right, blue beacon, red beacon. */
+  private signals: THREE.InstancedMesh[][] = [];
+  private signalMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   constructor() {
     for (let type = 1; type <= 10; type++) {
       const mesh = new THREE.InstancedMesh(vehicleGeometry(type), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }), MAX_CARS);
@@ -293,6 +343,13 @@ export class CarLayer {
       const lights = new THREE.InstancedMesh(lightGeometry(type), this.lightMaterial, MAX_CARS);
       lights.count = 0; lights.frustumCulled = false; lights.renderOrder = 2; lights.visible = false;
       this.lights.push(lights); this.mesh.add(lights);
+      const emergency = type === 5 || type === 6;
+      this.signals.push(SIGNALS.filter(w => emergency || (w !== 'blue' && w !== 'red')).map(w => {
+        const m = new THREE.InstancedMesh(signalGeometry(type, w), this.signalMaterial, MAX_CARS);
+        m.count = 0; m.frustumCulled = false; m.name = w;
+        this.mesh.add(m);
+        return m;
+      }));
     }
   }
   setDetail(detail: VisualDetail): void {
@@ -311,8 +368,10 @@ export class CarLayer {
     this.lightMaterial.opacity = Math.min(1, night * 1.3);
     for (const m of this.lights) m.visible = on;
   }
-  update(prev: Float32Array, next: Float32Array, alpha: number, prevIds?: Uint32Array, nextIds?: Uint32Array, heights?: Float32Array, prevHeights?: Float32Array, pitch?: Float32Array): void {
+  update(prev: Float32Array, next: Float32Array, alpha: number, prevIds?: Uint32Array, nextIds?: Uint32Array, heights?: Float32Array, prevHeights?: Float32Array, pitch?: Float32Array, flags?: Uint8Array, time = 0): void {
     const counts = new Array(10).fill(0);
+    // Indicators blink at 1.5 Hz; beacons swap blue and red three times a second.
+    const blink = Math.floor(time * 3) % 2 === 0, beacon = Math.floor(time * 6) % 2 === 0;
     for (let i = 0; i < MAX_CARS; i++) {
       const o = i * 4, type = Math.round(next[o + 3]);
       if (type < 1 || type > 10) continue;
@@ -325,8 +384,15 @@ export class CarLayer {
         a = prev[o + 2] + da * alpha;
       }
       if (y < -0.22) continue; // vehicles disappear beneath the tunnel portal
-      pos.set(x, y, z); q.setFromAxisAngle(axis, a); q.multiply(pitchQ.setFromAxisAngle(pitchAxis, pitch?.[i] ?? 0)); matrix.compose(pos, q, one);
+      const f = flags?.[i] ?? 0;
+      // About to be removed after being stuck for a very long time: it shrinks away rather than blinking out.
+      pos.set(x, y, z); q.setFromAxisAngle(axis, a); q.multiply(pitchQ.setFromAxisAngle(pitchAxis, pitch?.[i] ?? 0)); matrix.compose(pos, q, f & CAR_LEAVING ? half : one);
       const slot = counts[type - 1]++, mesh = this.vehicles[type - 1];
+      for (const lamp of this.signals[type - 1]) {
+        const on = lamp.name === 'brake' ? f & CAR_BRAKE : lamp.name === 'left' ? f & CAR_LEFT && blink : lamp.name === 'right' ? f & CAR_RIGHT && blink
+          : lamp.name === 'blue' ? f & CAR_BLUE && beacon : f & CAR_BLUE && !beacon;
+        lamp.setMatrixAt(slot, on ? matrix : hidden);
+      }
       mesh.setMatrixAt(slot, matrix);
       if (type <= 2) mesh.setColorAt(slot, color.setHex(vehicleColor(type, nextIds?.[i] ?? i)));
       if (y > -0.05) this.lights[type - 1].setMatrixAt(slot, matrix);
@@ -336,6 +402,7 @@ export class CarLayer {
       mesh.count = counts[i]; mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.lights[i].count = counts[i]; this.lights[i].instanceMatrix.needsUpdate = true;
+      for (const lamp of this.signals[i]) { lamp.count = counts[i]; lamp.instanceMatrix.needsUpdate = true; }
     });
   }
 }

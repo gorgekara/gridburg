@@ -73,6 +73,8 @@ export class Game {
   carHeights: Float32Array = new Float32Array(MAX_CARS);
   prevCarHeights: Float32Array = new Float32Array(MAX_CARS);
   carPitch: Float32Array = new Float32Array(MAX_CARS);
+  /** Each vehicle's lamps in the latest frame (CAR_BRAKE and the rest in sim/messages). */
+  carFlags: Uint8Array = new Uint8Array(MAX_CARS);
   simTime = 0;
   cityTime = 0;
   /** Segment ids in the order last sent to the worker; congestion frames are indexed the same way. */
@@ -132,7 +134,7 @@ export class Game {
         this.carsNext = m.cars;
         this.prevTime = this.nextTime;
         this.nextTime = performance.now();
-        this.prevCarHeights = this.carHeights; this.carHeights = m.carHeights; this.carPitch = m.carPitch;
+        this.prevCarHeights = this.carHeights; this.carHeights = m.carHeights; this.carPitch = m.carPitch; this.carFlags = m.carFlags ?? this.carFlags;
         this.simTime = m.simTime;
         this.cityTime = m.cityTime;
         if (m.water && m.flooded) { this.waterSurface = m.water; this.flooded = m.flooded; this.onWater?.(); }
