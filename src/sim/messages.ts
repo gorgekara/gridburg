@@ -104,7 +104,7 @@ export type MainToWorker =
   | { type: 'funding'; key: FundingKey; value: number }
   | { type: 'policy'; id: PolicyId; on: boolean }
   | { type: 'loan'; action: 'take' | 'repay' }
-  | { type: 'inspect'; tile: number }
+  | { type: 'inspect'; tile: number; /** A road to inspect instead, by segment id. */ seg?: number }
   /** Tests only: start these trips (by segment id and distance along it) and report traffic counters. */
   | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number }[]; watch?: number[]; detail?: boolean };
 

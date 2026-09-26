@@ -26,7 +26,7 @@ import { F_DECLINING, CIVIC_LABELS } from '../constants';
 import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
-import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, isMotorway, isCarriageway } from '../roads/network';
+import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, ROAD_LABEL, isMotorway, isCarriageway } from '../roads/network';
 import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, AMBER, MIN_GREEN } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
@@ -253,6 +253,13 @@ let turnK = new Map<number, number>();
 let nodePriority = new Uint8Array(0);
 let majorIn = new Uint8Array(0);
 let nodeIn: { seg: number; fwd: boolean }[][] = [];
+/**
+ * Traffic counts per direction of each segment (seg·2 + dir): vehicles leaving it this second, the
+ * smoothed flow in vehicles a minute, and the smoothed delay per vehicle (time spent standing on it).
+ */
+let flowCount = new Uint16Array(0), flowRate = new Float32Array(0), delayAvg = new Float32Array(0);
+/** The road being inspected, by segment id, and the tile it was clicked on; −1 for none. */
+let inspectedSeg = -1;
 let moveConflicts = new Map<string, boolean>();
 let roadUpkeep = 0;
 let roadLength = 0;
@@ -264,7 +271,9 @@ interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; ori
 interface Car {
   uid: number; legs: Leg[]; li: number; p: number; time: number;
   /** Speed along the leg, cells/s. */
-  v: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  v: number;
+  /** Time spent below walking pace on the current leg: its delay there. */
+  stood: number; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
   lane: number; nextLane: number; prevLane: number;
   /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
@@ -474,6 +483,7 @@ function applyNetwork(p: EditPayload): void {
   segs = newSegs;
   segCong = newCong;
   segCurveV = Float32Array.from(segs, s => curveSpeed(segMinRadius(s)));
+  flowCount = new Uint16Array(segs.length * 2); flowRate = new Float32Array(segs.length * 2); delayAvg = new Float32Array(segs.length * 2);
   turnV = new Map(); turnK = new Map();
   // Priority: at each uncontrolled junction, the road that runs straight through and outranks the rest.
   nodePriority = new Uint8Array(nodeIds.length);
@@ -817,7 +827,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   // Traffic from beyond the map edge arrives already at speed; everyone else pulls away from the kerb.
   const pace = drivingPace(vehicle);
   const rolling = entries.some(e => e.seg === legs[0].seg && Math.abs(e.s - legs[0].p0) < 0.05);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
     lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
@@ -1670,6 +1680,7 @@ function stepCars(dt: number): void {
       // Standing still, or edging forward a hair at a time, counts as waiting: creeping must not
       // reset a driver's patience at a junction.
       if (moved < 2e-3) c.stuck += dt; else c.stuck = 0;
+      if (c.v < 0.3 && (c.li > 0 || c.p > leg.p0 + 0.3)) c.stood += dt;
       c.p = newP;
       leaderP = newP; leaderLength = vehicleLength(c.vehicle); leaderStuck = c.stuck > 0.3; leaderV = c.v; leaderSlot = slot;
 
@@ -1679,6 +1690,7 @@ function stepCars(dt: number): void {
           else {
             if (c.taxiStop !== undefined) { taxiWindow++; money += 0.16 * effects.fare; }
             if (!c.through) commuteAvg = commuteAvg === 0 ? c.time : commuteAvg * 0.97 + c.time * 0.03;
+            countLeft(c);
             arrivedTotal++;
             const trip = `${segs[c.legs[0].seg].id}>${segs[leg.seg].id}`;
             arrivedBy.set(trip, (arrivedBy.get(trip) ?? 0) + 1);
@@ -1697,6 +1709,7 @@ function stepCars(dt: number): void {
         for (const nextP of carry > 1e-3 ? [next.p0 + carry, next.p0] : [next.p0]) {
           const target = vehiclePose(c, c.li + 1, nextP);
           if (!trafficSpace.canMove(slot, target)) continue;
+          countLeft(c);
           c.li++;
           c.p = nextP;
           c.stuck = 0;
@@ -1801,6 +1814,14 @@ const BOX_GAP = 1.6;
 /** How fast a car turns off the road at the end of its trip. */
 const ARRIVE_SPEED = 0.8;
 
+/** A car leaves its leg: count it, and its delay there, against that direction of the road. */
+function countLeft(c: Car): void {
+  const leg = c.legs[c.li], dk = leg.seg * 2 + (leg.fwd ? 0 : 1);
+  if (flowCount[dk] < 65535) flowCount[dk]++;
+  delayAvg[dk] = delayAvg[dk] === 0 ? c.stood : delayAvg[dk] * 0.9 + c.stood * 0.1;
+  c.stood = 0;
+}
+
 /** How fast a driver would go on a leg's road, before curves and anything ahead. */
 const roadSpeedFor = (c: Car, seg: number): number => segSpeed(segs[seg]) * (c.vehicle === 7 ? 1.55 : 1) * c.pace;
 
@@ -1820,6 +1841,52 @@ function desiredSpeed(c: Car): number {
     v = Math.min(v, approachSpeed(ARRIVE_SPEED, leg.p1 - c.p, driverFor(c.vehicle).b));
   }
   return v;
+}
+
+/** What controls the junction at a node, for a driver arriving on a given approach. */
+function controlAt(node: number, seg: number, fwd: boolean): string {
+  switch (nodeType[node]) {
+    case J_LIGHT: return 'signals';
+    case J_STOP: return 'all-way stop';
+    case J_RING: return 'roundabout';
+    case J_YIELD: return !nodePriority[node] ? 'no priority: first come, first served' : majorIn[seg * 2 + (fwd ? 0 : 1)] ? 'major road: has priority' : 'minor road: gives way';
+    default: return '';
+  }
+}
+
+/** Which way a direction of a road runs, by its heading at the far end. */
+function heading(seg: number, fwd: boolean): string {
+  const pose = { x: 0, z: 0, tx: 0, tz: 0 }, s = segs[seg];
+  Network.poseAt(s, fwd ? s.len : 0, pose);
+  const tx = fwd ? pose.tx : -pose.tx, tz = fwd ? pose.tz : -pose.tz;
+  return Math.abs(tx) > Math.abs(tz) ? (tx > 0 ? 'Eastbound' : 'Westbound') : (tz > 0 ? 'Southbound' : 'Northbound');
+}
+
+/** The road inspector: a line per direction with its flow, speed, queue and delay, and what controls its end. */
+function roadReport(segId: number, tile: number): TileReport | null {
+  const i = segs.findIndex(s => s.id === segId);
+  if (i < 0) return null;
+  const s = segs[i], one = s.oneway;
+  const lanes = [dirLanes[i * 2], dirLanes[i * 2 + 1]];
+  const report: TileReport = {
+    tile, name: `${ROAD_LABEL[s.kind] ?? 'Road'}${one ? ' (one-way)' : ''}`, level: 0, occupants: 0,
+    status: `${one ? lanes[0] : `${lanes[0]} + ${lanes[1]}`} lane${lanes[0] + (one ? 0 : lanes[1]) === 1 ? '' : 's'} · ${s.len.toFixed(1)} cells${s.calm ? ' · traffic calmed' : ''}`,
+    details: [], blockers: [], coverage: {}, neglect: 0,
+  };
+  for (const fwd of one ? [true] : [true, false]) {
+    const dk = i * 2 + (fwd ? 0 : 1);
+    let n = 0, speed = 0, queued = 0;
+    for (let l = 0; l < Math.max(1, dirLanes[dk]); l++) for (const slot of laneCars[laneKey(i, fwd, l)]) {
+      const c = slots[slot];
+      if (!c) continue;
+      n++; speed += c.v / Math.max(0.1, Math.min(segSpeed(s), segCurveV[i]));
+      if (c.v < 0.3) queued++;
+    }
+    const end = fwd ? segB[i] : segA[i], control = controlAt(end, i, fwd);
+    report.details.push(`${heading(i, fwd)}: ${Math.round(flowRate[dk])} vehicles/min · ${n ? `speed ${Math.round((speed / n) * 100)}% of the limit` : 'empty'} · ${queued} queued · ${delayAvg[dk].toFixed(1)} s delay${control ? ` · ${control}` : ''}`);
+  }
+  if (segCong[i] > 0.5) report.blockers.push('Congested: more lanes, another route, or a better junction at its end would help');
+  return report;
 }
 
 let frames = 0;
@@ -2413,6 +2480,8 @@ function substep(scale = 1): void {
     postState();
     noPath = 0;
     gaveUp = 0;
+    // Flow in vehicles a minute, smoothed over about half a minute.
+    for (let k = 0; k < flowCount.length; k++) { flowRate[k] += (flowCount[k] * 60 - flowRate[k]) / 30; flowCount[k] = 0; }
   }
 }
 
@@ -2574,6 +2643,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       break;
     case 'inspect':
       inspected = Number.isInteger(m.tile) && m.tile >= 0 && m.tile < N_TILES ? m.tile : -1;
+      inspectedSeg = inspected >= 0 && typeof m.seg === 'number' ? m.seg : -1;
       postInspection();
       break;
     case 'probe': {
@@ -2623,6 +2693,11 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
 /** Explain the same local requirements used by growth, without duplicating the simulation in the UI. */
 function postInspection(): void {
   if (inspected < 0) { post({ type: 'inspection', report: null }); return; }
+  if (inspectedSeg >= 0) {
+    const report = roadReport(inspectedSeg, inspected);
+    if (report) { post({ type: 'inspection', report }); return; }
+    inspectedSeg = -1;
+  }
   const i = inspected, k = kind[i], l = level[i], spec = SERVICES[k];
   const report: TileReport = {
     tile: i, name: spec?.name ?? (ZONE_NAMES[k] ?? (terrain.water[i] ? 'River' : cover[i] ? 'Road' : 'Unzoned land')),

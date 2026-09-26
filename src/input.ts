@@ -1,5 +1,5 @@
 import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
-import { sideHalf, canAddLanes, clampLanes } from './roads/lanes';
+import { sideHalf, canAddLanes, clampLanes, roadHalf } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
@@ -85,7 +85,7 @@ export class Input {
   inspectionTarget: THREE.Object3D | null = null;
   tool: Tool = 'road';
   mode: RoadMode = 'straight';
-  onInspect: ((tile: number) => void) | null = null;
+  onInspect: ((tile: number, seg?: number) => void) | null = null;
   onToolChange: ((t: Tool) => void) | null = null;
   /** True while walking the streets: clicks and shortcut keys belong to the walker then. */
   suspended = false;
@@ -427,7 +427,11 @@ export class Input {
     if (this.tool === 'inspect' || this.tool === 'none') {
       const hits = this.inspectionTarget ? this.raycaster.intersectObject(this.inspectionTarget, true) : [];
       const building = hits.find(hit => hit.instanceId !== undefined && hit.object.userData.tileIds?.[hit.instanceId] !== undefined);
-      this.onInspect?.(building ? building.object.userData.tileIds[building.instanceId!] : this.tileOf(p));
+      if (building) { this.onInspect?.(building.object.userData.tileIds[building.instanceId!]); return; }
+      // On a road: inspect the road, its traffic in each direction.
+      const road = this.game.net.nearestSeg(p.x, p.z, 1.5);
+      if (road && road.dist <= roadHalf(road.seg) + 0.1) { this.onInspect?.(this.tileOf(p), road.seg.id); return; }
+      this.onInspect?.(this.tileOf(p));
       return;
     }
     if (this.isRoadTool()) {

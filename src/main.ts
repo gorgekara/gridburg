@@ -215,7 +215,7 @@ const hud = new Hud(uiRoot, {
   },
 });
 
-input.onInspect = (tile) => game.inspect(tile);
+input.onInspect = (tile, seg) => game.inspect(tile, seg);
 
 // ---- map views, statistics, districts, achievements, saves ---------------------------------------
 const cityDay = (): number => Math.floor((game.cityTime + DAY_SECONDS * 9 / 24) / DAY_SECONDS) + 1;

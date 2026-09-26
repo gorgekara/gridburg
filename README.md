@@ -360,7 +360,7 @@ it takes. Larger sites keep to the grid, and back lanes only run behind rows squ
 
 | Input | Action |
 | --- | --- |
-| Left click | Place road points, signals, roundabouts and service buildings |
+| Left click | Place road points, signals, roundabouts and service buildings; with no tool, inspect a building or a road (flow, speed, queue and delay each way, and who has priority at its end) |
 | Left drag | Paint zone cells along roads (Shift-drag unzones); bulldoze a rectangle (a drag also lays a single road) |
 | Right click / Esc | Stop laying a road; Esc again puts the tool away, closes panels and clears the inspection |
 | Right drag, Q / E | Rotate |
@@ -417,8 +417,17 @@ The city autosaves in your browser, and **Share** copies a link that contains th
 - **Building variety:** four deterministic designs per zone and level vary height, proportions and roof details.
   Level 2 homes have three to five floors. Designs remain stable across saves and do not change simulation capacity.
 - **The simulation runs in a Web Worker** at 30 Hz (`src/sim/worker.ts`): A* routing over the road graph
-  with congestion-aware costs, car-following with minimum gaps, junction locks, signal phases, utilities,
+  with congestion-aware costs, the driver model below, junction boxes, signal phases, utilities,
   pollution diffusion, growth, and the economy. Cars that are stuck for 30 seconds give up and despawn.
+- **Driver model** (`src/sim/driver.ts`): every vehicle has a speed and follows the Intelligent Driver
+  Model. It accelerates and brakes smoothly, keeps a time headway, and heavy vehicles are slower off
+  the mark. A game second is about three real ones, so a queue pulls away at about 1.4 cars a second a
+  lane, as real ones do. Curves and turns set a speed from their radius, and drivers slow ahead of them.
+- **Junction priority** (`src/sim/priority.ts`): at an uncontrolled junction, the road that runs
+  straight through and outranks the rest is the major road. Minor arms wait for critical gaps in its
+  traffic (the Highway Capacity Manual's, scaled to the game clock) and force their way in only after
+  12 s. A crossroads of two equal roads is first come, first served. Roundabout entry judges
+  circulating cars by when they would arrive.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

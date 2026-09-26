@@ -497,9 +497,10 @@ export class Game {
     this.send({ type: 'loan', action });
   }
 
-  inspect(tile: number): void {
+  /** Inspect a tile, or with `seg`, the road through it. */
+  inspect(tile: number, seg?: number): void {
     this.flush();
-    this.send({ type: 'inspect', tile });
+    this.send({ type: 'inspect', tile, seg });
   }
 
   warm(ticks: number): void {

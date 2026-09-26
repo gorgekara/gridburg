@@ -82,7 +82,8 @@ const N = await import('../src/roads/network.ts');
 const { rasterize } = await import('../src/roads/raster.ts');
 const { defaultExtras } = await import('../src/extras.ts');
 let probe = null;
-globalThis.self = { postMessage: m => { if (m.type === 'probe') probe = m; } };
+let inspection = null;
+globalThis.self = { postMessage: m => { if (m.type === 'probe') probe = m; if (m.type === 'inspection') inspection = m.report; } };
 let clock;
 const oldInterval = globalThis.setInterval;
 globalThis.setInterval = fn => { clock = fn; return 0; };
@@ -240,6 +241,27 @@ test('a crossroads of two equal streets has no priority, and keeps flowing', () 
   console.log(`  equal crossroads: ${r.flows.map(f => f.arrived).join('/')} trips, ${r.gaveUp} gave up`);
   assert.equal(r.gaveUp, 0);
   for (const f of r.flows.slice(0, 4)) assert.ok(f.arrived >= 35, `${f.arrived} trips`);
+});
+
+test('the road inspector reports each direction\'s flow, speed, queue, delay and control', () => {
+  Math.random = C.mulberry32(23);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], N.KIND_ROAD);
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), sth = arm(net, 40, 40, 40, 62);
+  run(net, [{ from: w, to: e, every: 1.5 }, { from: e, to: w, every: 1.5 }, { from: sth, to: w, every: 6 }], 90);
+  send({ type: 'inspect', tile: 40 * C.GRID + 30, seg: w.seg });
+  assert.ok(inspection, 'a report came back');
+  assert.equal(inspection.name, 'Avenue');
+  assert.equal(inspection.details.length, 2, 'a line for each direction');
+  const toward = inspection.details.find(d => d.startsWith('Eastbound'));
+  assert.ok(toward && /major road/.test(toward), toward);
+  assert.ok(Number(toward.match(/: (\d+) vehicles\/min/)[1]) > 10, toward);
+  send({ type: 'inspect', tile: 50 * C.GRID + 40, seg: sth.seg });
+  const side = inspection.details.find(d => d.startsWith('Northbound'));
+  assert.ok(side && /minor road/.test(side), side);
+  console.log(`  inspector: ${toward} | ${side}`);
+  send({ type: 'inspect', tile: -1 });
 });
 
 console.log(`${checks} driver checks passed; ${failures} failed`);
