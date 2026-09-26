@@ -29,7 +29,7 @@ const PIER_SPACING = 4;
  * Road bridges as solid low-poly structures: a swept slab with fascia bands, parapet walls with caps,
  * lamp posts, twin-column piers with pier caps, and retaining-wall embankments under the ramps.
  */
-function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Builder, trim: [number, number]): void {
+function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Builder, trim: [number, number], arms: RSeg[] = []): void {
   const hw = roadHalf(seg), W = hw + 0.28, len = seg.len;
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const steps = Math.max(8, Math.ceil(len / 0.35));
@@ -46,12 +46,26 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     [-W + 0.08, DECK_BOTTOM], [W - 0.08, DECK_BOTTOM], [W, DECK_BOTTOM + 0.1], [W, DECK_TOP], [-W, DECK_TOP], [-W, DECK_BOTTOM + 0.1],
   ], [SOFFIT, BAND, BAND, CONCRETE, BAND, BAND], { capColor: BAND });
 
-  // Parapet walls with a slightly wider cap, trimmed back from the junctions at either end.
+  // Parapet walls with a slightly wider cap, trimmed back where the road comes down to the ground, and
+  // cut, side by side, wherever a wall would stand on the deck of another road meeting this one up in
+  // the air: an exit peeling off keeps its outer wall, and the wall between the two opens up.
   const rail = between(trim[0], len - trim[1]);
+  const onOtherDeck = (p: SweepPoint, side: number, extra = 0): boolean => {
+    const x = p.x + OFFSET - p.tz * side * (W + extra), z = p.z + OFFSET + p.tx * side * (W + extra);
+    return arms.some(o => { const hit = Network.nearestOn(o, x, z); return hit.dist < roadHalf(o) + 0.3 && Math.abs(roadHeight(o, hit.s) - p.y) < 0.5; });
+  };
   for (const side of [-1, 1]) {
     const flip = (v: readonly [number, number][]): ProfileVertex[] => v.map(([a, u]) => [a * side, u] as const);
-    sweep.sweep(rail, flip([[W - 0.13, 0], [W, 0], [W, 0.17], [W - 0.13, 0.17]]), PARAPET);
-    sweep.sweep(rail, flip([[W - 0.155, 0.17], [W + 0.02, 0.17], [W + 0.02, 0.205], [W - 0.155, 0.205]]), CAP);
+    let run: SweepPoint[] = [];
+    const flush = (): void => {
+      if (run.length >= 2) {
+        sweep.sweep(run, flip([[W - 0.13, 0], [W, 0], [W, 0.17], [W - 0.13, 0.17]]), PARAPET);
+        sweep.sweep(run, flip([[W - 0.155, 0.17], [W + 0.02, 0.17], [W + 0.02, 0.205], [W - 0.155, 0.205]]), CAP);
+      }
+      run = [];
+    };
+    for (const p of rail) { if (onOtherDeck(p, side)) flush(); else run.push(p); }
+    flush();
   }
 
   // Stretches of the deck by height: low enough to sit on an embankment, or high on piers. Walks the
@@ -101,6 +115,9 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     const d = lampFrom + ((lampTo - lampFrom) * k) / lamps, side = k % 2 ? 1 : -1;
     Network.poseAt(seg, d, pose);
     const h = roadHeight(seg, d), rx = -pose.tz * side, rz = pose.tx * side, off = W - 0.065;
+    // No lamp where its wall is cut for another deck, nor with its arm reaching out over one.
+    const at = { x: pose.x - OFFSET, y: h, z: pose.z - OFFSET, tx: pose.tx, tz: pose.tz };
+    if (onOtherDeck(at, side) || onOtherDeck(at, side, -0.35)) continue;
     const x = pose.x - OFFSET + rx * off, z = pose.z - OFFSET + rz * off, top = h + 0.205 + 0.6;
     cols.cyl(0.028, 0.6, x, h + 0.205, z, POLE, 6);
     // Arm and lamp head reach in over the road; paths run inward, so `across` is along the road.
@@ -187,8 +204,11 @@ export class StructureLayer {
     const sweep = new SweepBuilder(), cols = new Builder(1);
     // The parapet stops short of a junction or the ground, but runs on unbroken where one deck
     // carries straight on into the next up in the air.
-    const trim = [seg.a, seg.b].map(id => { const n = net.nodes.get(id)!; return (n.level ?? 0) > 0 && net.degree(id) === 2 ? 0 : 0.9; }) as [number, number];
-    buildBridge(seg, others, sweep, cols, trim);
+    // Where the road comes down to the ground the parapet stops short; up in the air it runs to the
+    // node, cut only where it would stand on another road's deck (the arms meeting at either end).
+    const trim = [seg.a, seg.b].map(id => ((net.nodes.get(id)!.level ?? 0) > 0 ? 0 : 0.9)) as [number, number];
+    const arms = [seg.a, seg.b].flatMap(id => ((net.nodes.get(id)!.level ?? 0) > 0 ? net.segsAt(id).filter(o => o.id !== seg.id) : []));
+    buildBridge(seg, others, sweep, cols, trim, arms);
     return [sweep.build(), cols.build()].map(geometry => {
       const mesh = new THREE.Mesh(geometry, this.material);
       mesh.castShadow = true; mesh.receiveShadow = true;

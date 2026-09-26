@@ -11,7 +11,7 @@ import { entrancePlan, entrySite } from './roads/entries';
 import { T_OFFICE, T_BUS, T_STATION, T_SUBWAY, T_AIRPORT, T_TREATMENT, OFFICE_UNLOCK, ENTRY_UNLOCK, COST_ENTRY, T_FARM, T_LEISURE, LEISURE_UNLOCK } from './constants';
 import { gridPoint } from './placement';
 import { snapPoint } from './roads/snap';
-import { zoneCellsUnder, ZONE_BRUSH } from './roads/raster';
+import { zoneCellsUnder, ZONE_BRUSH, inLot } from './roads/raster';
 import type { Snapped, SnapCtx } from './roads/snap';
 import { T_CEMETERY, T_CREMATORIUM, T_POST_OFFICE, T_FLOOD_BARRIER, T_LANDMARK, T_PARKING, T_PARKING_M, T_PARKING_L } from './constants';
 import { DISTRICT_COLORS, terraformAllowed } from './extras';
@@ -95,6 +95,8 @@ export class Input {
   elevation = 0;
   /** Quarter turns applied to the next building placed, cleared when the tool changes. */
   placeRotation = 0;
+  /** Whether the player has turned the building in hand; until then a large one turns to face its road. */
+  private turnedByPlayer = false;
   onModeChange: ((m: RoadMode) => void) | null = null;
   onToast: ((msg: string) => void) | null = null;
   /** The signal editor: offered each Signal-tool click first (true if it handled it), and asked to open on a junction. */
@@ -200,6 +202,7 @@ export class Input {
     this.elevation = 0;
     this.onElevation?.(0);
     this.placeRotation = 0;
+    this.turnedByPlayer = false;
     this.onRotate?.(0);
     this.tool = t;
     this.rectMat.color.setHex(TOOL_COLOR[t]);
@@ -1159,10 +1162,10 @@ export class Input {
     } else {
       const k = SERVICE_TOOL[this.tool];
       if (k === undefined) return;
-      const t = this.tileOf(p);
-      const why = this.serviceProblem(t, k);
+      const t = this.siteAt(p, k), rot = this.rotationFor(t, k);
+      const why = this.serviceProblem(t, k, rot);
       if (why) { this.onToast?.(why); return; }
-      g.setKind(t, k, SERVICES[k].cost, k === T_PATH ? 0 : this.placeRotation);
+      g.setKind(t, k, SERVICES[k].cost, k === T_PATH ? 0 : rot);
       g.flush();
     }
   }
@@ -1170,6 +1173,7 @@ export class Input {
   /** Turn the building waiting to be placed a quarter turn clockwise. */
   rotatePlacement(): void {
     this.placeRotation = (this.placeRotation + 1) & 3;
+    this.turnedByPlayer = true;
     this.onRotate?.(this.placeRotation);
   }
 
@@ -1199,13 +1203,55 @@ export class Input {
     return n && !n.ring ? { x: n.x, z: n.z } : gridPoint(p);
   }
 
-  private serviceProblem(t: number, k: number): string | null {
+  /**
+   * Where a building goes with the pointer at p: a one-tile building snaps to the road-aligned lot under
+   * the pointer, as a zone does; anything larger, or a park piece, to the tile.
+   */
+  private siteAt(p: P, k: number): number {
+    const spec = SERVICES[k], t = this.tileOf(p), r = this.game.raster;
+    if (spec.footprint || spec.decoration) return t;
+    let best = -1, bd = Infinity;
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+      const x = Math.floor(p.x) + dx, z = Math.floor(p.z) + dz;
+      if (x < 0 || z < 0 || x >= GRID || z >= GRID) continue;
+      const i = z * GRID + x;
+      if (r.cell[i] < 0 || !inLot(r, i, p.x, p.z, 0.5)) continue;
+      const d = Math.hypot(r.lotX[i] - p.x, r.lotZ[i] - p.z);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best >= 0 ? best : t;
+  }
+
+  /**
+   * The quarter turn a building is placed at: the player's, once they have turned it; otherwise a large
+   * building turns its front (its +z side at no turn) to the road beside it, where one is.
+   */
+  private rotationFor(t: number, k: number): number {
+    if (this.turnedByPlayer || !SERVICES[k].footprint || k === T_AIRPORT) return this.placeRotation;
+    const r = this.game.raster;
+    let best = this.placeRotation, score = 0;
+    for (let rot = 0; rot < 4; rot++) {
+      const cells = footprint(t, k, rot);
+      if (!cells.length) continue;
+      const xs = cells.map(i => i % GRID), zs = cells.map(i => Math.floor(i / GRID));
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+      // The row of tiles just beyond the front, which faces +z, +x, −z, −x for turns 0 to 3.
+      const front: number[] = [];
+      if (rot === 0 || rot === 2) { const z = rot === 0 ? z1 + 1 : z0 - 1; for (let x = x0; x <= x1; x++) front.push(z * GRID + x); }
+      else { const x = rot === 1 ? x1 + 1 : x0 - 1; for (let z = z0; z <= z1; z++) front.push(z * GRID + x); }
+      const n = front.filter(i => i >= 0 && i < N_TILES && r.cover[i]).length;
+      if (n > score) { score = n; best = rot; }
+    }
+    return best;
+  }
+
+  private serviceProblem(t: number, k: number, rot = this.placeRotation): string | null {
     const g = this.game;
     const spec = SERVICES[k];
     if (g.stats.cityLevel < (spec.unlock ?? 0)) return `Unlocks at ${MILESTONES[spec.unlock!].name} (${MILESTONES[spec.unlock!].population} residents)`;
-    const cells = footprint(t, k, this.placeRotation);
+    const cells = footprint(t, k, rot);
     if (cells.some(i => g.airportClearance[i])) return 'Keep the airport runway and flight path clear';
-    if (k === T_AIRPORT && airportPlacementBlocked(t, this.placeRotation, g.kind, g.level, g.rot)) return 'Clear buildings beside the runway and along both flight paths first';
+    if (k === T_AIRPORT && airportPlacementBlocked(t, rot, g.kind, g.level, g.rot)) return 'Clear buildings beside the runway and along both flight paths first';
     if (!cells.length || cells.some(i => !g.buildable(i, spec.needsWater))) return 'Cannot build on water or roads';
     if (spec.footprint && cells.some(i => g.kind[i] !== T_EMPTY)) return 'Clear the whole building footprint first';
     if (isService(g.kind[t]) && !(spec.decoration && isDecoration(g.kind[t]))) return 'There is already a service building here';
@@ -1236,7 +1282,7 @@ export class Input {
     }
     let hx = Math.floor(p.x) + 0.5, hz = Math.floor(p.z) + 0.5;
     let hy = 0;
-    let size = 1, depth = 1;
+    let size = 1, depth = 1, turn = 0;
     let color = TOOL_COLOR[this.tool];
     let label: string | null = null;
     let ok = true;
@@ -1304,10 +1350,12 @@ export class Input {
       const k = SERVICE_TOOL[this.tool];
       if (k !== undefined) {
         const spec = SERVICES[k];
-        const tile = this.tileOf(p);
+        const tile = this.siteAt(p, k), rot = this.rotationFor(tile, k);
         if (!spec.decoration) { hx = this.game.raster.lotX[tile]; hz = this.game.raster.lotZ[tile]; }
+        // A one-tile building's outline turns with the lot it will stand in.
+        if (!spec.decoration && !spec.footprint && this.game.raster.accSeg[tile] >= 0) turn = this.game.raster.face[tile];
         if (spec.footprint) {
-          [size, depth] = footprintSize(k, this.placeRotation);
+          [size, depth] = footprintSize(k, rot);
           hx = tile % GRID + size / 2; hz = Math.floor(tile / GRID) + depth / 2;
         }
         if (spec.radius) {
@@ -1317,13 +1365,13 @@ export class Input {
         }
         if (k === T_AIRPORT) {
           const b = new MeshBuilder();
-          for (const tile of airportClearanceTiles(this.tileOf(p), this.placeRotation)) {
+          for (const tile of airportClearanceTiles(this.tileOf(p), rot)) {
             const x = tile % GRID - half, z = Math.floor(tile / GRID) - half;
             b.ribbon([x + 0.5, z, x + 0.5, z + 1], 2, 0.48, 0.08, 0xd9aa53);
           }
           this.shape.geometry.dispose(); this.shape.geometry = b.build(); this.shape.visible = true;
         }
-        const why = this.serviceProblem(this.tileOf(p), k);
+        const why = this.serviceProblem(tile, k, rot);
         ok = !why;
         if (why) color = BAD;
         label = why && why !== 'Not enough money' ? why : `$${SERVICES[k].cost.toLocaleString()}`;
@@ -1333,6 +1381,7 @@ export class Input {
     }
     mat.color.setHex(color);
     this.hover.scale.set(size, 1, depth === 1 ? size : depth);
+    this.hover.rotation.y = turn;
     this.hover.position.set(hx - half, (p.y ?? hy) + 0.095, hz - half);
     this.hover.visible = true;
     this.onCost?.(label, e.clientX, e.clientY, ok);

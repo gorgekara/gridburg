@@ -40,7 +40,14 @@ export interface Raster {
  * water, shore, hills): cells avoid them. `cells: false` skips laying cells, for callers that only
  * need to know which tiles the roads cover.
  */
-export interface RasterOptions { blocked?: Uint8Array; cells?: boolean }
+export interface RasterOptions {
+  blocked?: Uint8Array; cells?: boolean;
+  /**
+   * Blocked tiles that may still take a cell centred on themselves: those holding a one-tile service,
+   * which then stands in its road-aligned cell, turned to its road, like a zone's building.
+   */
+  own?: Uint8Array;
+}
 
 /** How many rows of zone cells a road carries on each side. */
 export const CELL_ROWS = 3;
@@ -160,7 +167,7 @@ export function rasterize(net: Network, opts: RasterOptions = {}): Raster {
     face[i] = onGrid(i) ? Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) * (Math.PI / 2) : buildingRotation(dx, dz);
   }
   const under = new Uint8Array(N_TILES);
-  const cell = opts.cells === false ? new Int8Array(N_TILES).fill(-1) : layCells(net, tapers, cover, accSeg, accS, accX, accZ, lotX, lotZ, face, under, opts.blocked);
+  const cell = opts.cells === false ? new Int8Array(N_TILES).fill(-1) : layCells(net, tapers, cover, accSeg, accS, accX, accZ, lotX, lotZ, face, under, opts.blocked, opts.own);
   return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face, cell, under };
 }
 
@@ -172,7 +179,7 @@ export function rasterize(net: Network, opts: RasterOptions = {}): Raster {
  * land on the tile centres, so grid streets lay out as they always have. A matched tile's lot, facing
  * and road access become its cell's.
  */
-function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Uint8Array, accSeg: Int32Array, accS: Float32Array, accX: Float32Array, accZ: Float32Array, lotX: Float32Array, lotZ: Float32Array, face: Float32Array, under: Uint8Array, blocked?: Uint8Array): Int8Array {
+function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Uint8Array, accSeg: Int32Array, accS: Float32Array, accX: Float32Array, accZ: Float32Array, lotX: Float32Array, lotZ: Float32Array, face: Float32Array, under: Uint8Array, blocked?: Uint8Array, own?: Uint8Array): Int8Array {
   const cell = new Int8Array(N_TILES).fill(-1);
   const segs = [...net.segs.values()].filter(s => ROAD_FRONTAGE[s.kind] !== false && !s.structure);
   const all = [...net.segs.values()];
@@ -248,29 +255,31 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
             if (onRoad(x + ax * u + ox * v, z + az * u + oz * v)) clear = false;
           }
           if (!clear) continue;
-          // The tiles the square stands over: none may be blocked (a service, water, shore, a hill).
-          const feet: number[] = [];
-          for (const [u, v] of FOOT_SAMPLES) {
-            const px = x + ax * u + ox * v, pz = z + az * u + oz * v;
-            const t = Math.floor(pz) * GRID + Math.floor(px);
-            if (blocked?.[t]) { clear = false; break; }
-            feet.push(t);
-          }
-          if (!clear || overlaps(x, z, ax, az)) continue;
           // The tile it stands on, or failing that the nearest free one next to it.
           const fx = Math.floor(x), fz = Math.floor(z);
           // On a turned lattice two cells can share a tile and another tile stays free, so a cell
           // may take a free tile a little way off; the simulation's fields are smooth at that scale.
+          // A one-tile service's own tile is taken only by the cell centred on it.
           let tile = -1, best = 1.1;
           for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
             const tx = fx + dx, tz = fz + dz;
             if (tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) continue;
             const t = tz * GRID + tx;
-            if (cover[t] || cell[t] >= 0 || blocked?.[t]) continue;
+            if (cover[t] || cell[t] >= 0 || (blocked?.[t] && !(own?.[t] && dx === 0 && dz === 0))) continue;
             const d = dx === 0 && dz === 0 ? -1 : Math.hypot(tx + 0.5 - x, tz + 0.5 - z);
             if (d < best) { best = d; tile = t; }
           }
           if (tile < 0) continue;
+          // The tiles the square stands over: none may be blocked (a service, water, shore, a hill),
+          // but for the service's own tile in its own cell.
+          const feet: number[] = [];
+          for (const [u, v] of FOOT_SAMPLES) {
+            const px = x + ax * u + ox * v, pz = z + az * u + oz * v;
+            const t = Math.floor(pz) * GRID + Math.floor(px);
+            if (blocked?.[t] && t !== tile) { clear = false; break; }
+            feet.push(t);
+          }
+          if (!clear || overlaps(x, z, ax, az)) continue;
           cell[tile] = row;
           lotX[tile] = x; lotZ[tile] = z;
           const yaw = Math.atan2(-ox, -oz);

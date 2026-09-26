@@ -1,6 +1,7 @@
 import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS, T_AIRPORT } from '../constants';
+import { footprint } from '../sites';
 import { BAY_SETBACK } from '../roads/busLanes';
 import { lotScale } from '../placement';
 import * as THREE from 'three';
@@ -189,9 +190,10 @@ export class BuildingLayer {
       const n = counts.get(kk) ?? 0;
       if (n >= mesh.instanceMatrix.count) continue;
       counts.set(kk, n + 1);
-      // A placed building faces the quarter turn it was given; a grown one faces its road.
+      // A placed building faces the quarter turn it was given; a grown one faces its road, and so does
+      // a one-tile service standing in a road-aligned cell of its own.
       let facing = k === T_PATH ? 0 : turn * Math.PI / 2;
-      if (!turn && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = raster.face[i];
+      if ((!turn || raster.cell[i] >= 0) && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = raster.face[i];
       // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
       if ((k === T_DOCKS || k === T_HYDRO || k === T_FLOOD_BARRIER) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);
@@ -206,7 +208,17 @@ export class BuildingLayer {
         const [w, d] = multi;
         const [rw, rd] = turn % 2 ? [d, w] : [w, d];
         pos.set(tx - half + (rw - 1) / 2, 0, tz - half + (rd - 1) / 2);
-        m4.compose(pos, q, one);
+        // Beside an angled road it turns the rest of the way to face it, shrunk just enough to stay
+        // inside its site, so it lines up with the road like the buildings around it.
+        const skew = k === T_AIRPORT || isDecoration(k) ? 0 : siteSkew(i, k, turn, rot, raster);
+        let scale: THREE.Vector3 = one;
+        if (skew) {
+          q.setFromAxisAngle(yAxis, facing + skew);
+          const c = Math.abs(Math.cos(skew)), sn = Math.abs(Math.sin(skew));
+          const f = Math.min(w / (w * c + d * sn), d / (w * sn + d * c));
+          scale = lotSize.set(f, 1, f);
+        }
+        m4.compose(pos, q, scale);
         m4.multiply(pivot.makeTranslation(-(w - 1) / 2, 0, -(d - 1) / 2));
       } else {
         // Turned to an angled road, a building shrinks across the ground to stay inside its cell.
@@ -245,4 +257,21 @@ export class BuildingLayer {
     }
     if (n) this.rotors.instanceMatrix.needsUpdate = true;
   }
+}
+
+/**
+ * How much further than its quarter turn a large building turns to face an angled road beside it:
+ * the angle from its front to the road, as the tile of its site nearest the road sees it; 0 beside a
+ * road on the grid, or none at all. Within ±45°, so its turned footprint keeps its tiles.
+ */
+function siteSkew(i: number, k: number, turn: number, rot: Uint8Array | undefined, raster: Raster): number {
+  let best = -1, bd = Infinity;
+  for (const t of footprint(i, k, rot?.[i] ?? 0)) {
+    if (raster.accSeg[t] < 0) continue;
+    const dd = Math.hypot(raster.accX[t] - raster.lotX[t], raster.accZ[t] - raster.lotZ[t]);
+    if (dd < bd) { bd = dd; best = t; }
+  }
+  if (best < 0) return 0;
+  const d = raster.face[best] - turn * Math.PI / 2, wrapped = Math.atan2(Math.sin(d), Math.cos(d));
+  return Math.abs(wrapped) < 0.02 || Math.abs(wrapped) > Math.PI / 4 + 1e-6 ? 0 : wrapped;
 }

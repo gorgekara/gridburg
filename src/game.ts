@@ -272,6 +272,15 @@ export class Game {
     return out;
   }
   private blockedMask: Uint8Array = new Uint8Array(0);
+  /** Tiles holding a one-tile service, which stands in a road-aligned cell of its own where one falls on it. */
+  private ownCells(): Uint8Array {
+    const out = new Uint8Array(N_TILES);
+    for (let i = 0; i < N_TILES; i++) {
+      const k = this.kind[i];
+      if (isService(k) && !isDecoration(k) && !SERVICES[k].footprint && !SERVICES[k].needsWater && this.owners[i] < 0) out[i] = 1;
+    }
+    return out;
+  }
 
   private payload(): EditPayload {
     this.owners = siteOwners(this.kind, this.rot);
@@ -280,7 +289,7 @@ export class Game {
     const blocked = this.cellBlocked();
     const moved = blocked.length !== this.blockedMask.length || blocked.some((v, i) => v !== this.blockedMask[i]);
     if (this.rasterVersion !== this.net.version || moved) {
-      this.raster = rasterize(this.net, { blocked });
+      this.raster = rasterize(this.net, { blocked, own: this.ownCells() });
       this.rasterVersion = this.net.version;
       this.blockedMask = blocked;
       for (let i = 0; i < N_TILES; i++) {

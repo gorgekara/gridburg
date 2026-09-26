@@ -382,8 +382,8 @@ export class RoadLayer {
       // opens up for the mouth.
       const mouthA = carriageway ? rampMouth(net, s, s.a) : null, mouthB = carriageway ? rampMouth(net, s, s.b) : null;
       const rampTrim = s.kind === KIND_RAMP ? trims.get(s.id) : undefined;
-      const trimA = Math.max(rampTrim?.[0] || (mouthA ? 0.2 : net.degree(s.a) >= 3 ? 1.0 : 0.2), (crossings.get(s.id)?.[0] ?? 0) + 0.23);
-      const trimB = Math.max(rampTrim?.[1] || (mouthB ? 0.2 : net.degree(s.b) >= 3 ? 1.0 : 0.2), (crossings.get(s.id)?.[1] ?? 0) + 0.23);
+      const trimA = Math.max(rampTrim?.[0] || (mouthA ? 0.2 : net.degree(s.a) >= 3 ? Math.max(1.0, shallowClear(net, s, s.a)) : 0.2), (crossings.get(s.id)?.[0] ?? 0) + 0.23);
+      const trimB = Math.max(rampTrim?.[1] || (mouthB ? 0.2 : net.degree(s.b) >= 3 ? Math.max(1.0, shallowClear(net, s, s.b)) : 0.2), (crossings.get(s.id)?.[1] ?? 0) + 0.23);
       const from = trimA;
       const to = s.len - trimB;
       if (to - from < 0.5) continue;
@@ -727,6 +727,23 @@ export class RoadLayer {
  * They stop short of junctions and open for ramp mouths; bridges have their own parapets.
  */
 /** How far along `seg` from `node` the other roads meeting there, and the kerbed corners between them, reach. */
+/**
+ * Where another arm leaves a junction at a shallow angle to this one (a road splitting in two, an exit
+ * peeling off), how far along this one the two carriageways still overlap, so its lines stop there
+ * instead of running across the other's; 0 where every arm meets it at a proper angle.
+ */
+function shallowClear(net: Network, seg: RSeg, node: number): number {
+  const p = { x: 0, z: 0, tx: 0, tz: 0 };
+  const dir = (s: RSeg): [number, number] => { Network.poseAt(s, s.a === node ? 0 : s.len, p); const k = s.a === node ? 1 : -1; return [p.tx * k, p.tz * k]; };
+  const [tx, tz] = dir(seg);
+  const shallow = net.segsAt(node).some(o => {
+    if (o === seg) return false;
+    const [ox, oz] = dir(o);
+    return tx * ox + tz * oz > 0 && Math.abs(tx * oz - tz * ox) < 0.57;
+  });
+  return shallow ? junctionClear(net, seg, node) : 0;
+}
+
 function junctionClear(net: Network, seg: RSeg, node: number): number {
   const p = { x: 0, z: 0, tx: 0, tz: 0 };
   const dir = (s: RSeg): [number, number] => { Network.poseAt(s, s.a === node ? 0 : s.len, p); const k = s.a === node ? 1 : -1; return [p.tx * k, p.tz * k]; };

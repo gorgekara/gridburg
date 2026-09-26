@@ -475,6 +475,11 @@ The city autosaves in your browser, and **Share** copies a link that contains th
     a driver held up for a while reroutes from the next junction.
   - Buses stand at their far stop, then drive on and come back round the block rather than turning
     in the road.
+- **Buildings line up with the road:**
+  - A one-tile service (a clinic, a fire station, a bus stop) stands full size in a road-aligned lot,
+    turned to its road, as a zone's building does. Placing one snaps to the lot under the pointer.
+  - A larger one turns its front to the road it is placed beside, unless you turn it yourself.
+    Beside an angled road it turns the rest of the way, shrunk just enough to stay inside its site.
 - **Buses and bus lanes** (`src/roads/busLanes.ts`, drawn by `src/render/busLanes.ts`):
   - **Road → Bus lanes** gives a road's kerb lanes to buses, trolleybuses, taxis with a fare and
     emergency calls, on any road with two lanes or more each way. The lane is surfaced red with BUS

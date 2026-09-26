@@ -198,5 +198,25 @@ test('a service beside zoned cells pushes them aside, and unzoning reaches zones
   if (legacy !== undefined) assert.ok(zoneCellsUnder(g.raster, g.raster.lotX[legacy], g.raster.lotZ[legacy], 0.7, i => g.kind[i] === T_RES).includes(legacy));
 });
 
+test('a one-tile service by an angled road stands full size in its own road-aligned cell, and cells still keep off it', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 20 }, { x: 50, z: 42 }], KIND_ROAD);
+  const plain = rasterize(net);
+  // A tile with a cell centred on it: that is where a service placed on the lot would go.
+  const tile = cells(plain).find(i => Math.floor(plain.lotX[i]) === i % C.GRID && Math.floor(plain.lotZ[i]) === Math.floor(i / C.GRID) && plain.cell[i] === 0);
+  assert.ok(tile !== undefined);
+  const blocked = new Uint8Array(C.N_TILES), own = new Uint8Array(C.N_TILES);
+  blocked[tile] = 1; own[tile] = 1;
+  const without = rasterize(net, { blocked }), withOwn = rasterize(net, { blocked, own });
+  assert.equal(without.cell[tile], -1, 'a blocked service tile gets no cell');
+  assert.ok(withOwn.cell[tile] >= 0, 'with its own cell allowed it gets one');
+  assert.ok(!cardinal(withOwn.face[tile]), 'turned to the angled road');
+  assert.equal(lotScaleAt(withOwn, tile), 1, 'at full size');
+  // Every other cell still keeps off the service's tile, and none overlaps its building.
+  const ids = cells(withOwn);
+  noOverlaps(withOwn, ids);
+  offRoads(net, withOwn, ids);
+});
+
 console.log(`${checks} lot checks passed; ${failures} failed`);
 if (failures) process.exit(1);
