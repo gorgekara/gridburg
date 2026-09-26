@@ -291,7 +291,9 @@ interface Car {
   /** Making way for a callout behind it: until when, and for which one. */
   yieldUntil: number; yieldTo: number;
   /** Stuck past its patience: it no longer waits on bookings, gaps or give-way, only on bodies in the way. */
-  insistent: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  insistent: boolean;
+  /** A callout's view of the road ahead: an oncoming car close enough that it must not pull out. */
+  oncoming?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
   lane: number; nextLane: number; prevLane: number;
   /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
@@ -349,6 +351,8 @@ const BLUE_WARNING = 3;
 const MAKE_WAY = 4;
 /** How far a car pulls over towards the kerb, and how far a callout eases out to pass it. */
 const PULL_OVER = 0.15, PASS_OUT = 0.14;
+/** A callout only pulls out to pass while no oncoming car is within this far ahead. */
+const ONCOMING_CLEAR = 3;
 /** Past this share of its patience a stuck car no longer waits on bookings, gaps or give-way. */
 const INSIST_SHARE = 2 / 3;
 /** A circulating car this soon from a ring node is too close to pull out in front of. */
@@ -1239,14 +1243,15 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
   // Once admitted to a junction box the movement it was checked for is fixed.
   if (c.chT >= 0 || simTime < c.lcCool || c.vehicle === 8 || c.working || c.box >= 0) return;
   const leg = c.legs[c.li];
-  if (ringArc[leg.seg] || !c.legs[c.li + 1]) return;
+  const makingWay = c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
+  if (ringArc[leg.seg] || (!c.legs[c.li + 1] && !makingWay)) return;
   const n = legLanes(leg);
   if (n < 2) return;
   const want = wantedLanes(c);
   const ok = (l: number): boolean => l >= 0 && l < n && laneOpen(leg, l, c.p) && (!want || want.includes(l));
   const closing = c.p > laneToTab[(leg.seg * 2 + (leg.fwd ? 0 : 1)) * MAXL + c.lane] - LC_DIST * 2.5;
   let target = -1, mandatory = false;
-  if (c.yieldUntil > simTime && slots[c.yieldTo]?.mission) {
+  if (makingWay) {
     // A callout behind: move out of its lane, whichever side has room.
     mandatory = true;
     for (const l of [c.lane - 1, c.lane + 1]) if (target < 0 && l >= 0 && l < n && laneOpen(leg, l, c.p) && gapIn(c, slot, l)) target = l;
@@ -1483,6 +1488,18 @@ function stepCars(dt: number): void {
     }
     if (m.box >= 0) blueAt[m.box] = 1;
     if (m.lock >= 0) blueAt[m.lock] = 1;
+    // Coming the other way on a two-way road: while the callout is out passing, oncoming cars close
+    // ahead of it pull over too; and it only goes out at all while the road ahead is clear of them.
+    const seg = segs[leg.seg], along = leg.fwd ? m.p : seg.len - m.p;
+    m.oncoming = false;
+    if (!seg.oneway) for (let l = 0; l < Math.max(1, dirLanes[leg.seg * 2 + (leg.fwd ? 1 : 0)]); l++) for (const o of laneCars[laneKey(leg.seg, !leg.fwd, l)]) {
+      const oc = slots[o];
+      if (!oc || onCallout(oc)) continue;
+      const theirs = leg.fwd ? seg.len - oc.p : oc.p, ahead = leg.fwd ? theirs - along : along - theirs;
+      if (ahead < -0.5 || ahead > ONCOMING_CLEAR) continue;
+      m.oncoming = true;
+      if (m.side < -0.05) { oc.yieldUntil = simTime + 0.5; oc.yieldTo = s; }
+    }
     // Ahead of it, and just passed by it: a car stays pulled over until the callout is a cell clear,
     // and the callout stays out until then too, or the two would slide back into each other.
     for (const o of laneCars[laneKey(leg.seg, leg.fwd, m.lane)]) {
@@ -1511,12 +1528,15 @@ function stepCars(dt: number): void {
       const driver = driverFor(c.vehicle);
       // A callout passes cars that have pulled over for it: it follows the first one that has not.
       // (A callout marks itself with yieldUntil while it is beside a car that pulled over for it.)
-      const passing = onCallout(c) && (firmP !== leaderP || c.yieldUntil > simTime);
+      // It only pulls out to pass while the oncoming lane ahead is clear (or it is already out).
+      const passing = onCallout(c) && (firmP !== leaderP || c.yieldUntil > simTime) && (!c.oncoming || c.side < -0.05);
       if (passing) { leaderP = firmP; leaderLength = firmLength; leaderStuck = firmStuck; leaderV = firmV; leaderSlot = firmSlot; }
       const yielding = !onCallout(c) && c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
-      const pullingOver = yielding && legLanes(leg) < 2;
+      // On one lane, or in the kerb lane of several, it pulls over; in another lane it moves across.
+      const pullingOver = yielding && (legLanes(leg) < 2 || c.lane === 0);
       // Easing towards the kerb to make way, out to pass one that has, or back to the lane's centre.
       c.sideGoal = pullingOver ? PULL_OVER : passing ? -PASS_OUT : 0;
+      const sideBefore = c.side;
       c.side += Math.max(-0.4 * dt, Math.min(0.4 * dt, c.sideGoal - c.side));
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
       c.time += dt;
@@ -1597,7 +1617,10 @@ function stepCars(dt: number): void {
         const flowing = laneTailV[nextKey] > 0.5;
         // Behind a moving car, the room it will have made by the time this one gets there counts: judged
         // by how fast it is really going, so a queue crawling out of the box does not draw more cars in.
-        const lead = flowing ? Math.min(legEnd - c.p, laneTailV[nextKey] * (legEnd - c.p) / Math.max(c.v, 0.5)) : 0;
+        // Joining a roundabout needs the room there now: the arm's lane meets the ring part-way along
+        // the arc, so a car let in on room still to come ends up alongside the one it follows, locked.
+        const joiningRing = nodeType[node] === J_RING && !ringArc[leg.seg];
+        const lead = flowing && !joiningRing ? Math.min(legEnd - c.p, laneTailV[nextKey] * (legEnd - c.p) / Math.max(c.v, 0.5)) : 0;
         let canGo = laneTail[nextKey] - next.p0 + lead > Math.min(Math.max(clear, nodeType[node] === J_PLAIN || nodeType[node] === J_RING || flowing ? 0 : out), span1 * 0.9);
         const type = nodeType[node];
         // Blue lights: a callout goes through on red, and everyone else waits for it.
@@ -1647,7 +1670,7 @@ function stepCars(dt: number): void {
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
           if (ringClaim[node] === slot && !canGo) ringRoomless[node] = simTime;
         }
-        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && !c.insistent && ringApproaching(node)) canGo = false;
+        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
         // Blue lights coming: nobody else goes into the junction.
         if (blueAt[node] && !onCallout(c) && c.lock !== node && c.box !== node && blueFrom[node] !== leg.seg * 2 + (leg.fwd ? 0 : 1)) canGo = false;
         if (type === J_RING && c.lock !== node) {
@@ -1668,14 +1691,13 @@ function stepCars(dt: number): void {
             // traffic flows as a stream instead of stopping at every node for the car ahead to clear it.
             // The lock stays with circulating traffic, so no one pulls out in between.
             const through = ringArc[leg.seg] && holder.li > holder.lockLi && front;
-            // Out of patience, a car takes the lock from one that is not using it.
-            const idle = c.insistent && front && holder.v < 0.05 && holder.stuck > 5;
-            if (stale || yielding || through || idle) { holder.lock = -1; lockOwner[node] = -1; }
+            if (stale || yielding || through) { holder.lock = -1; lockOwner[node] = -1; }
           }
           // A booking holds back traffic going on round the circle. Traffic leaving it here only makes room,
           // so while the booker is itself waiting for room on the ring it goes: held behind that booking it
           // would lock the ring. Otherwise it waits its turn too, so a stream leaving cannot starve the arm.
-          const booked = !c.insistent && ringClaim[node] >= 0 && ringClaim[node] !== slot && (!!ringArc[next.seg] || ringRoomless[node] < simTime - 0.25);
+          // (Insistence stops at a roundabout: forcing onto a full ring is what locks it solid.)
+          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot && (!!ringArc[next.seg] || ringRoomless[node] < simTime - 0.25);
           if (canGo && front && !booked && c.p < stopP - reach) {
             pending = true;
             canGo = false;
@@ -1790,7 +1812,8 @@ function stepCars(dt: number): void {
         const aside = vehiclePose(c, c.li, c.p);
         if (trafficSpace.canMove(slot, aside)) trafficSpace.set(slot, aside);
       }
-      if (!trafficSpace.canMove(slot, target)) newP = c.p;
+      // Refused: it stays where it was, sideways too, so what is drawn is what is checked.
+      if (!trafficSpace.canMove(slot, target)) { newP = c.p; c.side = sideBefore; }
       else trafficSpace.set(slot, target);
       const moved = newP - c.p;
       // Stopped short by something the model did not see (another car's body): it has that speed only.
@@ -1838,7 +1861,7 @@ function stepCars(dt: number): void {
           c.li++;
           c.p = nextP;
           c.stuck = 0;
-          c.prevLane = c.lane; c.lane = c.nextLane; c.nextLane = -1; c.chT = -1; c.laneWait = 0;
+          c.prevLane = c.lane; c.lane = c.nextLane; c.nextLane = -1; c.chT = -1; c.laneWait = 0; c.side = 0;
           trafficSpace.set(slot, target);
           if (c.p < laneTail[nextKey]) { laneTail[nextKey] = c.p; laneTailV[nextKey] = c.v; }
           if (c.p < laneFresh[nextKey]) laneFresh[nextKey] = c.p;

@@ -299,11 +299,8 @@ test('car lamps: brake lamps while braking, indicators blink, beacons swap, noth
   frame.set([1, 0, 0, 1], 0); // a car
   frame.set([3, 0, 0, 5], 4); // a police car
   const flags = new Uint8Array(C.MAX_CARS);
-  const lamp = (type, name, slot = 0) => {
-    const m = layer.mesh.children.find(o => o.isInstancedMesh && o.name === name && o.geometry === layer.signals[type - 1].find(x => x.name === name).geometry);
-    const mat = new THREE.Matrix4(); m.getMatrixAt(slot, mat);
-    return new THREE.Vector3().setFromMatrixScale(mat).x > 0.01;
-  };
+  // Only lit lamps are drawn, so with one vehicle of a type a lamp is lit when its mesh draws one.
+  const lamp = (type, name) => layer.signals[type - 1].find(x => x.name === name).count > 0;
   flags[0] = Msg.CAR_BRAKE | Msg.CAR_RIGHT; flags[1] = Msg.CAR_BLUE;
   layer.update(frame, frame, 1, undefined, undefined, undefined, undefined, undefined, flags, 0);
   assert.ok(lamp(1, 'brake') && lamp(1, 'right') && !lamp(1, 'left'));

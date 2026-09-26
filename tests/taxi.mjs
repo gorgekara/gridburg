@@ -27,6 +27,7 @@ assert.ok(cab.attributes.position.count > car.attributes.position.count, 'taxi r
 cab.dispose(); car.dispose();
 const layer = new CarLayer(), frame = new Float32Array(C.MAX_CARS * 4);
 frame.set([20, 20, 0, 9]); layer.update(frame, frame, 1);
+// The body and its night lamps, each instanced; its brake and indicator lamps draw only when lit.
 assert.equal(layer.mesh.children.filter(m => m.count > 0).length, 2, 'taxi body and lamps render with instancing');
 
 const { demoCity } = await import('../src/demo.ts');

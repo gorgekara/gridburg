@@ -324,7 +324,7 @@ export const vehicleColor = (type: number, id: number): number => {
 const matrix = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3();
 const pitchQ = new THREE.Quaternion(), pitchAxis = new THREE.Vector3(1, 0, 0);
 const one = new THREE.Vector3(1, 1, 1), axis = new THREE.Vector3(0, 1, 0), color = new THREE.Color();
-const half = new THREE.Vector3(0.5, 0.5, 0.5), hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+const half = new THREE.Vector3(0.5, 0.5, 0.5);
 export class CarLayer {
   readonly mesh = new THREE.Group();
   private detail: VisualDetail = 1;
@@ -372,6 +372,8 @@ export class CarLayer {
     const counts = new Array(10).fill(0);
     // Indicators blink at 1.5 Hz; beacons swap blue and red three times a second.
     const blink = Math.floor(time * 3) % 2 === 0, beacon = Math.floor(time * 6) % 2 === 0;
+    const lit = new Map<THREE.InstancedMesh, number>();
+    for (const lamps of this.signals) for (const lamp of lamps) lit.set(lamp, 0);
     for (let i = 0; i < MAX_CARS; i++) {
       const o = i * 4, type = Math.round(next[o + 3]);
       if (type < 1 || type > 10) continue;
@@ -391,7 +393,8 @@ export class CarLayer {
       for (const lamp of this.signals[type - 1]) {
         const on = lamp.name === 'brake' ? f & CAR_BRAKE : lamp.name === 'left' ? f & CAR_LEFT && blink : lamp.name === 'right' ? f & CAR_RIGHT && blink
           : lamp.name === 'blue' ? f & CAR_BLUE && beacon : f & CAR_BLUE && !beacon;
-        lamp.setMatrixAt(slot, on ? matrix : hidden);
+        // Only lit lamps are drawn: most cars show none, so most lamp meshes draw next to nothing.
+        if (on) lamp.setMatrixAt(lit.get(lamp)!, (lit.set(lamp, lit.get(lamp)! + 1), matrix));
       }
       mesh.setMatrixAt(slot, matrix);
       if (type <= 2) mesh.setColorAt(slot, color.setHex(vehicleColor(type, nextIds?.[i] ?? i)));
@@ -402,7 +405,7 @@ export class CarLayer {
       mesh.count = counts[i]; mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.lights[i].count = counts[i]; this.lights[i].instanceMatrix.needsUpdate = true;
-      for (const lamp of this.signals[i]) { lamp.count = counts[i]; lamp.instanceMatrix.needsUpdate = true; }
+      for (const lamp of this.signals[i]) { lamp.count = lit.get(lamp)!; lamp.instanceMatrix.needsUpdate = true; }
     });
   }
 }

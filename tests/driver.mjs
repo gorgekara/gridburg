@@ -368,7 +368,7 @@ test('brake lights come on braking for a red and stay on standing; the right ind
 });
 
 /** Time for a car from the back of a queue at a red light to reach the far side, and how many queued cars it passed. */
-function throughQueue(callout) {
+function throughQueue(callout, oncoming = false) {
   Math.random = C.mulberry32(32);
   const net = new N.Network();
   net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_ROAD);
@@ -384,6 +384,8 @@ function throughQueue(callout) {
     clock(); t += 1 / C.SIM_HZ;
     const trying = test < 0 && i >= 13 * C.SIM_HZ;
     const trips = i < 12 * C.SIM_HZ && i % 45 === 0 ? [{ a: w.seg, as: w.far, b: e.seg, bs: e.far }] : trying ? [{ a: w.seg, as: w.far, b: e.seg, bs: e.far, vehicle: callout ? 5 : 1, callout }] : [];
+    // Traffic the other way, which a callout passing on the wrong side must not meet head on.
+    if (oncoming && i % 40 === 0) trips.push({ a: e.seg, as: e.far, b: w.seg, bs: w.far });
     const before = new Set(ask([], true).detail.map(c => c.uid));
     const r = ask(trips, true);
     const fresh = r.detail.find(c => !before.has(c.uid));
@@ -391,7 +393,7 @@ function throughQueue(callout) {
     for (const c of r.detail) if (c.seg === e.seg && !arrive.has(c.uid)) arrive.set(c.uid, t);
   }
   const mine = arrive.get(test);
-  return { time: mine - start, passed: [...arrive.entries()].filter(([uid, at]) => uid !== test && uid < test && at > mine).length };
+  return { time: mine - start, passed: [...arrive.entries()].filter(([uid, at]) => uid !== test && uid < test && at > mine).length, gaveUp: ask([]).gaveUp };
 }
 test('traffic makes way for blue lights: a callout gets through a queue on a single-lane street', () => {
   const plain = throughQueue(false), blue = throughQueue(true);
@@ -399,6 +401,10 @@ test('traffic makes way for blue lights: a callout gets through a queue on a sin
   assert.ok(blue.time < plain.time, 'sooner than a car that waits its turn');
   assert.ok(blue.passed >= 4, 'it passed the cars that pulled over for it');
   assert.equal(plain.passed, 0);
+  // With oncoming traffic it waits for a clear stretch before pulling out, and nobody locks head on.
+  const busy = throughQueue(true, true);
+  console.log(`  with oncoming traffic: a callout ${busy.time.toFixed(1)} s, passing ${busy.passed} cars, ${busy.gaveUp} gave up in all`);
+  assert.ok(Number.isFinite(busy.time) && busy.time < 30, 'it gets through');
 });
 
 console.log(`${checks} driver checks passed; ${failures} failed`);

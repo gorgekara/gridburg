@@ -9,7 +9,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 }});
 const { Network, HALF_WIDTH } = await import('../src/roads/network.ts');
-const { crossingApproaches } = await import('../src/render/crossings.ts');
+const { crossingApproaches } = await import('../src/roads/crossings.ts');
 const { RoadLayer } = await import('../src/render/roads.ts');
 const { RiverLayer } = await import('../src/render/river.ts');
 const { generateTerrain } = await import('../src/terrain.ts');
@@ -72,7 +72,7 @@ roads.mesh.geometry.addEventListener('dispose', () => { disposed = true; });
 net.version++;
 roads.rebuild(net, terrain);
 assert.ok(disposed, 'road rebuild disposes previous geometry');
-assert.equal(roads.group.children.length, 9, 'fixed mesh count independent of network size (road, lamps, stop signs, island details, four entry signs...)');
+assert.equal(roads.group.children.length, 13, 'fixed mesh count independent of network size (road, lamps, stop signs, yield signs, chevrons, overhead heads and arms, island details, four entry signs...)');
 const river = new RiverLayer();
 river.rebuild(terrain);
 const water = river.group.children.find(m => m.material?.opacity === 0.84);
