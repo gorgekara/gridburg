@@ -258,21 +258,41 @@ export class Game {
     return true;
   }
 
+  /** Tiles no zone cell may stand over: anything built that is not a zone, water, shore, hills, airport clearance. */
+  private cellBlocked(): Uint8Array {
+    const out = new Uint8Array(N_TILES);
+    for (let i = 0; i < N_TILES; i++) {
+      const k = this.owners[i] >= 0 ? this.kind[this.owners[i]] : this.kind[i];
+      if ((k && !isZone(k)) || this.terrain.water[i] || this.terrain.shore[i] || this.airportClearance[i] || this.parkPathLotMask[i] || hillLevel(this.extras.terraform[i]) > 0) out[i] = 1;
+    }
+    return out;
+  }
+  private blockedMask: Uint8Array = new Uint8Array(0);
+
   private payload(): EditPayload {
-    if (this.rasterVersion !== this.net.version) {
-      this.raster = rasterize(this.net);
+    this.owners = siteOwners(this.kind, this.rot);
+    this.airportClearance = airportClearanceMask(this.kind, this.rot);
+    // Cells step round services and off water, so the layout is redone when either changes too.
+    const blocked = this.cellBlocked();
+    const moved = blocked.length !== this.blockedMask.length || blocked.some((v, i) => v !== this.blockedMask[i]);
+    if (this.rasterVersion !== this.net.version || moved) {
+      this.raster = rasterize(this.net, { blocked });
       this.rasterVersion = this.net.version;
-      // Roads pave over whatever was on the tile.
+      this.blockedMask = blocked;
       for (let i = 0; i < N_TILES; i++) {
-        if ((isZone(this.kind[i]) || isService(this.kind[i])) && footprint(i, this.kind[i], this.rot[i]).some(t => this.raster.cover[t])) {
+        const k = this.kind[i];
+        // Roads pave over whatever was on the tile, and a zone whose old lot a cell now stands over
+        // gives way to it, as it would to a road.
+        const paved = (isZone(k) || isService(k)) && footprint(i, k, this.rot[i]).some(t => this.raster.cover[t]);
+        if (paved || (isZone(k) && this.raster.cell[i] < 0 && this.raster.under[i])) {
           this.kind[i] = 0;
           this.level[i] = 0;
           this.rot[i] = 0;
         }
       }
+      this.owners = siteOwners(this.kind, this.rot);
+      this.airportClearance = airportClearanceMask(this.kind, this.rot);
     }
-    this.owners = siteOwners(this.kind, this.rot);
-    this.airportClearance = airportClearanceMask(this.kind, this.rot);
     this.syncParkPaths();
     const net = this.net.toPlain();
     this.segOrder = net.segs.map((s) => s[0]);

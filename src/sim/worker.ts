@@ -214,6 +214,7 @@ let sigCheck = 0;
 const sigAdmits: Record<string, number> = {};
 let lockOwner = new Int32Array(0); // per node: the slot holding the junction box, or -1
 let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
+let ringRoomless = new Float32Array(0); // per roundabout node: when its booker was last held for want of room on the ring
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
 /** Per slip road: which side of the carriageway it leaves from / joins on (±1, 0 for none) and how long the merge runs. */
 let rampStart = new Int8Array(0), rampEnd = new Int8Array(0), rampMouth = new Float32Array(0), rampLane = new Float32Array(0);
@@ -355,6 +356,7 @@ function applyNetwork(p: EditPayload): void {
   });
   lockOwner = new Int32Array(nodeIds.length).fill(-1);
   ringClaim = new Int32Array(nodeIds.length).fill(-1);
+  ringRoomless = new Float32Array(nodeIds.length).fill(-1e9);
   ringArc = new Uint8Array(newSegs.length);
   ringIn = nodeIds.map(() => []);
   newSegs.forEach((s, i) => {
@@ -1459,6 +1461,7 @@ function stepCars(dt: number): void {
           // it stuck behind them for ever, and the booking with it: the front car takes the turn over.
           else if (entering && booked && bl && leaderP === Infinity && ringClaim[node] !== slot && bl.seg === leg.seg && bl.fwd === leg.fwd && booked.p < c.p) ringClaim[node] = slot;
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
+          if (ringClaim[node] === slot && !canGo) ringRoomless[node] = simTime;
         }
         if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
         if (type === J_RING && c.lock !== node) {
@@ -1477,9 +1480,10 @@ function stepCars(dt: number): void {
             const yielding = ringArc[leg.seg] && !ringArc[hLeg.seg] && owner !== ringClaim[node] && holder.p <= holder.lockStop + 1e-3;
             if (stale || yielding) { holder.lock = -1; lockOwner[node] = -1; }
           }
-          // A booking holds back traffic going on round the circle, not traffic leaving it here, which only
-          // makes room; held behind a booker that is itself waiting for room, it would lock the ring.
-          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot && !!ringArc[next.seg];
+          // A booking holds back traffic going on round the circle. Traffic leaving it here only makes room,
+          // so while the booker is itself waiting for room on the ring it goes: held behind that booking it
+          // would lock the ring. Otherwise it waits its turn too, so a stream leaving cannot starve the arm.
+          const booked = ringClaim[node] >= 0 && ringClaim[node] !== slot && (!!ringArc[next.seg] || ringRoomless[node] < simTime - 0.25);
           if (canGo && front && !booked && c.p >= stopP - 0.3 && lockOwner[node] < 0) {
             // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
             // before the previous one is released, and overwriting leaked that lock forever.

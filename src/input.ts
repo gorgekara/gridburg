@@ -549,6 +549,8 @@ export class Input {
   };
 
   private cancel(): void {
+    // A zone stroke already painted stays painted: send it, as letting go would have.
+    if (this.dragging && this.zoneChanged && this.isZoneTool()) { this.zoneChanged = 0; this.game.spend(0); this.game.flush(); }
     this.editing = null;
     this.dragging = false;
     this.chain = [];
@@ -993,7 +995,9 @@ export class Input {
 
   private paintZoneAt(x: number, z: number): void {
     const g = this.game, zk = ZONE_TOOL[this.tool]!;
-    for (const t of zoneCellsUnder(g.raster, x, z, ZONE_BRUSH[this.brushSize])) {
+    // Unzoning also reaches zones left on old per-tile lots, which have no cell to paint.
+    const under = zoneCellsUnder(g.raster, x, z, ZONE_BRUSH[this.brushSize], this.zoneErase ? (i) => isZone(g.kind[i]) : undefined);
+    for (const t of under) {
       if (this.painted.has(t)) continue;
       this.painted.add(t);
       if (this.zoneErase) {
@@ -1009,7 +1013,7 @@ export class Input {
   /** Show the cells under the brush, and those painted so far this stroke, turned to their roads. */
   private previewZone(p: P, e: { clientX: number; clientY: number }): void {
     const g = this.game, r = g.raster, half = GRID / 2, zk = ZONE_TOOL[this.tool]!;
-    const under = zoneCellsUnder(r, p.x, p.z, ZONE_BRUSH[this.brushSize]);
+    const under = zoneCellsUnder(r, p.x, p.z, ZONE_BRUSH[this.brushSize], this.zoneErase ? (i) => isZone(g.kind[i]) : undefined);
     const show = new Set([...this.painted, ...under]);
     let n = 0, cost = 0;
     for (const t of show) {

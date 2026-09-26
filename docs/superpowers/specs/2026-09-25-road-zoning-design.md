@@ -30,9 +30,15 @@ are then drawn in the cell.
   dropped if it overlaps a cell already kept (an oriented box test).
   - The order of kept cells: row 0 first, then by segment and position. So a row nearer a road wins,
     and the inside of a curve thins out instead of overlapping.
+- **Blocked ground:** the game passes a mask of tiles no cell may stand over: services and anything
+  else built that is not a zone, water, shore, hills, airport clearance. A cell touching one is dropped,
+  and the layout is redone whenever the mask changes (placing a school moves the cells beside it).
 - **Matching cells to tiles:** each kept cell is matched to the tile containing its centre, if that
-  tile is free, not covered and not water. Otherwise it goes to the nearest free neighbour tile whose
-  centre is within 0.8. A cell that finds no tile is dropped. A tile holds at most one cell.
+  tile is free, not covered and not blocked. Otherwise it goes to the nearest free neighbour tile whose
+  centre is within 1.1 (0.8 left a 45° road's back row too thin). A cell that finds no tile is dropped.
+  A tile holds at most one cell.
+- **Old lots under cells:** a zoned tile without a cell whose ground a cell now stands over is unzoned,
+  as a road paving over it would. The Shift brush also reaches zones without a cell.
 - **What a matched tile gets:**
   - `lotX/lotZ` = the cell centre
   - `face` = the cell's orientation (towards the road)

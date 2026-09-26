@@ -137,7 +137,7 @@ function shapeProblem(game: EditHost, net: Network, segs: RSeg[]): string | null
 
 /** How many standing buildings the edited network would pave over. */
 function paved(game: EditHost, net: Network): number {
-  const cover = rasterize(net).cover;
+  const cover = rasterize(net, { cells: false }).cover;
   let n = 0;
   for (let i = 0; i < N_TILES; i++) {
     if (!cover[i] || game.raster.cover[i]) continue;

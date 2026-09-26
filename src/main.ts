@@ -1,5 +1,6 @@
 import { ParkPathLayer } from './render/parkPaths';
 import { roadHalf } from './roads/lanes';
+import { inLot } from './roads/raster';
 import { TrolleyWireLayer } from './render/trolleyWires';
 import { BikeLaneLayer } from './render/bikeLanes';
 import * as THREE from 'three';
@@ -325,9 +326,9 @@ function blockedAt(x: number, z: number, y = 0): boolean {
   const deck = y > 0.12 || game.terrain.water[cz * GRID + cx] ? deckAt(x, z, y) : null;
   if (deck !== null && deck > 0.12) return false;
   if (game.terrain.water[cz * GRID + cx]) return deck === null;
-  // A grown building stands on its lot, which may have shifted up to most of a cell towards its road,
-  // so look at the neighbouring tiles as well as the one underfoot.
-  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+  // A grown building stands on its lot, which may be a turned zone cell up to a cell and a half from
+  // its tile, so look two tiles round as well as at the one underfoot.
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
     const nx = cx + dx, nz = cz + dz;
     if (nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) continue;
     const i = nz * GRID + nx, k = game.kind[i];
@@ -336,7 +337,7 @@ function blockedAt(x: number, z: number, y = 0): boolean {
       if (!game.level[i]) continue;
       // The whole lot is private: the house is pushed out to its street front and fenced gardens fill
       // the rest. Lots stop 0.08 short of each other, which leaves the alleys between them walkable.
-      if (Math.abs(tx - game.raster.lotX[i]) < 0.42 && Math.abs(tz - game.raster.lotZ[i]) < 0.42) return true;
+      if (inLot(game.raster, i, tx, tz, 0.42)) return true;
       continue;
     }
     if (OPEN_GROUND.has(k)) continue;

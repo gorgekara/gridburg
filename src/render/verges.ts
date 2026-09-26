@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRID, N_TILES, idx, inBounds, isZone, tileHash } from '../constants';
 import type { Network } from '../roads/network';
-import type { Raster } from '../roads/raster';
+import { inLot, type Raster } from '../roads/raster';
 import type { Terrain } from '../terrain';
 import { Kit, stream, pick, FLOWERS, BUSH } from './streetDetail';
 import { siteOwners } from '../sites';
@@ -76,13 +76,13 @@ function garden(kit: Kit, i: number, kind: Uint8Array, level: Uint8Array, raster
   // Whether a spot (map coordinates) is free: off the roads and pavements, and out of the lots next door.
   const free = (px: number, pz: number, r = 0.06): boolean => {
     if (net.onRoad(px, pz, -1, 0.12 + r)) return false;
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
       const nx = x + dx, nz = z + dz;
       if ((!dx && !dz) || !inBounds(nx, nz)) continue;
       const n = idx(nx, nz);
       if (!kind[n] || (isZone(kind[n]) && !level[n])) continue;
-      const lx = isZone(kind[n]) ? raster.lotX[n] : nx + 0.5, lz = isZone(kind[n]) ? raster.lotZ[n] : nz + 0.5;
-      if (Math.abs(px - lx) < 0.5 + r && Math.abs(pz - lz) < 0.5 + r) return false;
+      // A zone's building stands in its lot, turned with it; anything else fills its own square.
+      if (isZone(kind[n]) ? inLot(raster, n, px, pz, 0.5 + r) : Math.abs(px - nx - 0.5) < 0.5 + r && Math.abs(pz - nz - 0.5) < 0.5 + r) return false;
     }
     return true;
   };

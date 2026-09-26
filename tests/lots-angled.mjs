@@ -143,5 +143,60 @@ test('a zone brush dragged along a street picks up just the cells it passes over
   assert.equal(zoneCellsUnder(r, 5, 70, 2.8).length, 0, 'no cells away from roads');
 });
 
+test('cells step round blocked tiles, and record the tiles they stand over', () => {
+  const net = new Network();
+  const t = Math.tan(Math.PI / 6);
+  net.insertPath([{ x: 10, z: 10 }, { x: 50, z: 10 + 40 * t }], KIND_ROAD);
+  const blocked = new Uint8Array(C.N_TILES);
+  for (let z = 20; z < 26; z++) for (let x = 25; x < 31; x++) blocked[z * C.GRID + x] = 1;
+  const free = rasterize(net), r = rasterize(net, { blocked });
+  assert.ok(cells(r).length < cells(free).length, 'some cells gave way');
+  for (const i of cells(r)) {
+    assert.equal(blocked[i], 0);
+    for (const [x, z] of footprintOf(r, i)) {
+      const inset = [r.lotX[i] + (x - r.lotX[i]) * 0.94, r.lotZ[i] + (z - r.lotZ[i]) * 0.94];
+      assert.equal(blocked[Math.floor(inset[1]) * C.GRID + Math.floor(inset[0])], 0, `cell ${i} reaches a blocked tile`);
+    }
+  }
+  // Some tile next to a turned cell lies partly under it.
+  assert.ok(r.under.some(v => v));
+  assert.equal(rasterize(net, { cells: false }).cell.every(v => v < 0), true);
+});
+
+const { demoCity } = await import('../src/demo.ts');
+test('the demo city\'s cells never overlap', () => {
+  const net = Network.fromPlain(demoCity(true).net);
+  const r = rasterize(net);
+  noOverlaps(r, cells(r));
+});
+
+globalThis.Worker = class { postMessage() {} };
+const { Game } = await import('../src/game.ts');
+const { T_RES, T_SCHOOL } = C;
+test('a service beside zoned cells pushes them aside, and unzoning reaches zones without a cell', () => {
+  const g = new Game();
+  g.terrain.water.fill(0); g.terrain.shore.fill(0);
+  const t = Math.tan(Math.PI / 6);
+  g.net.insertPath([{ x: 20, z: 30 }, { x: 60, z: 30 + 40 * t }], KIND_ROAD);
+  g.flush();
+  const zoned = cells(g.raster).filter(i => g.buildable(i));
+  for (const i of zoned) g.setKind(i, T_RES, 0);
+  g.flush();
+  // A school on a tile some zoned cell stands partly over.
+  const site = [...Array(C.N_TILES).keys()].find(i => g.raster.under[i] && g.buildable(i) && g.kind[i] === 0);
+  assert.ok(site !== undefined);
+  assert.ok(g.setKind(site, T_SCHOOL, 0));
+  g.flush();
+  for (const i of cells(g.raster)) for (const [x, z] of footprintOf(g.raster, i)) {
+    const inset = [g.raster.lotX[i] + (x - g.raster.lotX[i]) * 0.94, g.raster.lotZ[i] + (z - g.raster.lotZ[i]) * 0.94];
+    assert.notEqual(Math.floor(inset[1]) * C.GRID + Math.floor(inset[0]), site, `cell ${i} still over the school`);
+  }
+  // No zone is left on an old lot that a cell now stands over.
+  for (let i = 0; i < C.N_TILES; i++) if (g.kind[i] === T_RES && g.raster.cell[i] < 0) assert.equal(g.raster.under[i], 0);
+  // The erase brush also finds zones that have no cell.
+  const legacy = [...Array(C.N_TILES).keys()].find(i => g.kind[i] === T_RES && g.raster.cell[i] < 0);
+  if (legacy !== undefined) assert.ok(zoneCellsUnder(g.raster, g.raster.lotX[legacy], g.raster.lotZ[legacy], 0.7, i => g.kind[i] === T_RES).includes(legacy));
+});
+
 console.log(`${checks} lot checks passed; ${failures} failed`);
 if (failures) process.exit(1);

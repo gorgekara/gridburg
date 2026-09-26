@@ -31,7 +31,16 @@ export interface Raster {
    * with no cell. A cell is a road-aligned square the tile's building stands in at full size.
    */
   cell: Int8Array;
+  /** 1 on a tile some other tile's cell stands partly over: its own old lot there would overlap that building. */
+  under: Uint8Array;
 }
+
+/**
+ * What else rasterizing takes into account. `blocked` marks tiles no zone cell may touch (services,
+ * water, shore, hills): cells avoid them. `cells: false` skips laying cells, for callers that only
+ * need to know which tiles the roads cover.
+ */
+export interface RasterOptions { blocked?: Uint8Array; cells?: boolean }
 
 /** How many rows of zone cells a road carries on each side. */
 export const CELL_ROWS = 3;
@@ -41,7 +50,7 @@ const KERB_GAP = 0.09;
 export const lotScaleAt = (r: Raster, i: number): number => r.cell[i] >= 0 ? 1 : lotScale(r.face[i]);
 
 /** Project the road network onto the tile grid: which tiles are paved and which can reach a road. */
-export function rasterize(net: Network): Raster {
+export function rasterize(net: Network, opts: RasterOptions = {}): Raster {
   const cover = new Uint8Array(N_TILES);
   const accSeg = new Int32Array(N_TILES).fill(-1);
   const accS = new Float32Array(N_TILES);
@@ -150,8 +159,9 @@ export function rasterize(net: Network): Raster {
     const dx = accX[i] - lotX[i], dz = accZ[i] - lotZ[i];
     face[i] = onGrid(i) ? Math.round(Math.atan2(dx, dz) / (Math.PI / 2)) * (Math.PI / 2) : buildingRotation(dx, dz);
   }
-  const cell = layCells(net, tapers, cover, accSeg, accS, accX, accZ, lotX, lotZ, face);
-  return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face, cell };
+  const under = new Uint8Array(N_TILES);
+  const cell = opts.cells === false ? new Int8Array(N_TILES).fill(-1) : layCells(net, tapers, cover, accSeg, accS, accX, accZ, lotX, lotZ, face, under, opts.blocked);
+  return { cover, accSeg, accS, accX, accZ, lotX, lotZ, face, cell, under };
 }
 
 /**
@@ -162,7 +172,7 @@ export function rasterize(net: Network): Raster {
  * land on the tile centres, so grid streets lay out as they always have. A matched tile's lot, facing
  * and road access become its cell's.
  */
-function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Uint8Array, accSeg: Int32Array, accS: Float32Array, accX: Float32Array, accZ: Float32Array, lotX: Float32Array, lotZ: Float32Array, face: Float32Array): Int8Array {
+function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Uint8Array, accSeg: Int32Array, accS: Float32Array, accX: Float32Array, accZ: Float32Array, lotX: Float32Array, lotZ: Float32Array, face: Float32Array, under: Uint8Array, blocked?: Uint8Array): Int8Array {
   const cell = new Int8Array(N_TILES).fill(-1);
   const segs = [...net.segs.values()].filter(s => ROAD_FRONTAGE[s.kind] !== false && !s.structure);
   const all = [...net.segs.values()];
@@ -195,7 +205,8 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
   const onRoad = (x: number, z: number): boolean => clearance(x, z) < 0;
   // Two unit squares, given their centres and along-road directions, overlap by more than a hair.
   const overlaps = (x: number, z: number, ax: number, az: number): boolean => {
-    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+    // Turned squares can overlap with centres up to √2 apart, which may be two buckets away.
+    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
       for (const k of buckets.get(bucketOf(x + dx, z + dz)) ?? []) {
         const o = kept[k];
         if (Math.hypot(o.x - x, o.z - z) >= 1.42) continue;
@@ -236,6 +247,15 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
             if (!clear || gap > 0.72) break;
             if (onRoad(x + ax * u + ox * v, z + az * u + oz * v)) clear = false;
           }
+          if (!clear) continue;
+          // The tiles the square stands over: none may be blocked (a service, water, shore, a hill).
+          const feet: number[] = [];
+          for (const [u, v] of FOOT_SAMPLES) {
+            const px = x + ax * u + ox * v, pz = z + az * u + oz * v;
+            const t = Math.floor(pz) * GRID + Math.floor(px);
+            if (blocked?.[t]) { clear = false; break; }
+            feet.push(t);
+          }
           if (!clear || overlaps(x, z, ax, az)) continue;
           // The tile it stands on, or failing that the nearest free one next to it.
           const fx = Math.floor(x), fz = Math.floor(z);
@@ -246,7 +266,7 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
             const tx = fx + dx, tz = fz + dz;
             if (tx < 0 || tz < 0 || tx >= GRID || tz >= GRID) continue;
             const t = tz * GRID + tx;
-            if (cover[t] || cell[t] >= 0) continue;
+            if (cover[t] || cell[t] >= 0 || blocked?.[t]) continue;
             const d = dx === 0 && dz === 0 ? -1 : Math.hypot(tx + 0.5 - x, tz + 0.5 - z);
             if (d < best) { best = d; tile = t; }
           }
@@ -256,6 +276,7 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
           const yaw = Math.atan2(-ox, -oz);
           face[tile] = onGridRoad ? Math.round(yaw / (Math.PI / 2)) * (Math.PI / 2) : yaw;
           accSeg[tile] = seg.id; accS[tile] = s; accX[tile] = pose.x; accZ[tile] = pose.z;
+          for (const t of feet) if (t !== tile) under[t] = 1;
           const k = kept.push({ x, z, ax, az }) - 1;
           const key = bucketOf(x, z);
           const list = buckets.get(key);
@@ -267,17 +288,33 @@ function layCells(net: Network, tapers: ReturnType<typeof laneTapers>, cover: Ui
   return cell;
 }
 
+/**
+ * Whether a point is inside a tile's lot, `half` out from its centre in the lot's own turned frame
+ * (scaled with the lot, so a shrunk lot on an angled road is judged by its real size).
+ */
+export function inLot(r: Raster, i: number, px: number, pz: number, half: number): boolean {
+  const dx = px - r.lotX[i], dz = pz - r.lotZ[i], c = Math.cos(r.face[i]), s = Math.sin(r.face[i]);
+  const h = half * lotScaleAt(r, i);
+  return Math.abs(dx * c - dz * s) < h && Math.abs(dx * s + dz * c) < h;
+}
+
+/** Points of a unit cell, in its own frame (along, out), that tell which tiles it stands over. */
+const FOOT_SAMPLES = [[0, 0], [0.47, 0.47], [0.47, -0.47], [-0.47, 0.47], [-0.47, -0.47], [0.47, 0], [-0.47, 0], [0, 0.47], [0, -0.47]];
+
 /** Brush radii for painting zone cells, for the three brush sizes. */
 export const ZONE_BRUSH = [0.7, 1.6, 2.8];
 
-/** The tiles whose zone cells lie within `radius` of (x, z): what a zone brush there paints. */
-export function zoneCellsUnder(r: Raster, x: number, z: number, radius: number): number[] {
+/**
+ * The tiles whose zone cells lie within `radius` of (x, z): what a zone brush there paints. Tiles
+ * without a cell are included too where `also` accepts them, judged by their lot.
+ */
+export function zoneCellsUnder(r: Raster, x: number, z: number, radius: number, also?: (i: number) => boolean): number[] {
   const out: number[] = [];
   const x0 = Math.max(0, Math.floor(x - radius - 1)), x1 = Math.min(GRID - 1, Math.floor(x + radius + 1));
   const z0 = Math.max(0, Math.floor(z - radius - 1)), z1 = Math.min(GRID - 1, Math.floor(z + radius + 1));
   for (let tz = z0; tz <= z1; tz++) for (let tx = x0; tx <= x1; tx++) {
     const i = tz * GRID + tx;
-    if (r.cell[i] >= 0 && Math.hypot(r.lotX[i] - x, r.lotZ[i] - z) < radius) out.push(i);
+    if ((r.cell[i] >= 0 || also?.(i)) && Math.hypot(r.lotX[i] - x, r.lotZ[i] - z) < radius) out.push(i);
   }
   return out;
 }

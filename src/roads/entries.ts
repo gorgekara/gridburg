@@ -83,7 +83,7 @@ export function entrancePlan(net: Network, terrain: Terrain, kind: Uint8Array, x
   if (!node) return 'No room for an entrance';
   node.entry = true; node.fixed = true;
   ensureApproaches(copy);
-  const before = rasterize(net), after = rasterize(copy), owners = siteOwners(kind);
+  const before = rasterize(net, { cells: false }), after = rasterize(copy, { cells: false }), owners = siteOwners(kind);
   for (let i = 0; i < kind.length; i++) if (after.cover[i] && !before.cover[i] && (terrain.water[i] || kind[i] || owners[i] >= 0)) return 'The entrance needs a clear, dry seven-cell approach';
   copy.version++;
   return copy;
