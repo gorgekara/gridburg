@@ -61,6 +61,21 @@ export function laneCentre(net: Network, s: RSeg, fwd: boolean, i: number): numb
   return edge - shoulder(s.kind) - (i + 0.5) * LANE_WIDTH[s.kind];
 }
 
+/**
+ * Whether a road can have bus lanes: some direction of it has two lanes or more, so the kerb lane can
+ * be given to buses and still leave a lane for everyone else. Not on narrow lanes, ramps or rings.
+ */
+export function canAddBusLane(s: RSeg, net: Network): boolean {
+  if (s.kind === KIND_LANE || s.kind === KIND_RAMP || ringArc(net, s)) return false;
+  return lanesFor(net, s, true) >= 2 || lanesFor(net, s, false) >= 2;
+}
+
+/** Whether lane 0 of a direction of this road is a bus lane. */
+export const busLaneOn = (net: Network, s: RSeg, fwd: boolean): boolean => !!s.bus && canAddBusLane(s, net) && lanesFor(net, s, fwd) >= 2;
+
+/** Bus lanes are paint: priced per cell of road. */
+export const busLaneCost = (s: RSeg): number => Math.ceil(s.len * 10);
+
 /** Whether the Add-lane tool may widen or narrow this road. */
 export function canAddLanes(s: RSeg, net: Network): boolean {
   return s.kind !== KIND_LANE && !s.fixed && !ringArc(net, s);

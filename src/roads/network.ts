@@ -1,5 +1,5 @@
 import { GRID } from '../constants';
-import { canAddLanes, laneLimits, clampLanes, roadHalf } from './lanes';
+import { canAddLanes, laneLimits, clampLanes, roadHalf, canAddBusLane } from './lanes';
 import { renameSeg, flipSeg, clonePlan } from './signals';
 import { levelY, structureFor, isLegacySpan, isFlat, roadHeight } from './structures';
 import type { SignalPlan } from './signals';
@@ -82,6 +82,8 @@ export interface RSeg {
   fixed: boolean;
   calm: boolean; // traffic calming: slower, but collisions are rarer
   bike?: boolean; // curbside bicycle tracks within the asphalt; absent in older cities
+  /** The kerb lane of each direction with two lanes or more is kept for buses; absent means not. */
+  bus?: boolean;
   /** Lanes added (or, negative, taken away) right and left of the centre line seen a→b; absent means none. */
   addR?: number;
   addL?: number;
@@ -396,7 +398,7 @@ export class Network {
     this.removeSegKeepNodes(segId);
     const left = this.addSeg(s.a, node.id, l.cx, l.cz, s.kind, s.oneway, s.fixed, 0.05);
     const right = this.addSeg(node.id, s.b, r.cx, r.cz, s.kind, s.oneway, s.fixed, 0.05);
-    for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; copyLanes(s, child); }
+    for (const child of [left, right]) if (child) { child.bike = !!s.bike; child.calm = s.calm; copyLanes(s, child); if (s.bus) child.bus = true; }
     // A signal at either end keeps its plan: the piece that now meets it takes over its movements.
     const atA = this.nodes.get(s.a)?.signal, atB = this.nodes.get(s.b)?.signal;
     if (atA && left) renameSeg(atA, segId, left.id);
@@ -676,6 +678,7 @@ export class Network {
     seg.kind = kind;
     clampLanes(seg);
     if (!canAddBikeLane(seg, this)) seg.bike = false;
+    if (!canAddBusLane(seg, this)) delete seg.bus;
     this.version++;
     return [target];
   }
@@ -698,6 +701,7 @@ export class Network {
     const target = r.whole || !isFlat(s) ? id : this.isolate(id, r.s0, r.s1);
     const seg = this.segs.get(target)!;
     if (next) seg[key] = next; else delete seg[key];
+    if (seg.bus && !canAddBusLane(seg, this)) delete seg.bus;
     this.version++;
     return [target];
   }
@@ -734,6 +738,7 @@ export class Network {
       if (plan && (from.a === n || from.b === n)) renameSeg(plan, from.id, s.id);
     }
     s.bike = !!from.bike && canAddBikeLane(s, this);
+    if (from.bus && canAddBusLane(s, this)) s.bus = true; else delete s.bus;
   }
 
   /** Drop nodes an edit left with nothing attached, and signals on what is no longer a junction. */
@@ -881,7 +886,7 @@ export class Network {
       // Kind keeps its original low bit, so a street or avenue reads the same in older saves;
       // the extra kinds set bit 5 as well. Bit 6 stores bike tracks in the existing byte;
       // old saves leave it clear, and structure bits 3–4 remain unchanged.
-      const row = [s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0) | ((s.kind & 4) << 6)];
+      const row = [s.id, s.a, s.b, s.cx, s.cz, (s.kind & 1) | (s.oneway ? 2 : 0) | (s.fixed ? 4 : 0) | ((s.structure ?? 0) << 3) | ((s.kind & 2) << 4) | (s.bike && canAddBikeLane(s, this) ? 64 : 0) | (s.calm ? 128 : 0) | ((s.kind & 4) << 6) | (s.bus && canAddBusLane(s, this) ? 512 : 0)];
       // Added lanes ride along as a seventh number, only where there are any.
       if (s.addR || s.addL) row.push(packLanes(s.addR ?? 0, s.addL ?? 0));
       segs.push(row);
@@ -901,7 +906,7 @@ export class Network {
     for (const [id, a, b, cx, cz, f, lanes] of p.segs) {
       if (!net.nodes.has(a) || !net.nodes.has(b)) continue;
       const s = {
-        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2) | ((f >> 6) & 4), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64),
+        id, a, b, cx, cz, structure: ((f >> 3) & 3) <= 2 ? (f >> 3) & 3 : 0, kind: (f & 1) | ((f >> 4) & 2) | ((f >> 6) & 4), oneway: !!(f & 2), fixed: !!(f & 4), calm: !!(f & 128), bike: !!(f & 64), ...(f & 512 ? { bus: true } : {}),
         n: 0, pts: new Float32Array(0), cum: new Float32Array(0), len: 0, minX: 0, maxX: 0, minZ: 0, maxZ: 0,
       } as RSeg;
       if (lanes !== undefined) {
@@ -914,7 +919,7 @@ export class Network {
       net.adj.get(a)!.push(id);
       net.adj.get(b)!.push(id);
     }
-    for (const s of net.segs.values()) if (!canAddBikeLane(s, net)) s.bike = false;
+    for (const s of net.segs.values()) { if (!canAddBikeLane(s, net)) s.bike = false; if (s.bus && !canAddBusLane(s, net)) delete s.bus; }
     for (const [id, plan] of p.signals ?? []) { const n = net.nodes.get(id); if (n) n.signal = clonePlan(plan); }
     net.nextId = p.nextId;
     return net;

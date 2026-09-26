@@ -4,6 +4,8 @@ import { GRID, N_TILES, T_BUS, tileHash } from '../constants';
 import { KIND_AVENUE, isMotorway } from '../roads/network';
 import { Network } from '../roads/network';
 import { roadHeight } from '../roads/structures';
+import { BAY_LENGTH, BAY_TAPER } from '../roads/busLanes';
+import type { BayView } from './busLanes';
 import { Builder } from './buildingGeo';
 import { sample } from './pedestrians';
 
@@ -94,7 +96,7 @@ export class StreetFurnitureLayer {
 
   setVisible(on: boolean): void { this.group.visible = on; }
 
-  rebuild(net: Network, kind: Uint8Array, raster: { accSeg: Int32Array; accX: Float32Array; accZ: Float32Array }): void {
+  rebuild(net: Network, kind: Uint8Array, raster: { accSeg: Int32Array; accX: Float32Array; accZ: Float32Array }, bays: readonly BayView[] = []): void {
     let stops = '';
     for (let i = 0; i < N_TILES; i++) if (kind[i] === T_BUS) stops += i + ',';
     if (net === this.net && net.version === this.version && stops === this.stops) return;
@@ -118,6 +120,8 @@ export class StreetFurnitureLayer {
           const at = sample(seg, s);
           const x = at.x - at.tz * off * side - half, z = at.z + at.tx * off * side - half;
           if (net.onRoad(at.x - at.tz * off * side, at.z + at.tx * off * side, seg.id)) continue;
+          // Nothing on the kerb where a lay-by has taken it.
+          if (bays.some(b => !b.inLane && b.seg === seg.id && b.side === side && Math.abs(b.s - s) < BAY_LENGTH / 2 + BAY_TAPER + 0.2)) continue;
           // Turn each piece to face the road: its +z towards the centre line.
           const facing = Math.atan2(at.tz * side, -at.tx * side);
           put(MIX[Math.floor(h * 1000) % MIX.length], x, CURB_TOP, z, facing);
@@ -132,7 +136,10 @@ export class StreetFurnitureLayer {
       if (!seg) continue;
       // On the stop's side of its street, sliding along it away from a junction until the kerb is
       // clear of every other road, or no shelter at all.
-      const back = roadHalf(seg) + 0.08, at = Network.nearestOn(seg, raster.accX[i], raster.accZ[i]).s;
+      const at = Network.nearestOn(seg, raster.accX[i], raster.accZ[i]).s;
+      // Behind the lay-by's back kerb, if the stop has one.
+      const bay = bays.find(b => !b.inLane && b.seg === seg.id && Math.abs(b.s - at) < 0.05);
+      const back = (bay ? bay.outer + 0.06 : roadHalf(seg)) + 0.08;
       for (const shift of [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]) {
         const s = at + shift;
         if (s < 0.2 || s > seg.len - 0.2) continue;

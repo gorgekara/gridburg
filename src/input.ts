@@ -1,5 +1,5 @@
 import { PARK_PATH_HALF, PARK_PATH_COST } from './parkPaths';
-import { sideHalf, canAddLanes, clampLanes, roadHalf } from './roads/lanes';
+import { sideHalf, canAddLanes, clampLanes, roadHalf, canAddBusLane, busLaneCost } from './roads/lanes';
 import { airportPlacementBlocked, airportClearanceTiles } from './airports';
 import { T_PATH, T_POND, T_PARK_SHOP, T_TREE, T_FLOWERS, T_BENCH, T_FOUNTAIN, T_PLAZA, T_LAWN, T_TROLLEY, T_TAXI, isDecoration } from './constants';
 import { canAddBikeLane, bikeLaneCost } from './roads/network';
@@ -39,7 +39,7 @@ import type { Game } from './game';
 
 export type Tool =
   | 'none' | 'inspect'
-  | 'taxi' | 'bikelane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
+  | 'taxi' | 'bikelane' | 'buslane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade' | 'edit' | 'cut' | 'addlane'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
@@ -52,7 +52,7 @@ export type Tool =
 export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
-  taxi: 0xe9bb43, bikelane: 0x58b58d, trolley: 0x72b58d, parkpath: 0xd0be98, pond: 0x5199a5, parkshop: 0xd8c49b, tree: 0x4c7b49, flowers: 0xc7667d, bench: 0xa27e53, fountain: 0x73b3be, plaza: 0xb7b3a6, lawn: 0x749858,
+  taxi: 0xe9bb43, bikelane: 0x58b58d, buslane: 0xc0584a, trolley: 0x72b58d, parkpath: 0xd0be98, pond: 0x5199a5, parkshop: 0xd8c49b, tree: 0x4c7b49, flowers: 0xc7667d, bench: 0xa27e53, fountain: 0x73b3be, plaza: 0xb7b3a6, lawn: 0x749858,
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
@@ -325,7 +325,7 @@ export class Input {
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (!this.raycaster.ray.intersectPlane(this.plane, this.hit)) return null;
     if (side) this.reach = side.distanceTo(this.hit) / 0.5;
-    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'edit', 'cut', 'addlane', 'light', 'stopsign'].includes(this.tool)) {
+    if (this.roadTarget && ['upgrade', 'oneway', 'bikelane', 'buslane', 'edit', 'cut', 'addlane', 'light', 'stopsign'].includes(this.tool)) {
       const hits = this.raycaster.intersectObject(this.roadTarget);
       if (hits.length) return { x: hits[0].point.x + GRID / 2, z: hits[0].point.z + GRID / 2, y: hits[0].point.y };
     }
@@ -1081,6 +1081,7 @@ export class Input {
       h.seg.kind = next;
       clampLanes(h.seg);
       if (!canAddBikeLane(h.seg, net)) h.seg.bike = false;
+      if (h.seg.bus && !canAddBusLane(h.seg, net)) delete h.seg.bus;
       net.version++;
       g.spend(cost);
       g.flush();
@@ -1115,6 +1116,14 @@ export class Input {
       const cost = h.seg.bike ? 0 : bikeLaneCost(h.seg);
       if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
       h.seg.bike = !h.seg.bike;
+      net.version++;
+      g.spend(cost); g.flush();
+    } else if (this.tool === 'buslane') {
+      const h = this.roadHit(p, 0.9);
+      if (!h || h.seg.fixed || (!h.seg.bus && !canAddBusLane(h.seg, net))) { this.onToast?.('Bus lanes need a road with two lanes or more each way (add a lane first), away from roundabouts'); return; }
+      const cost = h.seg.bus ? 0 : busLaneCost(h.seg);
+      if (!g.canAfford(cost)) { this.onToast?.('Not enough money'); return; }
+      if (h.seg.bus) delete h.seg.bus; else h.seg.bus = true;
       net.version++;
       g.spend(cost); g.flush();
     } else if (this.tool === 'calm') {
@@ -1263,7 +1272,7 @@ export class Input {
         label = net.editable(h.seg) ? 'Drag to bend this road' : 'This road keeps its shape';
         if (!net.editable(h.seg)) { color = BAD; ok = false; }
       } else { size = 0.5; label = 'Grab a point or a road'; }
-    } else if (['oneway', 'upgrade', 'calm', 'bikelane', 'cut', 'addlane'].includes(this.tool)) {
+    } else if (['oneway', 'upgrade', 'calm', 'bikelane', 'buslane', 'cut', 'addlane'].includes(this.tool)) {
       const h = this.roadHit(p, 0.9);
       if (h && !h.seg.fixed) {
         hx = h.x; hz = h.z; size = 0.8;
@@ -1276,6 +1285,11 @@ export class Input {
         } else if (this.tool === 'bikelane') {
           ok = !!h.seg.bike || (canAddBikeLane(h.seg, this.game.net) && this.game.canAfford(bikeLaneCost(h.seg)));
           label = h.seg.bike ? 'Remove bike lanes' : !canAddBikeLane(h.seg, this.game.net) ? 'Needs a surface street or avenue' : `$${bikeLaneCost(h.seg).toLocaleString()} · Bike lanes`;
+          if (!ok) color = BAD;
+        } else if (this.tool === 'buslane') {
+          const can = canAddBusLane(h.seg, this.game.net);
+          ok = !!h.seg.bus || (can && this.game.canAfford(busLaneCost(h.seg)));
+          label = h.seg.bus ? 'Remove bus lanes' : !can ? 'Needs two lanes or more each way' : `$${busLaneCost(h.seg).toLocaleString()} · Bus lanes`;
           if (!ok) color = BAD;
         } else if (this.tool === 'calm') {
           label = isMotorway(h.seg.kind) ? 'Expressways and ramps cannot be calmed'

@@ -466,7 +466,17 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   - Destinations are mostly local (a simple gravity model).
   - Drivers judge roads a little differently, so they spread over routes that cost about the same, and
     a driver held up for a while reroutes from the next junction.
-  - Buses stand at their far stop before the run back.
+  - Buses stand at their far stop, then drive on and come back round the block rather than turning
+    in the road.
+- **Buses and bus lanes** (`src/roads/busLanes.ts`, drawn by `src/render/busLanes.ts`):
+  - **Road → Bus lanes** gives a road's kerb lanes to buses, trolleybuses, taxis with a fare and
+    emergency calls, on any road with two lanes or more each way. The lane is surfaced red with BUS
+    painted in it and a solid line beside it. It ends before each junction with a broken line, where
+    other traffic moves over to turn kerbside; everyone else keeps out of it, and a bus keeps to it.
+  - A bus calls at every stop along its route on its kerb side, not only at its far stop.
+  - Each stop has a lay-by: the bus pulls into it, out of the traffic lane, and cars pass it while it
+    stands. When it signals to pull out, the first driver behind who can stop in comfort lets it out.
+    On a bus lane the stop is a painted stand in the lane instead.
 - **Built like real roads:**
   - Every two-way road into a roundabout has a splitter island, and the central island a truck apron.
   - Two-way avenues have a raised, planted median that stops short of each junction for its turn bay.

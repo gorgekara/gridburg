@@ -3,6 +3,7 @@ import { roadHalf } from './roads/lanes';
 import { inLot } from './roads/raster';
 import { TrolleyWireLayer } from './render/trolleyWires';
 import { BikeLaneLayer } from './render/bikeLanes';
+import { BusLaneLayer } from './render/busLanes';
 import * as THREE from 'three';
 import { StructureLayer } from './render/structures';
 import { LandscapeLayer } from './render/landscape';
@@ -87,6 +88,8 @@ const parkPaths = new ParkPathLayer();
 scene.add(parkPaths.group);
 const bikeLanes = new BikeLaneLayer();
 scene.add(bikeLanes.group);
+const busLanes = new BusLaneLayer();
+scene.add(busLanes.group);
 const landscape = new LandscapeLayer();
 const streetlights = new StreetlightLayer();
 const river = new RiverLayer();
@@ -554,12 +557,13 @@ game.onEdit = () => {
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   roads.rebuild(game.net, game.terrain);
   bikeLanes.rebuild(game.net);
+  busLanes.rebuild(game.net, game.kind, game.raster);
   structures.rebuild(game.net);
   landscape.develop(game.kind, game.raster, game.net);
   streetlights.rebuild(game.net);
   refreshRelief();
   pedestrians.rebuild(game.net);
-  furniture.rebuild(game.net, game.kind, game.raster);
+  furniture.rebuild(game.net, game.kind, game.raster, busLanes.bays);
   parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot);
   cyclists.rebuild(game.net);
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
@@ -778,7 +782,7 @@ input.onSignalClick = (p) => {
   input.onToolChange = (t) => { onTool?.(t); if (t !== 'light') closeSignal(); };
 }
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 /** How far the nearest fire engine or police car is from the camera: what the siren fades with. */

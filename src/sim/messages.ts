@@ -108,7 +108,7 @@ export type MainToWorker =
   | { type: 'loan'; action: 'take' | 'repay' }
   | { type: 'inspect'; tile: number; /** A road to inspect instead, by segment id. */ seg?: number }
   /** Tests only: start these trips (by segment id and distance along it) and report traffic counters. */
-  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number; callout?: boolean; loop?: boolean }[]; watch?: number[]; detail?: boolean; walkRate?: number };
+  | { type: 'probe'; trips?: { a: number; as: number; b: number; bs: number; vehicle?: number; callout?: boolean; loop?: boolean }[]; watch?: number[]; detail?: boolean; walkRate?: number; /** Bus stops for probe buses to call at: segment id, arc length, side (+1 right of a→b). */ stops?: { a: number; as: number; side: number }[]; /** Scales the city's trips, for a test that needs a less crowded city. */ trafficScale?: number };
 
 export type WorkerToMain =
   | { type: 'notice'; message: string }

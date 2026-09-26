@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { sideHalf, roadHalf } from '../roads/lanes';
-import { GRID, N_TILES, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
+import { GRID, N_TILES, T_BUS, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
 import { lotScaleAt } from '../roads/raster';
@@ -69,7 +69,7 @@ export class ParkedCarLayer {
   rebuild(net: Network, kind: Uint8Array, level: Uint8Array, raster?: Raster, rot?: Uint8Array): void {
     let built = 0;
     for (let i = 0; i < N_TILES; i++) if (level[i] || isParking(kind[i])) built = (built * 31 + i * 4 + level[i] + kind[i] * 7 + (rot?.[i] ?? 0) * 3) >>> 0;
-    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike).length}:${raster ? 1 : 0}`;
+    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike || x.bus).length}:${raster ? 1 : 0}`;
     if (signature === this.signature) return;
     this.signature = signature;
     this.byTile.clear();
@@ -139,8 +139,8 @@ export class ParkedCarLayer {
     for (const seg of net.segs.values()) {
       // Streets and avenues only: a lane is too narrow, and nobody parks on an expressway, a bridge or in a tunnel.
       if (seg.structure || (seg.kind !== KIND_ROAD && seg.kind !== KIND_AVENUE)) continue;
-      // Nor on a roundabout, nor over a kerbside bike track.
-      if (seg.bike || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
+      // Nor on a roundabout, nor over a kerbside bike track, nor on a road with bus lanes.
+      if (seg.bike || seg.bus || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
       const offOf = (side: number): number => sideHalf(seg, side) + PARK_INSET;
       // Stay back from each end by more than the widest road crossing there.
       const clear = (node: number): number => CLEAR + Math.max(0, ...net.segsAt(node).filter(o => o.id !== seg.id).map(o => roadHalf(o)));
@@ -160,6 +160,8 @@ export class ParkedCarLayer {
           if (lx < 0 || lz < 0 || lx >= GRID || lz >= GRID) continue;
           const lot = lz * GRID + lx;
           if (!isZone(kind[lot]) || !level[lot] || kind[lot] === T_FARM) continue;
+          // Not in a bus stop's lay-by, which runs along the kerb either side of the stop.
+          if ([-1.4, -0.7, 0.7, 1.4].some(d => { const q = sample(seg, Math.max(0, Math.min(seg.len, s + d))); const tx = Math.floor(q.x - q.tz * side * (off + 0.6)), tz = Math.floor(q.z + q.tx * side * (off + 0.6)); return tx >= 0 && tz >= 0 && tx < GRID && tz < GRID && kind[tz * GRID + tx] === T_BUS; })) continue;
           const type = h > 0.9 ? 2 : 1, m = type - 1;
           if (counts[m] >= CAP) continue;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;

@@ -541,7 +541,7 @@ test('drivers spread over two routes that cost about the same, and routes still 
   assert.equal(broken, 0);
 });
 
-test('a bus pulls in at its far stop and stands there before the run back', () => {
+test('a bus stands at its far stop, then drives on and comes back round rather than turning in the road', () => {
   Math.random = C.mulberry32(52);
   const net = new N.Network();
   net.insertPath([{ x: 10, z: 40 }, { x: 60, z: 40 }], N.KIND_ROAD);
@@ -553,12 +553,151 @@ test('a bus pulls in at its far stop and stands there before the run back', () =
     clock();
     const r = ask([], true), bus = r.detail[0];
     if (!bus) break;
-    if (bus.fwd) { maxP = Math.max(maxP, bus.p); if (bus.v < 0.01 && bus.p > 39) stood += 1 / C.SIM_HZ; }
+    if (bus.fwd) { maxP = Math.max(maxP, bus.p); if (bus.v < 0.01 && Math.abs(bus.p - 40) < 0.1) stood += 1 / C.SIM_HZ; }
     else back = true;
   }
-  assert.ok(Math.abs(maxP - 40) < 0.1, `stopped at ${maxP}`);
+  // On to the dead end, where it turns round, and not round in the middle of the road at the stop.
+  assert.ok(maxP > 45, `went on to ${maxP.toFixed(1)}`);
   assert.ok(stood >= 2.5, `stood ${stood.toFixed(1)} s`);
   assert.ok(back, 'and then drove back');
+});
+
+test('a bus calls at stops on its kerb side, standing in the lay-by while traffic passes it', () => {
+  Math.random = C.mulberry32(53);
+  const net = new N.Network();
+  net.insertPath([{ x: 10, z: 40 }, { x: 60, z: 40 }], N.KIND_ROAD);
+  load(net);
+  const sg = [...net.segs.values()][0];
+  // One stop on the right going out (a→b), one on the right coming back.
+  send({ type: 'probe', stops: [{ a: sg.id, as: 20, side: 1 }, { a: sg.id, as: 30, side: -1 }] });
+  ask([{ a: sg.id, as: 2, b: sg.id, bs: 45, vehicle: 4, loop: true }]);
+  let busUid = -1, stoodOut = 0, stoodBack = 0, maxSide = 0, passed = new Set(), hard = 0, t = 0, next = 0.3, done = false;
+  const lastV = new Map(), behind = new Set();
+  for (let i = 0; i < 90 * C.SIM_HZ && !done; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trips = t >= next && t < 40 ? [{ a: sg.id, as: 1, b: sg.id, bs: 47 }] : [];
+    if (trips.length) next += 1.4;
+    const r = ask(trips, true);
+    if (busUid < 0) busUid = r.detail.find(c => c.vehicle === 4)?.uid ?? -1;
+    const bus = r.detail.find(c => c.uid === busUid);
+    if (!bus && busUid >= 0 && t > 5) done = true;
+    for (const c of r.detail) {
+      const before = lastV.get(c.uid);
+      if (before !== undefined && (before - c.v) * C.SIM_HZ > D.MAX_BRAKE + 0.5) hard++;
+      lastV.set(c.uid, c.v);
+      if (!bus || c.uid === busUid || !c.fwd || !bus.fwd) continue;
+      // Cars that were behind the standing bus and are now past it.
+      if (bus.v < 0.01 && Math.abs(bus.p - 20) < 0.1) {
+        if (c.p < bus.p - 0.5) behind.add(c.uid);
+        else if (c.p > bus.p + 0.5 && behind.has(c.uid)) passed.add(c.uid);
+      }
+    }
+    if (!bus) continue;
+    if (bus.fwd && bus.v < 0.01 && Math.abs(bus.p - 20) < 0.1) { stoodOut += 1 / C.SIM_HZ; maxSide = Math.max(maxSide, bus.side); }
+    if (!bus.fwd && bus.v < 0.01 && Math.abs(bus.p - (sg.len - 30)) < 0.1) stoodBack += 1 / C.SIM_HZ;
+  }
+  console.log(`  bus stops: stood ${stoodOut.toFixed(1)} s out (${maxSide.toFixed(2)} off its lane), ${stoodBack.toFixed(1)} s back; ${passed.size} cars passed it; ${hard} hard stops`);
+  assert.ok(stoodOut >= 1.8, `stood ${stoodOut.toFixed(1)} s at the stop on the way out`);
+  assert.ok(stoodBack >= 1.8, `stood ${stoodBack.toFixed(1)} s at the stop on the way back`);
+  assert.ok(maxSide > 0.27, `pulled ${maxSide.toFixed(2)} into the bay`);
+  assert.ok(passed.size >= 1, 'traffic passed the bus in its bay');
+  assert.equal(hard, 0, 'nobody braked hard for it pulling out');
+  assert.ok(done, 'and it finished its run');
+});
+
+const { busLaneSpan } = await import('../src/roads/busLanes.ts');
+test('in a queue, a bus in a lay-by is let out rather than left waiting', () => {
+  for (const seed of [3, 4, 5]) {
+    Math.random = C.mulberry32(seed);
+    const net = new N.Network();
+    net.insertPath([{ x: 10, z: 40 }, { x: 60, z: 40 }], N.KIND_ROAD);
+    net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], N.KIND_ROAD);
+    net.nearestNode(40, 40, 0.1).light = true;
+    load(net);
+    const w = arm(net, 40, 40, 10, 40), e = arm(net, 40, 40, 60, 40), n = arm(net, 40, 40, 40, 20);
+    const ws = net.segs.get(w.seg);
+    send({ type: 'probe', stops: [{ a: w.seg, as: w.inbound ? ws.len - 2.5 : 2.5, side: w.inbound ? 1 : -1 }] });
+    let t = 0, next = 0, busUid = -1, inBay = 0, gone = false;
+    for (let i = 0; i < 80 * C.SIM_HZ && !gone; i++) {
+      clock(); t += 1 / C.SIM_HZ;
+      const trips = [];
+      if (t >= next && !(t > 9 && busUid === -1)) { next += 0.4; trips.push({ a: w.seg, as: w.far, b: Math.random() < 0.5 ? n.seg : e.seg, bs: 2 }); }
+      if (t > 10 && busUid === -1) trips.push({ a: w.seg, as: w.inbound ? 1 : ws.len - 1, b: e.seg, bs: e.far, vehicle: 4, loop: true });
+      const r = ask(trips, true);
+      if (busUid < 0) busUid = r.detail.find(c => c.vehicle === 4)?.uid ?? -1;
+      const bus = r.detail.find(c => c.uid === busUid);
+      if (busUid >= 0 && !bus) gone = true;
+      if (bus?.inBay) inBay += 1 / C.SIM_HZ;
+      if (bus && bus.seg !== w.seg) break; // out of the street: done with the stop
+    }
+    console.log(`  queue, seed ${seed}: ${inBay.toFixed(1)} s in the lay-by`);
+    // The stop is just short of a light: its queue may stand beside the bus until the green, but the bus
+    // gets out within a cycle or two, and is never given up on.
+    assert.ok(!gone, `seed ${seed}: the bus was given up on`);
+    assert.ok(inBay > 1.5 && inBay < 45, `seed ${seed}: ${inBay.toFixed(1)} s in the lay-by`);
+  }
+});
+
+test('the way back from a far stop goes round, not round in the junction ahead', () => {
+  Math.random = C.mulberry32(55);
+  const net = new N.Network();
+  net.insertPath([{ x: 10, z: 40 }, { x: 40, z: 40 }], N.KIND_ROAD);
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], N.KIND_ROAD);
+  load(net);
+  const sg = [...net.segs.values()].find(s => s.pts[1] === 40 && s.pts[s.pts.length - 1] === 40);
+  ask([{ a: sg.id, as: 2, b: sg.id, bs: 20, vehicle: 4, loop: true }]);
+  const seen = [];
+  for (let i = 0; i < 90 * C.SIM_HZ; i++) {
+    clock();
+    const bus = ask([], true).detail[0];
+    if (!bus) break;
+    const k = `${bus.seg}:${bus.fwd}`;
+    if (seen.at(-1) !== k) seen.push(k);
+  }
+  assert.ok(seen.length > 2 && seen[1].split(':')[0] !== String(sg.id), `route ${seen.join(' ')}`);
+});
+
+/** An avenue meeting a side street on its right, with or without bus lanes: through traffic, kerbside turners and buses. */
+function busLaneRun(lanes) {
+  Math.random = C.mulberry32(54);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 40 }, { x: 40, z: 64 }], N.KIND_ROAD);
+  for (const s of net.segs.values()) if (s.kind === N.KIND_AVENUE && lanes) s.bus = true;
+  const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), sth = arm(net, 40, 40, 40, 64);
+  load(net);
+  const wSeg = net.segs.get(w.seg), span = busLaneSpan(net, wSeg, w.inbound) ?? { from: 0.3, to: wSeg.len - 2.5 };
+  let t = 0, carSteps = 0, inBus = 0, busSteps = 0, busInLane = 0;
+  const next = [0, 0, 0];
+  const start = ask([]);
+  for (let i = 0; i < 150 * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trips = [];
+    if (t >= next[0]) { next[0] += -Math.log(1 - Math.random()) * 1.6; trips.push({ a: w.seg, as: w.far, b: e.seg, bs: e.far }); }
+    if (t >= next[1]) { next[1] += -Math.log(1 - Math.random()) * 5; trips.push({ a: w.seg, as: w.far, b: sth.seg, bs: sth.far }); }
+    if (t >= next[2]) { next[2] += 12; trips.push({ a: w.seg, as: w.far, b: e.seg, bs: e.far, vehicle: 4 }); }
+    const r = ask(trips, true);
+    for (const c of r.detail) {
+      if (c.seg !== w.seg || c.fwd !== w.inbound) continue;
+      if (c.p < span.from + 1 || c.p > span.to) continue; // a car just turned in may still be moving out
+      if (c.vehicle === 4) { busSteps++; if (c.lane === 0) busInLane++; }
+      else { carSteps++; if (c.lane === 0 && !c.changing) inBus++; }
+    }
+  }
+  const end = ask([]);
+  const got = (a, b) => (end.trips[`${a.seg}>${b.seg}`] ?? 0) - (start.trips[`${a.seg}>${b.seg}`] ?? 0);
+  return { span, carSteps, inBus, busSteps, busInLane, through: got(w, e), turned: got(w, sth), gaveUp: end.gaveUp - start.gaveUp };
+}
+
+test('bus lanes: only buses use the kerb lane along the span, kerbside turners still get there, traffic still flows', () => {
+  const plain = busLaneRun(false), bus = busLaneRun(true);
+  console.log(`  bus lane: ${bus.inBus} of ${bus.carSteps} car-steps in it (${plain.inBus} of ${plain.carSteps} in the kerb lane without), buses in it ${bus.busInLane} of ${bus.busSteps}; ${bus.through} through (${plain.through} without), ${bus.turned} turned kerbside (${plain.turned}), ${bus.gaveUp} gave up`);
+  assert.ok(bus.span.from < 1 && bus.span.to > 5, JSON.stringify(bus.span));
+  assert.ok(bus.inBus <= bus.carSteps * 0.01, `${bus.inBus} car-steps in the bus lane`);
+  assert.ok(bus.busInLane >= bus.busSteps * 0.8, `buses in their lane ${bus.busInLane} of ${bus.busSteps}`);
+  assert.ok(bus.turned >= plain.turned * 0.7, `${bus.turned} turned kerbside against ${plain.turned}`);
+  assert.ok(bus.through >= plain.through * 0.85, `${bus.through} through against ${plain.through}`);
+  assert.ok(bus.gaveUp <= 3);
 });
 
 console.log(`${checks} driver checks passed; ${failures} failed`);

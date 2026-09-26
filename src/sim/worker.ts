@@ -10,6 +10,7 @@ import { turnOf, criticalGap } from './priority';
 import { dayProfile, purposeAt, pickByDistance } from './demand';
 import { junctionKind, majorArms, stopLine, HOLD_BEHIND_LINE, SOLID_STRETCH, ZEBRA_HALF } from '../roads/control';
 import { crossingApproaches } from '../roads/crossings';
+import { busLaneSpan, stopKind, stopSideOf, BUS_BAY, BAY_SIDE } from '../roads/busLanes';
 import { T_OFFICE, OFFICE_JOBS, OFFICE_UNLOCK, T_STATION, T_TROLLEY, T_TAXI, T_TREATMENT } from '../constants';
 import { transitNetwork, transitLineForTrip, taxiStopForTrip, distance, trolleyRoute } from './transit';
 import type { TransitNetwork } from './transit';
@@ -289,6 +290,29 @@ const WALK_SPEED = 0.3, MAX_WALKERS = 320, MAX_WAITING = 6;
 
 /** Per approach (seg·2 + dir): how far before its end node traffic holds. */
 let approachSetback = new Float32Array(0);
+/** Per segment and direction: where its bus lane's rule applies, along the direction of travel (−1 for none). */
+let busFrom = new Float32Array(0), busTo = new Float32Array(0);
+/** Bus stops buses call at on the way: segment index, arc length from its a end, which side (+1 right of a→b), and whether from a lay-by. */
+interface BusStop { seg: number; s: number; side: number; bay: boolean }
+let busStops: BusStop[] = [];
+let probeStops: BusStop[] = [];
+/** The tiles of the stops on bus lines, and the probe's own stops as asked for (by segment id). */
+let busStopTiles: number[] = [];
+let probeStopIds: { a: number; as: number; side: number }[] = [];
+
+/** Where buses call, worked out again whenever the stops or the roads change. */
+function refreshBusStops(): void {
+  const net = laneNet;
+  const zebras = crossingApproaches(net);
+  const make = (seg: number, s: number, side: number): BusStop[] => {
+    const sg = segs[seg];
+    const how = sg ? stopKind(net, sg, s, side, zebras) : null;
+    return how ? [{ seg, s, side, bay: how === 'bay' }] : [];
+  };
+  busStops = busStopTiles.flatMap(t => (accSeg[t] >= 0 && segs[accSeg[t]] ? make(accSeg[t], accS[t], stopSideOf(segs[accSeg[t]], accS[t], t % GRID + 0.5, Math.floor(t / GRID) + 0.5)) : []));
+  const index = new Map(segs.map((sg, i) => [sg.id, i]));
+  probeStops = probeStopIds.flatMap(st => { const i = index.get(st.a); return i === undefined ? [] : make(i, st.as, st.side); });
+}
 /**
  * Traffic counts per direction of each segment (seg·2 + dir): vehicles leaving it this second, the
  * smoothed flow in vehicles a minute, and the smoothed delay per vehicle (time spent standing on it).
@@ -303,8 +327,10 @@ let roadLength = 0;
 // ---- cars ---------------------------------------------------------------------------------------
 /** A stretch of one segment on a route. On a motorway, which side the slip road ahead or behind is on (±1), if any. */
 interface Leg { seg: number; fwd: boolean; p0: number; p1: number; toRamp?: number; fromRamp?: number;
-  /** A bus stop at the end of this leg: the bus pulls in and stands there a while. */
-  dwell?: boolean }
+  /** The far stop of a bus run on this leg, where it stands (only while its route is put together). */
+  dwell?: number }
+/** A stop a bus calls at: its centre stands at `p` on leg `li`; a bay takes it out of the lane. */
+interface Call { li: number; p: number; far: boolean; bay: boolean }
 interface Mission { kind: 'fire' | 'patrol' | 'crash' | 'heist' | 'garbage'; origin: number; tile: number; crash?: number; work: number }
 interface Car {
   uid: number; legs: Leg[]; li: number; p: number; time: number;
@@ -320,8 +346,10 @@ interface Car {
   yieldUntil: number; yieldTo: number;
   /** Stuck past its patience: it no longer waits on bookings, gaps or give-way, only on bodies in the way. */
   insistent: boolean;
-  /** At a bus stop: until when it stands there, and the leg whose stop it has already made. */
-  dwellUntil?: number; dwellLi?: number;
+  /** A bus's stops, in order, and the next one it has to make; until when it stands at it. */
+  calls?: Call[]; callIdx?: number; dwellUntil?: number;
+  /** Standing in a lay-by, out of its lane: following traffic passes it. Pulling back out of one. */
+  inBay?: boolean; leavingBay?: boolean;
   /** A trip out and back (a probe's bus run), which keeps its route; and when it last rerouted. */
   loop?: boolean; rerouteAt?: number;
   /** A callout's view of the road ahead: an oncoming car close enough that it must not pull out. */
@@ -587,6 +615,14 @@ function applyNetwork(p: EditPayload): void {
         approachSetback[i * 2 + (fwd ? 0 : 1)] = stopLine(net, nodeIds[end], zebra) + HOLD_BEHIND_LINE;
       }
     });
+    busFrom = new Float32Array(segs.length * 2).fill(-1); busTo = new Float32Array(segs.length * 2).fill(-1);
+    segs.forEach((sg, i) => {
+      for (const fwd of [true, false]) {
+        const span = busLaneSpan(net, sg, fwd, zebras);
+        if (span) { busFrom[i * 2 + (fwd ? 0 : 1)] = span.from; busTo[i * 2 + (fwd ? 0 : 1)] = span.to; }
+      }
+    });
+    refreshBusStops();
     // The crossings people use: every zebra the renderer paints.
     crossings = []; walkersOut = 0;
     crossingAt = new Int32Array(segs.length * 2).fill(-1);
@@ -742,13 +778,18 @@ function segTime(i: number): number {
  * is varied a little (±ROUTE_JITTER/2) for this trip: drivers do not all judge the same way, so a
  * route that is only barely the fastest does not take everyone.
  */
-function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0): Leg[] | null {
+/**
+ * The quickest way from arc length sS on segment sSeg to gS on gSeg. `dir`, if given, is the way it
+ * must set off (true: a→b); then it does not turn back along a road at a junction either, but goes
+ * round, as a bus leaving the end of its run does.
+ */
+function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0, dir?: boolean): Leg[] | null {
   const S = segs[sSeg];
   const G = segs[gSeg];
   if (!S || !G) return null;
   if (sSeg === gSeg) {
-    if (gS >= sS) return [{ seg: sSeg, fwd: true, p0: sS, p1: gS }];
-    if (!S.oneway) return [{ seg: sSeg, fwd: false, p0: S.len - sS, p1: S.len - gS }];
+    if (gS >= sS && dir !== false) return [{ seg: sSeg, fwd: true, p0: sS, p1: gS }];
+    if (gS < sS && !S.oneway && dir !== true) return [{ seg: sSeg, fwd: false, p0: S.len - sS, p1: S.len - gS }];
   }
   const n = nodeIds.length;
   if (gScore.length < n + 1) {
@@ -776,8 +817,8 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0): Le
     prevEdgeFwd[node] = fwd ? 1 : 0;
     heapPush(g + (node === GOAL ? 0 : h(node)), node);
   };
-  relax(segB[sSeg], (S.len - sS) / vS, -1, sSeg, true);
-  if (!S.oneway) relax(segA[sSeg], sS / vS, -1, sSeg, false);
+  if (dir !== false) relax(segB[sSeg], (S.len - sS) / vS, -1, sSeg, true);
+  if (!S.oneway && dir !== true) relax(segA[sSeg], sS / vS, -1, sSeg, false);
   const vG = segSpeed(G);
 
   while (heapN.length) {
@@ -801,9 +842,12 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0): Le
       return legs;
     }
     const g = gScore[cur];
-    if (cur === segA[gSeg]) relax(GOAL, g + gS / vG, cur, gSeg, true);
-    if (cur === segB[gSeg] && !G.oneway) relax(GOAL, g + (G.len - gS) / vG, cur, gSeg, false);
+    // (Setting off a given way, it does not come back to the goal by turning round in a junction either.)
+    const uTurnHere = dir !== undefined && prevEdgeSeg[cur] === gSeg && nodeEdges[cur].some(o => o.seg !== gSeg);
+    if (cur === segA[gSeg] && !uTurnHere) relax(GOAL, g + gS / vG, cur, gSeg, true);
+    if (cur === segB[gSeg] && !G.oneway && !uTurnHere) relax(GOAL, g + (G.len - gS) / vG, cur, gSeg, false);
     for (const e of nodeEdges[cur]) {
+      if (dir !== undefined && e.seg === prevEdgeSeg[cur] && nodeEdges[cur].some(o => o.seg !== e.seg)) continue;
       const t = nodeType[e.to];
       const penalty = t === J_LIGHT ? 2.5 : t === J_STOP ? 1.4 : t === J_YIELD ? 0.8 : 0;
       const jitter = seed ? 1 + ROUTE_JITTER * (((Math.sin(e.seg * 12.9898 + seed) * 43758.5453) % 1 + 1) % 1 - 0.5) : 1;
@@ -910,18 +954,28 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   let legs = findRoute(sSeg, sS, gSeg, gS);
   if (!legs || legs.length === 0) { noPath++; return false; }
   if (line !== undefined || loop) {
-    const back = findRoute(gSeg, gS, sSeg, sS);
+    // A bus does not turn round in the road at the end of its run if it can help it: it drives on and
+    // comes back round the block.
+    const back = (vehicle !== 8 ? routeOnward(gSeg, gS, legs[legs.length - 1].fwd, sSeg, sS, seed) : null) ?? findRoute(gSeg, gS, sSeg, sS);
     if (!back) return false;
     // The far stop: the bus pulls in there and stands a while before the run back (on the last leg
     // that is driven at all, since an empty one at a node is dropped below).
     const out = legs.filter(l => l.p1 - l.p0 > 1e-3);
-    (out.length ? out[out.length - 1] : legs[legs.length - 1]).dwell = true;
-    legs.push(...back);
+    const last = out.length ? out[out.length - 1] : legs[legs.length - 1];
+    last.dwell = last.p1;
+    // Carrying straight on from the stop, the way back is more of the same leg.
+    const first = back[0];
+    if (first && first.seg === last.seg && first.fwd === last.fwd && Math.abs(first.p0 - last.p1) < 1e-3 && last === legs[legs.length - 1]) {
+      last.p1 = first.p1; last.toRamp = first.toRamp;
+      legs.push(...back.slice(1));
+    } else legs.push(...back);
   }
   // A trip that starts or ends right on a node has an empty leg there, pointing along a road the car
   // never drives; it would appear facing that way and then spin round on the spot.
   const driven = legs.filter(l => l.p1 - l.p0 > 1e-3);
   if (driven.length) legs = driven;
+  // Buses call at the stops on the way; trolleybuses run stop to stop.
+  const calls = (line !== undefined || loop) && vehicle !== 8 ? busCalls(legs) : undefined;
   const slot = freeList.at(-1)!;
   markRampLegs(legs);
   alignRingLegs(legs, vehicle);
@@ -931,10 +985,70 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   // Traffic from beyond the map edge arrives already at speed; everyone else pulls away from the kerb.
   const pace = drivingPace(vehicle);
   const rolling = entries.some(e => e.seg === legs[0].seg && Math.abs(e.s - legs[0].p0) < 0.05);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, loop, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, loop, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop, ...(calls ? { calls, callIdx: 0 } : {}),
     lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
+}
+
+/** How long a bus stands at a stop on the way. */
+const CALL_DWELL = 2;
+
+/**
+ * The stops a bus makes on its route: every bus stop on the kerb side of a road it drives along, and
+ * its far stop (marked on its leg as `dwell`) whichever side that is on. Not where it sets out, nor
+ * where it ends. A stop on the kerb side gets a lay-by unless its kerb lane is a bus lane.
+ */
+function busCalls(legs: Leg[]): Call[] {
+  const out: Call[] = [];
+  const last = legs.length - 1;
+  legs.forEach((l, li) => {
+    const sg = segs[l.seg];
+    if (ringArc[l.seg] || sg.structure) return;
+    for (const st of [...busStops, ...probeStops]) {
+      if (st.seg !== l.seg || st.side !== (l.fwd ? 1 : -1)) continue;
+      const p = l.fwd ? st.s : sg.len - st.s;
+      if (p < l.p0 + 0.3 || p > l.p1 + 1e-6 || (li === last && p > l.p1 - 0.3) || (li === 0 && p < l.p0 + 0.6)) continue;
+      out.push({ li, p, far: false, bay: st.bay });
+    }
+  });
+  const fi = legs.findIndex(l => l.dwell !== undefined);
+  if (fi >= 0) {
+    const f = legs[fi], sg = segs[f.seg], at = f.dwell!;
+    delete f.dwell;
+    // The far stop gets its lay-by too when it is on the kerb side (not where the bus turns round in
+    // the road, though: it stands in its lane for that).
+    const side = [...busStops, ...probeStops].find(st => st.seg === f.seg && Math.abs((f.fwd ? st.s : sg.len - st.s) - at) < 0.05);
+    const kerbSide = !!side && side.bay && side.side === (f.fwd ? 1 : -1) && !(at >= f.p1 - 1e-3 && legs[fi + 1] && isUTurn(f, legs[fi + 1]));
+    for (let k = out.length - 1; k >= 0; k--) if (out[k].li === fi && Math.abs(out[k].p - at) < 0.6) out.splice(k, 1);
+    out.push({ li: fi, p: at, far: true, bay: kerbSide });
+  }
+  return out.sort((a, b) => a.li - b.li || a.p - b.p);
+}
+
+/**
+ * The way from arc length s on `seg`, setting off in direction `fwd`, to gS on gSeg without turning
+ * round: on to the node ahead, then the quickest way from there that does not go straight back (unless
+ * the road ends there). Searched from each way out of that node, since the route search visits a node
+ * only once and so could not come back through it from another side.
+ */
+function routeOnward(seg: number, s: number, fwd: boolean, gSeg: number, gS: number, seed: number): Leg[] | null {
+  const sg = segs[seg];
+  if (seg === gSeg && (fwd ? gS >= s : gS <= s)) return route(seg, s, gSeg, gS, seed, fwd);
+  if (!fwd && sg.oneway) return null;
+  const node = fwd ? segB[seg] : segA[seg];
+  const first: Leg = { seg, fwd, p0: fwd ? s : sg.len - s, p1: sg.len };
+  const deadEnd = !nodeEdges[node].some(o => o.seg !== seg);
+  let best: Leg[] | null = null, bestCost = Infinity;
+  for (const e of nodeEdges[node]) {
+    if (e.seg === seg && !deadEnd) continue;
+    const es = segs[e.seg];
+    const rest = route(e.seg, e.fwd ? 0 : es.len, gSeg, gS, seed, e.fwd);
+    if (!rest) continue;
+    const cost = legsCost(rest);
+    if (cost < bestCost) { bestCost = cost; best = rest; }
+  }
+  return best ? [first, ...best.filter(l => l.p1 - l.p0 > 1e-3)] : null;
 }
 
 function externalTrip(tile: number, inbound: boolean, vehicle = 1): boolean {
@@ -1173,6 +1287,28 @@ function carPose(leg: Leg, progress: number, type: number, lane = 0): VehiclePos
 
 /** How far either side of a junction a turning vehicle eases round the corner instead of pivoting on the spot. */
 const CORNER = 0.55;
+/** How far along the way back a vehicle turning round in the road takes to swing into the other lane. */
+const U_TURN = 0.7;
+/** Turning round in the middle of a road, not at a node (a dead end turns round in its own way). */
+const isUTurn = (a: Leg, b: Leg): boolean => a.seg === b.seg && a.fwd !== b.fwd && a.p1 < segs[a.seg].len - 0.01;
+/** Whether the car turns round in the road at the end of its current leg. */
+const uTurnAfter = (c: Car): boolean => !!c.legs[c.li + 1] && isUTurn(c.legs[c.li], c.legs[c.li + 1]);
+
+/**
+ * Whether a vehicle can turn round in the road now: nothing coming the other way that could not stop
+ * in comfort short of where it swings in, nor in the way of the turn.
+ */
+function canUTurn(c: Car): boolean {
+  const back = c.legs[c.li + 1], half = vehicleLength(c.vehicle) / 2;
+  for (let l = 0; l < legLanes(back); l++) for (const o of laneCars[laneKey(back.seg, back.fwd, l)]) {
+    const oc = slots[o];
+    if (!oc || oc === c) continue;
+    const reach = back.p0 - oc.p; // how far short of the turn it is
+    if (reach < -(U_TURN + half + vehicleLength(oc.vehicle) / 2 + 0.1)) continue; // gone past
+    if (reach < (oc.v * oc.v) / (2 * driverFor(oc.vehicle).b) + half + vehicleLength(oc.vehicle) / 2 + 0.3) return false;
+  }
+  return true;
+}
 const lerpPose = (a: VehiclePose, b: VehiclePose, t: number): { x: number; z: number } => ({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
 
 /**
@@ -1189,6 +1325,20 @@ function cornerPose(c: Car, li: number, p: number): VehiclePose | null {
   // a wide road lies well out from the centre line, and turning any later hooks back across the box.
   const reach = (l: Leg, other: number): number => Math.min(Math.max(CORNER, Math.abs(other) + 0.15), (l.p1 - l.p0) * 0.45);
   const next = c.legs[li + 1], prev = c.legs[li - 1];
+  // Turning round in the road (a bus at the end of its run): it stands straight at its stop, and turns
+  // once under way on the way back, swinging forward and across into the other lane.
+  if (next && isUTurn(leg, next)) return null;
+  if (prev && isUTurn(prev, leg)) {
+    if (p - leg.p0 >= U_TURN) return null;
+    const start = carPoseAt(prev, prev.p1, c.vehicle, centreOf(prev, li === c.li + 1 ? c.lane : c.prevLane)), end = carPoseAt(leg, leg.p0 + U_TURN, c.vehicle, latOf(c, li, leg.p0 + U_TURN));
+    const t = (p - leg.p0) / U_TURN, u = 1 - t;
+    const ax = Math.sin(start.angle), az = Math.cos(start.angle);
+    // Straight ahead of where it stood, so it pulls away along its lane before it swings round.
+    const control = { x: start.x + ax * U_TURN, z: start.z + az * U_TURN };
+    const x = u * u * start.x + 2 * u * t * control.x + t * t * end.x, z = u * u * start.z + 2 * u * t * control.z + t * t * end.z;
+    const dx = u * (control.x - start.x) + t * (end.x - control.x), dz = u * (control.z - start.z) + t * (end.z - control.z);
+    return { ...carPoseAt(leg, p, c.vehicle, latOf(c, li, p)), x, z, angle: Math.atan2(dx, dz) };
+  }
   // Measured from the lanes' own centres, not where the car happens to be mid lane change, so the
   // corner does not move under a car already rounding it.
   const laneAt = (l: number): number => c.vehicle === 8 || ringArc[c.legs[l].seg] ? 0 : centreOf(c.legs[l], l === c.li ? c.lane : l === c.li + 1 ? Math.max(0, c.nextLane) : c.prevLane);
@@ -1272,8 +1422,38 @@ function wantedOn(c: Car, li: number, depth = 0): number[] | null {
   return out;
 }
 
+/** Who may drive in a bus lane: buses, trolleybuses, taxis with a fare, and callouts. */
+const busUser = (c: Car): boolean => c.vehicle === 4 || c.vehicle === 8 || c.taxiStop !== undefined || onCallout(c);
+
+/** Whether lane 0 of the leg is a bus lane at progress p, or is about to be just ahead of it. */
+function busLaneAt(leg: Leg, p: number): boolean {
+  const k = leg.seg * 2 + (leg.fwd ? 0 : 1);
+  return busTo[k] >= 0 && p < busTo[k] && p > busFrom[k] - 1;
+}
+
+/**
+ * Whether the car may not be in lane 0 here: a bus lane, and it has no right to it. A car arriving at
+ * a lot along it may cross into it for the last stretch, as drivers may to reach property.
+ */
+function barredFromKerb(c: Car): boolean {
+  const leg = c.legs[c.li];
+  if (busUser(c) || legLanes(leg) < 2 || !busLaneAt(leg, c.p)) return false;
+  return !(c.li === c.legs.length - 1 && leg.p1 - c.p < BUS_BAY);
+}
+
 function wantedLanes(c: Car): number[] | null {
-  return c.vehicle === 8 ? null : wantedOn(c, c.li);
+  if (c.vehicle === 8) return null;
+  const leg = c.legs[c.li], n = legLanes(leg);
+  // A bus with a stop coming up on this road gets over to the kerb for it.
+  const call = c.calls?.[c.callIdx ?? 0];
+  if (call && call.li === c.li && call.p - c.p < 8 && n > 1) return [0];
+  const want = wantedOn(c, c.li);
+  // A bus keeps to its lane along the span, and moves out towards the end if its turn needs it.
+  if (c.vehicle === 4 && want && !want.includes(0) && n > 1 && busLaneAt(leg, c.p) && c.p < busTo[leg.seg * 2 + (leg.fwd ? 0 : 1)] - 2.5) return [0, ...want];
+  if (!barredFromKerb(c)) return want;
+  // Out of the bus lane: a car turning kerbside waits beside it until the bay before the junction.
+  const open = (want ?? Array.from({ length: n }, (_, l) => l)).filter(l => l !== 0);
+  return open.length ? open : [1];
 }
 
 /** Pick the lane to take on the next leg, if not picked yet: of those its lane may turn into, the one with most room. */
@@ -1285,6 +1465,11 @@ function chooseNext(c: Car): void {
   const a = approachOf(leg), e = exitOf(a, next), n = legLanes(next);
   let options = e >= 0 ? a.targets(c.lane, e).filter(l => l >= 0 && l < n) : [];
   if (!options.length) options = [Math.min(n - 1, c.lane)];
+  // Onto a road with a bus lane: others take a general lane if their turn allows, a bus takes its own.
+  if (n > 1 && busTo[next.seg * 2 + (next.fwd ? 0 : 1)] >= 0) {
+    if (c.vehicle === 4 && options.includes(0)) options = [0];
+    else if (!busUser(c) && options.some(l => l !== 0)) options = options.filter(l => l !== 0);
+  }
   let best = options[0], room = -Infinity;
   for (const l of options) {
     const r = laneTail[laneKey(next.seg, next.fwd, l)] - next.p0;
@@ -1338,7 +1523,8 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
   if (c.chT >= 0 || simTime < c.lcCool || c.vehicle === 8 || c.working || c.box >= 0) return;
   const leg = c.legs[c.li];
   const makingWay = c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
-  if (ringArc[leg.seg] || (!c.legs[c.li + 1] && !makingWay)) return;
+  const barred = c.lane === 0 && barredFromKerb(c);
+  if (ringArc[leg.seg] || (!c.legs[c.li + 1] && !makingWay && !barred)) return;
   const n = legLanes(leg);
   if (n < 2) return;
   const want = wantedLanes(c);
@@ -1356,6 +1542,9 @@ function considerLaneChange(c: Car, slot: number, leaderGap: number, leaderStuck
     const goal = goals.reduce((b, l) => Math.abs(l - c.lane) < Math.abs(b - c.lane) ? l : b, goals[0]);
     target = c.lane + Math.sign(goal - c.lane);
     if (!(target >= 0 && target < n && laneOpen(leg, target, c.p))) target = -1;
+  } else if (c.vehicle === 4 && c.lane > 0 && busLaneAt(leg, c.p) && (!want || want.includes(0)) && laneOpen(leg, c.lane - 1, c.p)) {
+    // A bus moves into its lane when it can.
+    target = c.lane - 1;
   } else if (leaderGap < 1.2 && leaderStuck && !onSolidStretch(c)) {
     // Try the neighbour with the longer clear run ahead.
     let room = leaderGap + 1.5;
@@ -1587,7 +1776,9 @@ function stepCars(dt: number): void {
     // ahead of it pull over too; and it only goes out at all while the road ahead is clear of them.
     const seg = segs[leg.seg], along = leg.fwd ? m.p : seg.len - m.p;
     m.oncoming = false;
-    if (!seg.oneway) for (let l = 0; l < Math.max(1, dirLanes[leg.seg * 2 + (leg.fwd ? 1 : 0)]); l++) for (const o of laneCars[laneKey(leg.seg, !leg.fwd, l)]) {
+    // Only where passing crosses the centre line: from the innermost lane (on a road with more lanes
+    // each way, one passes a car pulled over in the kerb lane within its own side of the road).
+    if (!seg.oneway && m.lane >= legLanes(leg) - 1) for (let l = 0; l < Math.max(1, dirLanes[leg.seg * 2 + (leg.fwd ? 1 : 0)]); l++) for (const o of laneCars[laneKey(leg.seg, !leg.fwd, l)]) {
       const oc = slots[o];
       if (!oc || onCallout(oc)) continue;
       const theirs = leg.fwd ? seg.len - oc.p : oc.p, ahead = leg.fwd ? theirs - along : along - theirs;
@@ -1616,10 +1807,20 @@ function stepCars(dt: number): void {
     // The leader that is not pulled over for a callout: the one a callout itself follows.
     let firmP = Infinity, firmLength = 0.34, firmStuck = false, firmV = 0, firmSlot = -1;
     const playerP = playerLanes.get(dirKeyOf(key));
+    // A bus in a lay-by signalling to pull out: the first driver behind who can stop in comfort holds
+    // back for it, and those who cannot carry on past.
+    let bayBus: { p: number; len: number; slot: number } | null = null;
     for (const slot of lane) {
       const c = slots[slot]!;
       // The player's car (or the player on foot) in this lane: traffic behind stops for it.
       if (playerP !== undefined && c.p < playerP - 0.02 && playerP < leaderP) { leaderP = playerP; leaderLength = 0.34; leaderV = 0; leaderSlot = -1; }
+      if (bayBus && !onCallout(c) && c.p < bayBus.p) {
+        const need = Math.max(GAP[segs[c.legs[c.li].seg].kind], (vehicleLength(c.vehicle) + bayBus.len) / 2 + 0.06);
+        if (c.p + (c.v * c.v) / (2 * driverFor(c.vehicle).b) <= bayBus.p - need + 0.01) {
+          leaderP = bayBus.p; leaderLength = bayBus.len; leaderV = 0; leaderStuck = true; leaderSlot = bayBus.slot;
+          bayBus = null;
+        }
+      }
       const leg = c.legs[c.li];
       const seg = segs[leg.seg];
       const driver = driverFor(c.vehicle);
@@ -1633,8 +1834,15 @@ function stepCars(dt: number): void {
       const yielding = !onCallout(c) && c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
       // On one lane, or in the kerb lane of several, it pulls over; in another lane it moves across.
       const pullingOver = yielding && (legLanes(leg) < 2 || c.lane === 0);
+      // A bus drawing up at a stop: into the lay-by if it has one, or a nudge to the kerb.
+      const call = c.calls?.[c.callIdx ?? 0];
+      const atStop = !!call && call.li === c.li;
+      const stopP = atStop ? call!.p : Infinity;
+      // (Only from the kerb lane: a bus that could not get over stands where it is.)
+      const kerbward = c.lane === 0 || legLanes(leg) < 2;
+      const kerbGoal = atStop && stopP - c.p < 1.2 && kerbward ? (call!.bay ? BAY_SIDE : 0.08) : 0;
       // Easing towards the kerb to make way, out to pass one that has, or back to the lane's centre.
-      c.sideGoal = pullingOver ? PULL_OVER : passing ? -PASS_OUT : 0;
+      c.sideGoal = pullingOver ? PULL_OVER : passing ? -PASS_OUT : kerbGoal;
       const sideBefore = c.side;
       c.side += Math.max(-0.4 * dt, Math.min(0.4 * dt, c.sideGoal - c.side));
       const gap = Math.max(GAP[seg.kind], (vehicleLength(c.vehicle) + leaderLength) / 2 + 0.06);
@@ -1671,21 +1879,30 @@ function stepCars(dt: number): void {
         if (Math.max((c.p - c.chP) / LC_DIST, (simTime - c.chT) / LC_TIME) >= 1) c.chT = -1;
         else if (c.stuck > 3 && c.box < 0) { c.chFrom = latOf(c, c.li, c.p); c.chP = c.p; c.chT = simTime; c.lane = c.chLane; c.nextLane = -1; c.lcCool = simTime + 2; }
       }
-      // A bus at its stop: pull in, stand there, then carry on.
-      const atStop = !!leg.dwell && c.dwellLi !== c.li;
-      if (atStop && c.p >= leg.p1 - 0.03) {
-        if (!c.dwellUntil) c.dwellUntil = simTime + BUS_DWELL;
-        else if (c.dwellUntil <= simTime) { c.dwellLi = c.li; c.dwellUntil = 0; }
+      // A bus at its stop: pull in (into the lay-by, if there is one), stand there, then carry on once
+      // it can pull back out without making anyone brake hard.
+      let standing = false;
+      if (atStop && c.p >= stopP - 0.03) {
+        standing = true;
+        if (!c.dwellUntil) c.dwellUntil = simTime + (call!.far ? BUS_DWELL : CALL_DWELL);
+        else if (c.dwellUntil <= simTime && (!c.inBay || canLeaveBay(c, slot)) && (!uTurnAfter(c) || canUTurn(c))) {
+          c.callIdx = (c.callIdx ?? 0) + 1; c.dwellUntil = 0; standing = false;
+          if (call!.bay) c.leavingBay = true;
+        }
       }
-      if (atStop && leg.p1 - c.p < 1.2) c.sideGoal = Math.max(c.sideGoal, 0.08);
+      if (c.leavingBay && c.side < 0.02) c.leavingBay = false;
+      // All the way into the bay, it is out of the traffic lane: those behind pass it.
+      c.inBay = atStop && call!.bay && (c.lane === 0 || legLanes(leg) < 2) && c.side > BAY_SIDE * 0.95;
+      // Standing at the stop is not being stuck; waiting to pull out again is.
+      if (c.inBay && (c.dwellUntil ?? 0) > simTime) c.stuck = 0;
       // Pulled over for a callout, it comes to a stop at the kerb until it has passed.
-      const vWant = pullingOver || (atStop && (c.dwellUntil ?? 0) > simTime) ? 0 : atStop ? Math.min(desiredSpeed(c), approachSpeed(0.2, leg.p1 - c.p, driver.b)) : desiredSpeed(c);
+      const vWant = pullingOver || standing ? 0 : atStop ? Math.min(desiredSpeed(c), approachSpeed(0.2, stopP - c.p, driver.b)) : desiredSpeed(c);
       considerLaneChange(c, slot, leaderP - c.p, leaderStuck || (leaderP - c.p < 1.5 && leaderV < 0.6 * vWant));
 
       const leaderHold = leaderP - gap;
-      let maxP = leg.dwell && c.dwellLi !== c.li ? Math.min(leaderHold, leg.p1) : leaderHold;
+      let maxP = atStop ? Math.min(leaderHold, stopP) : leaderHold;
       // What the driver reacts to: the hard limits, less a junction it has not yet asked for.
-      let idmMax = leaderHold;
+      let idmMax = atStop ? Math.min(leaderHold, stopP) : leaderHold;
       // The car it follows when nothing on its own leg is ahead: the back of the queue in the lane it
       // will take beyond the junction, so it eases off for a queue there instead of meeting it at the node.
       let aheadRoom = Infinity, aheadV = 0;
@@ -1904,7 +2121,8 @@ function stepCars(dt: number): void {
         const o = slots[laneLeft[myKey]];
         const prev = o && o.li > 0 ? o.legs[o.li - 1] : null;
         if (o && prev && prev.seg === leg.seg && prev.fwd === leg.fwd && o.p - o.legs[o.li].p0 < 1.5) {
-          const r = legEnd - c.p + (o.p - o.legs[o.li].p0) - bodyGap(o);
+          // One turning round in the road is still where it turned, until it has swung clear.
+          const r = isUTurn(prev, o.legs[o.li]) ? prev.p1 - c.p - bodyGap(o) : legEnd - c.p + (o.p - o.legs[o.li].p0) - bodyGap(o);
           if (r < aheadRoom) { aheadRoom = r; aheadV = o.v; }
         } else laneLeft[myKey] = -1;
       }
@@ -1940,8 +2158,12 @@ function stepCars(dt: number): void {
       if (moved < 2e-3) c.stuck += dt; else c.stuck = 0;
       if (c.v < 0.3 && (c.li > 0 || c.p > leg.p0 + 0.3)) c.stood += dt;
       c.p = newP;
-      leaderP = newP; leaderLength = vehicleLength(c.vehicle); leaderStuck = c.stuck > 0.3; leaderV = c.v; leaderSlot = slot;
-      if (!pullingOver) { firmP = newP; firmLength = leaderLength; firmStuck = leaderStuck; firmV = c.v; firmSlot = slot; }
+      // A bus in a lay-by is nobody's leader: the car behind follows the one ahead of it (unless it
+      // lets the bus out).
+      if (!c.inBay) {
+        leaderP = newP; leaderLength = vehicleLength(c.vehicle); leaderStuck = c.stuck > 0.3; leaderV = c.v; leaderSlot = slot;
+        if (!pullingOver) { firmP = newP; firmLength = leaderLength; firmStuck = leaderStuck; firmV = c.v; firmSlot = slot; }
+      } else if ((c.dwellUntil ?? 0) > 0 && c.dwellUntil! <= simTime) bayBus = { p: newP, len: vehicleLength(c.vehicle), slot };
 
       if (final) {
         if (c.p >= leg.p1 - 1e-3) {
@@ -1955,7 +2177,7 @@ function stepCars(dt: number): void {
             arrivedBy.set(trip, (arrivedBy.get(trip) ?? 0) + 1);
             freeCar(slot); leaderP = Infinity; leaderSlot = -1; }
         }
-      } else if (c.p >= legEnd - 1e-4 && !(leg.dwell && c.dwellLi !== c.li)) {
+      } else if (c.p >= legEnd - 1e-4 && !atStop) {
         // Carry the unused travel into the next link, in the lane chosen for it. Polyline links meet
         // with a small kink, so the exact start of the next link can sit a hair behind and to the side
         // of where this one ended; on a roundabout the follower is close enough that this one pose was
@@ -2098,8 +2320,29 @@ const ARRIVE_SPEED = 0.8;
 const ROUTE_JITTER = 0.3;
 /** Held up this long on a road, a driver looks again for a better way from the next junction. */
 const REROUTE_DELAY = 6;
-/** How long a bus stands at its stop. */
+/** How long a bus stands at its far stop. */
 const BUS_DWELL = 3;
+
+/**
+ * Whether a bus standing in a lay-by may pull back out: nobody alongside it, and every car coming up
+ * behind it in the lane can stop in comfort short of it (drivers let a signalling bus out).
+ */
+function canLeaveBay(c: Car, slot: number): boolean {
+  const leg = c.legs[c.li], len = vehicleLength(c.vehicle);
+  for (const o of laneCars[laneKey(leg.seg, leg.fwd, c.lane)]) {
+    const oc = slots[o];
+    if (!oc || o === slot || oc.inBay) continue;
+    const ol = oc.legs[oc.li];
+    if (ol.seg !== leg.seg || ol.fwd !== leg.fwd) continue;
+    const half = (len + vehicleLength(oc.vehicle)) / 2, d = c.p - oc.p;
+    if (d < -half - 0.05) continue; // well ahead of it
+    if (d < half + 0.04) return false; // beside it (one holding back to let it out stops further back)
+    // Room for it to stop behind the bus as it would behind any car (see the lane loop's bayBus).
+    const need = Math.max(GAP[segs[leg.seg].kind], half + 0.06);
+    if (oc.p + (oc.v * oc.v) / (2 * driverFor(oc.vehicle).b) > c.p - need + 0.02) return false;
+  }
+  return true;
+}
 
 /** What a stretch of route costs a driver now, as the route search counts it. */
 function legsCost(legs: Leg[]): number {
@@ -2356,6 +2599,8 @@ function signalsOf(c: Car): number {
   if (simTime - c.brakeT < 0.3) f |= CAR_BRAKE;
   if (c.crash !== undefined && incidents.crashes.has(c.crash)) f |= CAR_LEFT | CAR_RIGHT;
   else if (c.chT >= 0 && c.lane !== c.chLane) f |= c.lane > c.chLane ? CAR_LEFT : CAR_RIGHT;
+  else if (c.leavingBay || (c.inBay && (c.dwellUntil ?? 0) > 0 && c.dwellUntil! <= simTime)) f |= CAR_LEFT; // pulling out of a lay-by
+  else if (c.calls?.[c.callIdx ?? 0]?.bay && c.calls[c.callIdx ?? 0].li === c.li && c.calls[c.callIdx ?? 0].p - c.p < 1.5 && !c.inBay) f |= CAR_RIGHT; // pulling in
   else {
     const leg = c.legs[c.li], next = c.legs[c.li + 1];
     if (next && leg.p1 - c.p < 3.5 && nodeType[legEndNode(leg)] !== J_PLAIN) {
@@ -2569,6 +2814,8 @@ function census(): void {
     taxiStops = Array.from(kind.keys()).filter(i => kind[i] === T_TAXI && tileConnected(i) && flags[i] === 0);
     for (let i = 0; i < slots.length; i++) if (slots[i]?.taxiStop !== undefined && !taxiStops.includes(slots[i]!.taxiStop!)) freeCar(i);
     transitSignature = signature; transitTokens = transit.lines.map(() => 0); transitDepartures = transit.lines.map(() => 12);
+    busStopTiles = [...new Set(transit.lines.filter(l => l.mode === 'bus').flatMap(l => [l.a, l.b]))];
+    refreshBusStops();
     for (let i = 0; i < slots.length; i++) if (slots[i]?.line !== undefined) freeCar(i);
   }
   riders = Math.round(riderWindow + taxiWindow); airPassengers = Math.round(airWindow); railPassengers = Math.round(railWindow);
@@ -2995,6 +3242,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
   const m = ev.data;
   switch (m.type) {
     case 'load': {
+      probeStops = []; probeStopIds = []; trafficScale = 1;
       extras = m.extras ? { ...m.extras, district: m.extras.district.slice(), terraform: m.extras.terraform.slice() } : defaultExtras(m.tax);
       baseTerrain = generateTerrain(m.seed);
       terrain = baseTerrain;
@@ -3139,6 +3387,8 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     case 'probe': {
       if (typeof m.walkRate === 'number') { walkRateOverride = m.walkRate; for (const cr of crossings) cr.rate = m.walkRate; }
       const index = new Map(segs.map((s, i) => [s.id, i]));
+      if (m.stops) { probeStopIds = m.stops; refreshBusStops(); }
+      if (typeof m.trafficScale === 'number') trafficScale = m.trafficScale;
       for (const t of m.trips ?? []) {
         const a = index.get(t.a), b = index.get(t.b);
         if (a !== undefined && b !== undefined) spawnTrip(a, t.as, b, t.bs, t.vehicle ?? 1, undefined, t.callout ? { kind: 'heist', origin: 0, tile: 0, work: 0 } : undefined, undefined, !!t.loop);
@@ -3165,7 +3415,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         return { car: desc(c), node: nodeIds[node], type: nodeType[node], wait: boxWait[node] >= 0 ? `${boxWait[node]}: ${desc(slots[boxWait[node]])}` : '-', box: (boxCars[node] ?? []).map(o => `${o}: ${desc(slots[o])}`), want: wantedLanes(c) };
       });
       // And, when asked, every car's state: its road, how far along, and how fast.
-      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent, x: trafficSpace.poses.get(slot)?.x ?? 0, z: trafficSpace.poses.get(slot)?.z ?? 0, angle: trafficSpace.poses.get(slot)?.angle ?? 0 }] : []) : undefined;
+      const detail = m.detail ? slots.flatMap((c, slot) => c ? [{ slot, uid: c.uid, seg: segs[c.legs[c.li].seg].id, fwd: c.legs[c.li].fwd, p: c.p, v: c.v, li: c.li, legs: c.legs.length, vehicle: c.vehicle, lane: c.lane, inBay: !!c.inBay, stuck: c.stuck, flags: signalsOf(c), side: c.side, changing: c.chT >= 0 && c.lane !== c.chLane, box: c.box >= 0 ? nodeIds[c.box] : -1, lock: c.lock >= 0 ? nodeIds[c.lock] : -1, insistent: c.insistent, x: trafficSpace.poses.get(slot)?.x ?? 0, z: trafficSpace.poses.get(slot)?.z ?? 0, angle: trafficSpace.poses.get(slot)?.angle ?? 0 }] : []) : undefined;
       const walkers = m.detail ? walkerFrame() : undefined;
       // Every car's route still joins up, leg to leg, after any rerouting.
       let broken = 0;

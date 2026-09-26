@@ -1,6 +1,7 @@
 import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS } from '../constants';
+import { BAY_SETBACK } from '../roads/busLanes';
 import { lotScale } from '../placement';
 import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
@@ -157,6 +158,11 @@ export class BuildingLayer {
       const tx = multi || isDecoration(k) ? i % GRID + 0.5 : raster.lotX[i];
       const tz = multi || isDecoration(k) ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
       pos.set(tx - half, 0, tz - half);
+      // A bus stop stands back behind its lay-by.
+      if (k === T_BUS && !multi && raster.accSeg[i] >= 0) {
+        const dx = tx - raster.accX[i], dz = tz - raster.accZ[i], l = Math.hypot(dx, dz) || 1;
+        pos.x += (dx / l) * BAY_SETBACK; pos.z += (dz / l) * BAY_SETBACK;
+      }
       if (zone) {
         // A zone painted in a cell is shown in the cell, turned to its road.
         if (raster.cell[i] >= 0) q.setFromAxisAngle(yAxis, raster.face[i]); else q.identity();
