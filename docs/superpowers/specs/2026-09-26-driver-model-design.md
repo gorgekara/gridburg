@@ -92,10 +92,13 @@ discharges about 1.7–2 vehicles per game second from a queue. Today it is abou
 - **Gap acceptance, major left:** a major-road car turning left across the oncoming major lanes gives
   way to oncoming major traffic within 1.4 s.
 - **Priority in the box:**
-  - A booking (`boxWait`) by a minor car only holds back cars of its own rank or lower.
-  - A minor car books the box after 12 s instead of 4, so priority is real but a minor arm is never
-    starved for ever.
+  - A minor car books the box (`boxWait`) only after 12 s instead of 4. Its booking then holds back
+    conflicting traffic from every arm: after that long it forces its way in, so priority is real but
+    a minor arm is never starved for ever.
   - Callouts still book at once.
+  - A car admitted early, still short of the junction at speed, is judged by when it will arrive. A
+    waiting car may go ahead of it if it is further off than the waiting car's gap: its critical gap,
+    or 1.6 s at a junction without priority.
 - **Roundabouts:** a circulating car counts as approaching a node when it would reach it within
   1.3 s, judged by its distance and speed. That replaces the fixed 1.3-cell distance. The locks and the
   booking after `RING_PATIENCE` stay as they are.
@@ -111,8 +114,29 @@ discharges about 1.7–2 vehicles per game second from a queue. Today it is abou
   - It shows the road's kind and lanes, then a row per direction: flow per minute, mean speed against
     the limit, queue in cars, and delay.
   - For an uncontrolled junction end, whether the approach is major or minor.
-  - The inspector refreshes with the city's state, like the building inspector. It works the same way:
-    `inspectRoad` to the worker, a `roadInspection` report back.
+  - The inspector refreshes with the city's state, like the building inspector, and uses its message
+    and panel: `inspect` carries the road's segment id, and the report comes back as an ordinary
+    inspection with a line per direction.
+
+## Found while building
+
+- **Platoons:** a car right behind one already let into a junction on the same path follows it in.
+  Otherwise every queued car starts from rest at the line.
+- **Room beyond:** behind a moving car, the distance still to go to the junction counts as room on
+  the far side.
+- **Arriving:** an arriving car slows to 0.8 cells/s to turn in; it does not stop in the lane.
+- **Stopped after all:** a car let into a box early that is then stopped short of its line (the light
+  changed) gives its place back. Otherwise it blocks the crossing phase.
+- **Roundabouts:**
+  - Ring nodes use their locks only, not boxes.
+  - A circulating car takes the lock over from the car just ahead once that car is past the node.
+- **Creeping:** edging forward a hair at a time counts as standing still, so it does not reset a
+  driver's patience.
+
+## Known limits
+
+- A single-lane roundabout carries about one vehicle a second when flooded. That is somewhat under a
+  real one. Its lock-and-booking scheme is the next thing to replace.
 
 ## Out of scope
 

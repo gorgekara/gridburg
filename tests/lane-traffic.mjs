@@ -87,8 +87,11 @@ function test(name, run) {
   try { run(); checks++; console.log(`✓ ${name}`); }
   catch (error) { failures++; console.error(`✗ ${name}\n${error.stack}`); }
 }
-// Before real lanes (one car in a junction at a time, lanes fixed by slot) these crossings managed
-// 235 trips on streets and 286 on avenues in 150 s.
+// These crossings are flooded (a trip from every arm every 0.4 s), so they measure capacity. Cars
+// accelerate and keep a time headway, so a lane discharges about 1.4 cars a second: an equal street
+// crossing (no priority, first come first served) carries about 1 car a second, which is 1,000–1,300
+// vehicles an hour in real terms, as real ones do. Before the driver model, with instant speeds, these
+// ran about three times higher, which no real junction does.
 const street = crossing(cross(N.KIND_ROAD), 150);
 const lit = cross(N.KIND_ROAD); lit.nearestNode(40, 40, 0.1).light = true;
 const signalled = crossing(lit, 150);
@@ -96,16 +99,18 @@ console.log(`  signalled street crossing: ${signalled.arrived} trips in 150 s, $
 const avenue = crossing(cross(N.KIND_AVENUE), 150);
 console.log(`  street crossing: ${street.arrived} trips in 150 s, ${street.gaveUp} gave up`);
 console.log(`  avenue crossing: ${avenue.arrived} trips in 150 s, ${avenue.gaveUp} gave up, ${Math.round(avenue.rightShare * 100)}% in the right lane at the line`);
-test('an avenue crossing carries at least half as much again as with one car in the box at a time', () => {
-  assert.ok(avenue.arrived >= 1.5 * 286, `${avenue.arrived} trips`);
+test('an avenue crossing, with two lanes each way, carries well over a street crossing', () => {
+  assert.ok(avenue.arrived >= 1.4 * street.arrived, `${avenue.arrived} trips against ${street.arrived}`);
   assert.ok(avenue.gaveUp <= avenue.arrived * 0.1, `${avenue.gaveUp} gave up`);
 });
-test('a street crossing is no worse than before', () => {
-  assert.ok(street.arrived >= 0.9 * 235, `${street.arrived} trips`);
+test('a street crossing carries about a car a second', () => {
+  assert.ok(street.arrived >= 130, `${street.arrived} trips`);
   assert.ok(street.gaveUp <= street.arrived * 0.1, `${street.gaveUp} gave up`);
 });
 test('cars queued at a red light do not hold up the green traffic', () => {
-  assert.ok(signalled.arrived >= 200, `${signalled.arrived} trips`);
+  // Two 8 s phases with amber: each approach has green for under half the time.
+  assert.ok(signalled.arrived >= 80, `${signalled.arrived} trips`);
+  assert.ok(signalled.gaveUp <= signalled.arrived * 0.05, `${signalled.gaveUp} gave up`);
 });
 test('both lanes of an avenue carry traffic', () => {
   for (const [id, counts] of Object.entries(avenue.lanes)) assert.ok((counts[0] ?? 0) > 0 && (counts[1] ?? 0) > 0, `segment ${id}: ${counts}`);
@@ -166,6 +171,8 @@ test('at a signal nobody is let in on red, and turning traffic gets through on i
 
 /** A busy east-west avenue crossed by a quiet side street, under a fixed or an adaptive signal. */
 function lopsided(adaptive) {
+  // The same traffic for both timings, so the comparison is of the signal alone.
+  Math.random = C.mulberry32(11);
   const net = new Network();
   net.insertPath([{ x: 18, z: 40 }, { x: 62, z: 40 }], N.KIND_AVENUE);
   net.insertPath([{ x: 40, z: 18 }, { x: 40, z: 62 }], N.KIND_ROAD);
@@ -177,14 +184,18 @@ function lopsided(adaptive) {
   load(net);
   const byEnd = (x, z) => { const n = net.nearestNode(x, z, 0.1); const s = net.segsAt(n.id)[0]; return { seg: s.id, s: s.a === n.id ? 0.6 : s.len - 0.6 }; };
   const west = byEnd(18, 40), east = byEnd(62, 40), north = byEnd(40, 18), south = byEnd(40, 62);
+  // Cars pull away from rest, so one spawn point starts about a car a second. Three along each arm
+  // keep the avenue flooded, so the count measures the junction and not the kerbside.
+  const along = (end, k) => ({ seg: end.seg, s: end.s + (end.s < 1 ? 1 : -1) * 3 * k });
   const start = ask([]).arrived;
-  let t = 0, next = 0, quiet = 0;
+  let t = 0, next = 0, quiet = 0, turn = 0;
   for (let i = 0; i < 150 * C.SIM_HZ; i++) {
     clock();
     t += 1 / C.SIM_HZ;
     if (t >= next) {
       next += 0.3;
-      const trips = [{ a: west.seg, as: west.s, b: east.seg, bs: east.s }, { a: east.seg, as: east.s, b: west.seg, bs: west.s }];
+      const k = turn++ % 3, w = along(west, k), e = along(east, k);
+      const trips = [{ a: w.seg, as: w.s, b: east.seg, bs: east.s }, { a: e.seg, as: e.s, b: west.seg, bs: west.s }];
       if (++quiet % 12 === 0) trips.push({ a: north.seg, as: north.s, b: south.seg, bs: south.s });
       ask(trips);
     }
@@ -193,10 +204,13 @@ function lopsided(adaptive) {
 }
 const longRed = cross(N.KIND_ROAD);
 { const node = longRed.nearestNode(40, 40, 0.1); node.light = true; const plan = S.defaultPlan(longRed, node.id); for (const p of plan.phases) p.green = 40; node.signal = plan; }
-const longRun = crossing(longRed, 150, 1.2);
+// A trip from every arm every 4 s: under what a single lane can discharge in its share of a long cycle
+// (about 1.4 cars a second for 40 s in 82, less the left turners waiting for gaps), so every car gets
+// through within a cycle or two.
+const longRun = crossing(longRed, 150, 4);
 test('cars waiting out a long red do not give up', () => {
   assert.equal(longRun.gaveUp, 0, `${longRun.gaveUp} gave up`);
-  assert.ok(longRun.arrived > 40, `${longRun.arrived} trips`);
+  assert.ok(longRun.arrived > 25, `${longRun.arrived} trips`);
 });
 const fixedRun = lopsided(false), adaptiveRun = lopsided(true);
 console.log(`  busy avenue across a quiet street: ${fixedRun} trips on fixed timing, ${adaptiveRun} adaptive`);
