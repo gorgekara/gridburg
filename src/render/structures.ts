@@ -52,7 +52,15 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
   const rail = between(trim[0], len - trim[1]);
   const onOtherDeck = (p: SweepPoint, side: number, extra = 0): boolean => {
     const x = p.x + OFFSET - p.tz * side * (W + extra), z = p.z + OFFSET + p.tx * side * (W + extra);
-    return arms.some(o => { const hit = Network.nearestOn(o, x, z); return hit.dist < roadHalf(o) + 0.3 && Math.abs(roadHeight(o, hit.s) - p.y) < 0.5; });
+    // The other deck at the wall's own height, or above it but low enough that the wall (0.205 tall)
+    // would poke up into its slab. One well below (an exit already dropping away under this road) is
+    // passed over, as is one high enough to clear the wall.
+    return arms.some(o => {
+      const hit = Network.nearestOn(o, x, z);
+      if (hit.dist >= roadHalf(o) + 0.3) return false;
+      const rise = roadHeight(o, hit.s) - p.y;
+      return rise > -0.3 && rise < 0.205 - DECK_BOTTOM + 0.05;
+    });
   };
   for (const side of [-1, 1]) {
     const flip = (v: readonly [number, number][]): ProfileVertex[] => v.map(([a, u]) => [a * side, u] as const);
