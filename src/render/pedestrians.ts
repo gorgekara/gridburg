@@ -169,15 +169,19 @@ export class PedestrianLayer {
     // the kerb bends round to on that hand. Crossing a road is left to the people at the zebras.
     const hand = p.side * p.dir;
     const inAt = sample(p.seg, p.dir > 0 ? p.seg.len : 0), dx = inAt.tx * p.dir, dz = inAt.tz * p.dir;
-    let next: RSeg | null = null, best = Infinity;
+    let next: RSeg | null = null, straight: RSeg | null = null, best = Infinity;
     for (const s of net.segsAt(node)) {
       if (s.id === p.seg.id || !this.walkable(s)) continue;
       const out = sample(s, s.a === node ? 0 : s.len), ox = s.a === node ? out.tx : -out.tx, oz = s.a === node ? out.tz : -out.tz;
       // Turning towards its hand (right is a positive cross in this map's axes), the sharpest such turn.
       const turn = Math.atan2(dx * oz - dz * ox, dx * ox + dz * oz) * hand;
       if (turn > 0.05 && Math.PI - turn < best) { best = Math.PI - turn; next = s; }
+      // Straight on is round no corner, and crosses nothing when no road leaves on that hand.
+      else if (Math.abs(turn) < 0.35 && best === Infinity && !next) straight = s;
     }
-    if (!next || this.random() < 0.08) { p.dir = -p.dir; p.side = -p.side; return; }
+    next ??= straight;
+    // Turning back, they stay on the same pavement: side is measured against a → b, not their way.
+    if (!next || this.random() < 0.08) { p.dir = -p.dir; return; }
     const fromA = next.a === node;
     p.seg = next; p.dir = fromA ? 1 : -1; p.s = fromA ? 0.05 : next.len - 0.05; p.side = hand * p.dir;
     if (this.random() < 0.15) p.pause = 0.4 + this.random() * 1.2; // a glance down the road

@@ -12,7 +12,7 @@ import { junctionPaint, chevronSpots } from './junctionMarks';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
-import { planFor, movements, stateIn, fixedClock, moveKey, crossingState } from '../roads/signals';
+import { planFor, movements, stateIn, fixedClock, moveKey, crossingState, crossingFrom } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 
 /** Each side's edge at every sample of a segment, following any taper. */
@@ -597,13 +597,13 @@ export class RoadLayer {
         if (!ends[end] || !node?.light || p + 2 > MAX_LAMPS) continue;
         const plan = planFor(net, nodeId);
         if (!plan.phases.length) continue;
-        const prefix = `${seg.id}${end ? 'f' : 'b'}>`;
-        const from = [...new Set(plan.phases.flatMap(ph => Object.keys(ph.moves).filter(k => k.startsWith(prefix))))];
+        const from = crossingFrom(plan, seg.id, end as 0 | 1);
         const hwR = sideHalf(seg, 1), hwL = sideHalf(seg, -1);
         Network.poseAt(seg, end ? seg.len - ends[end] : ends[end], pose);
         for (const side of [1, -1]) {
-          const off = side > 0 ? hwR + 0.13 : -(hwL + 0.13);
-          v3.set(pose.x - half - pose.tz * off, Math.max(0, levelY(node.level ?? 0)), pose.z - half + pose.tx * off);
+          // Beside the crossing, on the side away from the junction, clear of the people waiting on it.
+          const off = side > 0 ? hwR + 0.16 : -(hwL + 0.16), back = (end ? -1 : 1) * 0.26;
+          v3.set(pose.x - half - pose.tz * off + pose.tx * back, Math.max(0, levelY(node.level ?? 0)), pose.z - half + pose.tx * off + pose.tz * back);
           // Facing across the road, towards the far kerb, where people waiting on this side look.
           q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(-pose.tz * side, pose.tx * side));
           m4.compose(v3, q, one);

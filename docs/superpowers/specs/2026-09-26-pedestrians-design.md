@@ -15,8 +15,10 @@ This is phase C of `2026-09-26-rce-polish-roadmap.md`. Decisions agreed: every i
   - Each is identified by its node, its segment and which end of the segment it is at.
   - It has a centre, a direction across the road, and a length: the road's full width.
 - **People arrive at each end of a crossing:**
-  - The rate follows the buildings around it: 0.004 a second for each level of built zone within 2 cells
-    of its centre, with a floor of 0.01 and a ceiling of 0.2.
+  - The rate follows the buildings around it: 0.002 a second for each level of built zone within 2 cells
+    of its centre, with a floor of 0.005 and a ceiling of 0.12.
+  - Twice that was tried first. It cost the overloaded demo city about 1,600 residents, against about
+    1,000 at this rate. A busy kerb still sees someone every 10 s or so.
   - At most 6 wait at a crossing, and at most 320 are out across the city.
   - Arrivals scale with `trafficScale` and thin at night like the rest of the traffic.
 - **Walking pace:** 0.3 cells per game second, about 1.3 m/s, with ±15% between people.

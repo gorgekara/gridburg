@@ -322,6 +322,10 @@ test('pedestrian signals: walk beside the parallel traffic, flashing when too la
   // If the next phase keeps that road stopped too, the walk runs on into it.
   const long = { phases: [{ green: 10, moves: { a: 1 } }, { green: 10, moves: { b: 1 } }, { green: 10, moves: { x: 1 } }] };
   assert.equal(S.crossingState(long, 0, 9, 10, ['x'], 4), 'walk');
+  // A road that only leaves the junction: the traffic turning into it is what stops people crossing.
+  const plan2 = { phases: [{ green: 8, moves: { '1f>7f': 1 } }, { green: 8, moves: { '2f>3f': 1 } }] };
+  assert.deepEqual(S.crossingFrom(plan2, 7, 0), ['1f>7f']);
+  assert.equal(S.crossingState(plan2, 0, 2, 8, S.crossingFrom(plan2, 7, 0), 4), 'stop');
 });
 
 test('signalled crossings get a pedestrian head at each end; every zebra gets tactile ramps', () => {

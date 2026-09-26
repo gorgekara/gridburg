@@ -138,6 +138,18 @@ export function crossingState(plan: SignalPlan, phase: number, t: number, len: n
   return left >= crossTime ? 'walk' : 'flash';
 }
 
+/**
+ * The movements whose green stops people crossing the road `segId` where its `end` (0 at a, 1 at b)
+ * meets a signalled junction: the traffic arriving along it, or, on a road that only leaves the
+ * junction, the traffic turning into it.
+ */
+export function crossingFrom(plan: SignalPlan, segId: number, end: 0 | 1): string[] {
+  const arriving = `${segId}${end === 1 ? 'f' : 'b'}>`, leaving = `>${segId}${end === 0 ? 'f' : 'b'}`;
+  const keys = new Set(plan.phases.flatMap(ph => Object.keys(ph.moves)));
+  const from = [...keys].filter(k => k.startsWith(arriving));
+  return from.length ? from : [...keys].filter(k => k.endsWith(leaving));
+}
+
 export const cycleOf = (plan: SignalPlan): number => plan.phases.reduce((t, p) => t + p.green + AMBER + ALL_RED, 0);
 
 /** Where a fixed-time plan is at `time` seconds into its cycle. */

@@ -277,8 +277,11 @@ test('a crossroads of two equal streets has no priority, and keeps flowing', () 
   ], 150);
   console.log(`  equal crossroads: ${r.flows.map(f => f.arrived).join('/')} trips, ${r.gaveUp} gave up`);
   assert.equal(r.gaveUp, 0);
+  // Together, since with random arrivals one flow can lose out to another; and every flow moves.
   // (People crossing at its zebras take a little of its capacity.)
-  for (const f of r.flows.slice(0, 4)) assert.ok(f.arrived >= 30, `${f.arrived} trips`);
+  const main = r.flows.slice(0, 4).reduce((t, f) => t + f.arrived, 0);
+  assert.ok(main >= 120, `${main} trips on the four main flows`);
+  for (const f of r.flows) assert.ok(f.arrived >= 8, `${f.arrived} trips`);
 });
 
 test('the road inspector reports each direction\'s flow, speed, queue, delay and control', () => {
@@ -413,10 +416,10 @@ test('traffic makes way for blue lights: a callout gets through a queue on a sin
  * Run traffic and people through a junction; count the people who crossed, the trips, and any moment a
  * car's body was over someone on a crossing.
  */
-function crossingRun(net, flows, seconds) {
+function crossingRun(net, flows, seconds, walkRate = 0.15) {
   load(net);
   ask([], false);
-  send({ type: 'probe', trips: [], walkRate: 0.15 });
+  send({ type: 'probe', trips: [], walkRate });
   const start = ask([]);
   const crossed = new Set(), next = flows.map(() => 0);
   let hits = 0, t = 0;
@@ -468,6 +471,29 @@ test('at a signal, people cross on their walk and turning cars give way to them'
   assert.ok(r.crossed >= 30, `${r.crossed} crossed`);
   assert.equal(r.hits, 0);
   assert.ok(r.arrived >= 80 && r.gaveUp <= 3, 'traffic still flows');
+});
+
+test('a wide avenue with busy zebras: cars wait for people but are not starved, and nobody is hit', () => {
+  const build = () => {
+    const net = new N.Network();
+    net.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], N.KIND_AVENUE);
+    net.insertPath([{ x: 40, z: 16 }, { x: 40, z: 64 }], N.KIND_ROAD);
+    for (const sg of net.segs.values()) if (sg.kind === N.KIND_AVENUE) { sg.addR = 2; sg.addL = 2; }
+    net.version++;
+    return net;
+  };
+  const flows = (net) => {
+    const w = arm(net, 40, 40, 16, 40), e = arm(net, 40, 40, 64, 40), n = arm(net, 40, 40, 40, 16), sth = arm(net, 40, 40, 40, 64);
+    return [{ from: w, to: e, every: 2 }, { from: e, to: w, every: 2 }, { from: w, to: sth, every: 5 }, { from: e, to: n, every: 5 }, { from: n, to: e, every: 5 }, { from: sth, to: w, every: 5 }];
+  };
+  Math.random = C.mulberry32(43);
+  const a = build(), none = crossingRun(a, flows(a), 200, 0);
+  Math.random = C.mulberry32(43);
+  const b = build(), busy = crossingRun(b, flows(b), 200, 0.15);
+  console.log(`  wide avenue: ${none.arrived} trips without people, ${busy.arrived} with ${busy.crossed} crossing; ${busy.gaveUp} gave up, ${busy.hits} hits`);
+  assert.equal(busy.hits, 0);
+  assert.ok(busy.arrived >= none.arrived * 0.6, 'people cost some capacity, not most of it');
+  assert.ok(busy.gaveUp <= 5, `${busy.gaveUp} gave up`);
 });
 
 console.log(`${checks} driver checks passed; ${failures} failed`);

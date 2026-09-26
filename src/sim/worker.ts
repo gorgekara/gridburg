@@ -29,7 +29,7 @@ import type { CivicNeed } from '../constants';
 import { advanceCity } from '../progression';
 import { civicCoverage } from './civic';
 import { Network, SPEED, KIND_MOTORWAY, KIND_RAMP, ROAD_LABEL, isCarriageway } from '../roads/network';
-import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, crossingState, AMBER, ALL_RED, MIN_GREEN } from '../roads/signals';
+import { planFor, stateIn, fixedClock, cycleOf, movements as nodeMovements, moveKey, crossingState, crossingFrom, AMBER, ALL_RED, MIN_GREEN } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 import type { RSeg } from '../roads/network';
 import { lanesFor, laneCentre, matchLanes, approachLanes, taperLength, roadHalf, sideHalf, oneWay, DEFAULT_LANES, MAXL } from '../roads/lanes';
@@ -271,7 +271,12 @@ interface Crossing {
   node: number; seg: number; end: 0 | 1; dist: number;
   cx: number; cz: number; ux: number; uz: number; lo: number; hi: number;
   waiting: [number, number]; lastStep: [number, number]; rate: number; walkers: Walker[];
+  /** At a signal: the movements whose green stops people crossing, worked out once per plan. */
+  from?: string[]; fromPlan?: SignalPlan;
 }
+/** A car kept waiting this long at a zebra gets its turn: people let it go before stepping out. */
+const WALK_COURTESY = 4;
+let walkerStart = 0;
 let crossings: Crossing[] = [];
 /** Per segment end (seg·2 + end, 0 at a): the crossing there, or −1. */
 let crossingAt = new Int32Array(0);
@@ -1479,7 +1484,8 @@ function stepSignals(dt: number): void {
     const green = plan.phases[sigPhase[n]].green;
     if (plan.adaptive && look && sigT[n] < sigLen[n]) {
       const here = signalDemand(n, sigPhase[n]);
-      if (sigT[n] >= MIN_GREEN && !here && plan.phases.some((_, k) => k !== sigPhase[n] && signalDemand(n, k))) sigLen[n] = sigT[n];
+      // Never cut a green short under people already crossing on it.
+      if (sigT[n] >= MIN_GREEN && !here && !walkersOnCrossingsAt(n) && plan.phases.some((_, k) => k !== sigPhase[n] && signalDemand(n, k))) sigLen[n] = sigT[n];
       else if (here && sigLen[n] - sigT[n] < 0.5 && sigLen[n] < 2 * green) sigLen[n] = Math.min(2 * green, sigLen[n] + 0.5);
     }
     if (sigT[n] >= sigLen[n] + AMBER + ALL_RED) {
@@ -2012,10 +2018,8 @@ function crossingHalf(cr: Crossing, arriving: boolean): [number, number] {
 function crossingSignal(cr: Crossing): 'walk' | 'flash' | 'stop' {
   const plan = sigPlan[cr.node];
   if (!plan) return 'walk';
-  const prefix = `${segs[cr.seg].id}${cr.end === 1 ? 'f' : 'b'}>`;
-  const from = new Set<string>();
-  for (const ph of plan.phases) for (const k of Object.keys(ph.moves)) if (k.startsWith(prefix)) from.add(k);
-  return crossingState(plan, sigPhase[cr.node], sigT[cr.node], sigLen[cr.node], [...from], (cr.hi - cr.lo + 0.1) / WALK_SPEED);
+  if (cr.fromPlan !== plan) { cr.from = crossingFrom(plan, segs[cr.seg].id, cr.end); cr.fromPlan = plan; }
+  return crossingState(plan, sigPhase[cr.node], sigT[cr.node], sigLen[cr.node], cr.from!, (cr.hi - cr.lo + 0.1) / WALK_SPEED);
 }
 
 /**
@@ -2031,13 +2035,17 @@ function crossingBusy(cr: Crossing): boolean {
     for (let l = 0; l < Math.max(1, dirLanes[cr.seg * 2 + (fwd ? 0 : 1)]); l++) for (const slot of laneCars[laneKey(cr.seg, fwd, l)]) {
       const o = slots[slot];
       if (!o) continue;
-      const len = vehicleLength(o.vehicle), leg = o.legs[o.li];
-      // How far its nose is from the near edge of the crossing, along its way.
-      const toZebra = arriving ? leg.p1 - o.p - cr.dist - ZEBRA_HALF - len / 2 : cr.dist - ZEBRA_HALF - o.p - len / 2;
+      const len = vehicleLength(o.vehicle);
+      // How far its nose is from the near edge of the crossing, along its way (arriving: from the
+      // segment's end, not a trip's last leg's end, which may stop short of it).
+      const toZebra = arriving ? sg.len - o.p - cr.dist - ZEBRA_HALF - len / 2 : cr.dist - ZEBRA_HALF - o.p - len / 2;
       const past = -(2 * ZEBRA_HALF + len);
       if (toZebra < past) continue;
       if (toZebra <= 0.05) return true;
-      if (arriving && o.v > 0.3 && toZebra < (o.v * o.v) / (2 * driverFor(o.vehicle).b) + 0.4) return true;
+      // Too fast to stop for someone stepping out, coming in or going out.
+      if (o.v > 0.3 && toZebra < (o.v * o.v) / (2 * driverFor(o.vehicle).b) + 0.4) return true;
+      // Kept waiting at the line long enough: its turn.
+      if (arriving && o.stuck > WALK_COURTESY && toZebra < 0.8) return true;
     }
   }
   for (const slot of boxCars[cr.node] ?? []) {
@@ -2051,8 +2059,10 @@ function crossingBusy(cr: Crossing): boolean {
     if (a.seg === cr.seg) continue;
     for (let l = 0; l < Math.max(1, dirLanes[a.seg * 2 + (a.fwd ? 0 : 1)]); l++) for (const slot of laneCars[laneKey(a.seg, a.fwd, l)]) {
       const o = slots[slot], next = o?.legs[o.li + 1];
-      if (!o || !next || next.seg !== cr.seg || o.v < 0.5) continue;
-      if ((o.legs[o.li].p1 - o.p) / o.v < 1.5) return true;
+      if (!o || !next || next.seg !== cr.seg) continue;
+      if (o.v >= 0.5 && (o.legs[o.li].p1 - o.p) / o.v < 1.5) return true;
+      // Waiting a while to turn in across the crossing: its turn too.
+      if (o.stuck > WALK_COURTESY && o.legs[o.li].p1 - o.p < approachSetback[a.seg * 2 + (a.fwd ? 0 : 1)] + 0.5) return true;
     }
   }
   return false;
@@ -2073,10 +2083,19 @@ function walkersBlock(c: Car, node: number): boolean {
   return on(crossingAt[leg.seg * 2 + (leg.fwd ? 1 : 0)], true) || (!!next && on(crossingAt[next.seg * 2 + (next.fwd ? 0 : 1)], false));
 }
 
+/** Whether anyone is on a crossing at a node. */
+function walkersOnCrossingsAt(node: number): boolean {
+  for (const cr of crossings) if (cr.node === node && cr.walkers.length) return true;
+  return false;
+}
+
 /** People arrive at the kerbs, step out when their crossing lets them, and walk across. */
 function stepWalkers(dt: number): void {
   const hour = (tick / 20) % 24, night = hour < 6 || hour > 22 ? 0.3 : 1;
-  for (const cr of crossings) {
+  // Start somewhere different each step, so when the city's walkers run out no crossing always misses.
+  walkerStart = crossings.length ? (walkerStart + 1) % crossings.length : 0;
+  for (let ci = 0; ci < crossings.length; ci++) {
+    const cr = crossings[(ci + walkerStart) % crossings.length];
     for (const end of [0, 1] as const) {
       if (walkersOut < MAX_WALKERS && cr.waiting[end] < MAX_WAITING && Math.random() < cr.rate * trafficScale * night * dt) { cr.waiting[end]++; walkersOut++; }
     }
@@ -2107,7 +2126,7 @@ function refreshCrossingRates(): void {
       const i = z * GRID + x;
       if (isZone(kind[i])) busy += level[i];
     }
-    cr.rate = walkRateOverride >= 0 ? walkRateOverride : Math.min(0.2, Math.max(0.01, busy * 0.004));
+    cr.rate = walkRateOverride >= 0 ? walkRateOverride : Math.min(0.12, Math.max(0.005, busy * 0.002));
   }
 }
 
