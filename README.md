@@ -461,6 +461,11 @@ The city autosaves in your browser, and **Share** copies a link that contains th
   - No car enters a junction while anyone on a crossing it will pass over is in its way, so turning
     cars wait for them.
   - Pavement walkers keep to their own corner. Every zebra has curb ramps with tactile paving.
+- **Built like real roads:**
+  - Every two-way road into a roundabout has a splitter island, and the central island a truck apron.
+  - Two-way avenues have a raised, planted median that stops short of each junction for its turn bay.
+  - Expressways have a concrete median barrier, and guardrails line expressways, motorways and slip
+    roads.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

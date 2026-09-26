@@ -42,7 +42,9 @@ const m4 = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const v3 = new THREE.Vector3();
 const one = new THREE.Vector3(0.72, 0.72, 0.72);
-const TACTILE = 0xe2b93b;
+const TACTILE = 0xe2b93b, MEDIAN_GRASS = 0x6f9f52, APRON = 0xb3a58c;
+/** How far short of a junction an avenue's median stops, leaving room for its turn bay. */
+const MEDIAN_BAY = 1.5;
 const WALK = new THREE.Color(0xf4f1e8), DONT_WALK = new THREE.Color(0xff7a1a), PED_OFF = new THREE.Color(0x2a2a2a);
 const LAMP_RED = new THREE.Color(0xff3b30);
 const LAMP_AMBER = new THREE.Color(0xffbf35);
@@ -66,7 +68,7 @@ export class RoadLayer {
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
   /** What the last rebuild painted and put up at junctions and curves. */
-  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0 };
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0 };
   /** Pedestrian signal heads: a box on a post at each end of a signalled crossing, and its lamp. */
   readonly pedHeads: THREE.InstancedMesh;
   private pedLamps: THREE.InstancedMesh;
@@ -190,7 +192,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
-    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0 };
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -290,6 +292,7 @@ export class RoadLayer {
     }
     b.heightAt = null;
     roundaboutFlares(net, b);
+    this.marks.splitters += splitterIslands(net, b);
     junctionFillets(net, b, tapers);
     rampGores(net, b, this.marks);
 
@@ -305,6 +308,8 @@ export class RoadLayer {
       if (r <= 0) continue;
       b.disc(x, z, r, 0.052, 0x78a858, 32);
       b.ring(x, z, r * 0.92, r, 0.058, 0xd7cbae, 32);
+      // A truck apron round the island: paving a long vehicle's rear wheels may cross.
+      b.ring(x, z, r, Math.min(rb.r - 0.05, r + 0.12), 0.047, APRON, 40);
       // A low fountain, surrounded by four flower beds and two compact evergreen trees.
       // Every radius is a fraction of the usable island, including tree canopies.
       const scale = Math.min(r, 1.5), basin = r * 0.3;
@@ -331,6 +336,7 @@ export class RoadLayer {
         decorations.taper(0, r * 0.11, scale * 0.32, tx, 0.06 + scale * 0.36, z, 0x579163, 7);
       }
     }
+    roadsideSafety(net, decorations, this.marks);
     this.islands.geometry.dispose();
     this.islands.geometry = decorations.build();
     this.islands.visible = this.islands.geometry.hasAttribute('position');
@@ -358,7 +364,7 @@ export class RoadLayer {
       // Lane lines sit between carriageway lanes: two each way on an avenue, three on an expressway.
       const lanes = highway ? [0.44, 0.88] : [0.43];
       const divider = highway ? 0.1 : 0.07;
-      const strip = (s0: number, s1: number, halfW: number, offset: number, color: number): void => {
+      const strip = (s0: number, s1: number, halfW: number, offset: number, color: number, y = 0.056): void => {
         const steps = Math.max(1, Math.ceil((s1 - s0) / 0.35));
         const arr = new Float32Array((steps + 1) * 2);
         for (let k = 0; k <= steps; k++) {
@@ -366,7 +372,7 @@ export class RoadLayer {
           arr[k * 2] = pose.x - half;
           arr[k * 2 + 1] = pose.z - half;
         }
-        b.ribbon(arr, steps + 1, halfW, 0.056, color, offset);
+        b.ribbon(arr, steps + 1, halfW, y, color, offset);
       };
       if (s.calm) {
         // Ladders of white bars across the carriageway read as a calmed street.
@@ -393,7 +399,9 @@ export class RoadLayer {
           for (const l of s.kind === KIND_MOTORWAY ? [-0.44, 0, 0.44] : s.kind === KIND_HIGHWAY2 ? [-0.25, 0.25] : [0]) b.arrow(pose.x - half - pose.tz * l, pose.z - half + pose.tx * l, pose.tx, pose.tz, 0.12, 0.057, WHITE);
         }
       } else if (s.oneway) {
-        for (let d = from + 0.3; d < to; d += 1.6) {
+        // (A roundabout's ring needs no arrows: everyone knows which way it goes.)
+        const isRing = !!net.nodes.get(s.a)?.ring && !!net.nodes.get(s.b)?.ring;
+        for (let d = from + 0.3; d < to && !isRing; d += 1.6) {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);
         }
@@ -401,8 +409,19 @@ export class RoadLayer {
       } else if (wide) {
         // A divider down the middle, a dashed line between each pair of lanes, and an edge line
         // along the shoulder so an expressway reads as three lanes each way.
-        strip(from, to, 0.022, -divider, LINE);
-        strip(from, to, 0.022, divider, LINE);
+        // An avenue gets a raised, planted median, stopping short of each junction for its turn bay,
+        // where the double yellow line carries on; an expressway gets a concrete barrier instead.
+        const bayA = net.degree(s.a) >= 3 ? MEDIAN_BAY : 0, bayB = net.degree(s.b) >= 3 ? MEDIAN_BAY : 0;
+        const m0 = from + bayA, m1 = to - bayB;
+        if (avenue && m1 - m0 > 0.6) {
+          strip(m0, m1, divider + 0.02, 0, CURB, 0.062);
+          strip(m0 + 0.04, m1 - 0.04, divider - 0.005, 0, MEDIAN_GRASS, 0.07);
+          for (const [a, c] of [[from, m0], [m1, to]]) if (c - a > 0.05) { strip(a, c, 0.022, -divider, LINE); strip(a, c, 0.022, divider, LINE); }
+          this.marks.medians++;
+        } else if (!highway) {
+          strip(from, to, 0.022, -divider, LINE);
+          strip(from, to, 0.022, divider, LINE);
+        }
         for (let d = from; d + 0.5 < to; d += 1.1) for (const l of lanes) {
           strip(d, d + 0.5, 0.018, l, WHITE);
           strip(d, d + 0.5, 0.018, -l, WHITE);
@@ -664,6 +683,77 @@ export class RoadLayer {
     }
     attr.needsUpdate = true;
   }
+}
+
+/**
+ * Crash protection on the fast roads: a concrete barrier down the middle of every two-way expressway,
+ * and guardrails on posts along the outer edges of expressways, motorway carriageways and slip roads.
+ * They stop short of junctions and open for ramp mouths; bridges have their own parapets.
+ */
+function roadsideSafety(net: Network, d: Builder, marks: JunctionMarks): void {
+  const half = GRID / 2, p = { x: 0, z: 0, tx: 0, tz: 0 }, trims = rampTrims(net);
+  for (const s of net.segs.values()) {
+    if (s.structure || !(s.kind === KIND_HIGHWAY || isCarriageway(s.kind) || s.kind === KIND_RAMP)) continue;
+    if (net.nodes.get(s.a)?.ring && net.nodes.get(s.b)?.ring) continue; // not round a roundabout
+    const ramp = s.kind === KIND_RAMP, rt = ramp ? trims.get(s.id) : undefined;
+    const endTrim = (node: number, t: number | undefined): number => t || (net.degree(node) >= 3 ? 1.0 : 0.05);
+    const mouthA = !ramp ? rampMouth(net, s, s.a) : null, mouthB = !ramp ? rampMouth(net, s, s.b) : null;
+    const run = (s0: number, s1: number, off: number, y: number, t: number, color: number, posts: boolean): boolean => {
+      if (s1 - s0 < 0.6) return false;
+      const steps = Math.max(1, Math.ceil((s1 - s0) / 0.5));
+      let px = 0, pz = 0;
+      for (let k = 0; k <= steps; k++) {
+        Network.poseAt(s, s0 + ((s1 - s0) * k) / steps, p);
+        const x = p.x - p.tz * off - half, z = p.z + p.tx * off - half;
+        if (k > 0) d.beam(px, y, pz, x, y, z, t, color);
+        if (posts) d.box(0.018, y - 0.02, 0.018, x, 0.03, z, 0x8b9196);
+        px = x; pz = z;
+      }
+      return true;
+    };
+    for (const side of [1, -1]) {
+      const openA = mouthA && mouthA.side === side ? mouthA.length : 0, openB = mouthB && mouthB.side === side ? mouthB.length : 0;
+      const s0 = Math.max(endTrim(s.a, rt?.[0]), openA), s1 = s.len - Math.max(endTrim(s.b, rt?.[1]), openB);
+      if (run(s0, s1, side * (sideHalf(s, side) + 0.08), 0.085, 0.016, 0xc9cdd0, true)) marks.guardrails++;
+    }
+    if (s.kind === KIND_HIGHWAY && !s.oneway && run(endTrim(s.a, undefined), s.len - endTrim(s.b, undefined), 0, 0.055, 0.05, 0xbdbdb5, false)) marks.barriers++;
+  }
+}
+
+/**
+ * A splitter island up every two-way road into a roundabout: a raised, kerbed, grassed wedge between
+ * the lanes going in and coming out, widest at the ring and tapering to a point up the arm, narrow
+ * enough to stay clear of both lanes' traffic. Returns how many it laid.
+ */
+function splitterIslands(net: Network, b: MeshBuilder): number {
+  const half = GRID / 2, rings = net.roundabouts();
+  let count = 0;
+  for (const n of net.nodes.values()) {
+    if (!n.ring) continue;
+    const rb = rings.find(o => Math.abs(Math.hypot(n.x - o.x, n.z - o.z) - o.r) < 0.15);
+    if (!rb) continue;
+    let ringHw = 0;
+    for (const s of net.segsAt(n.id)) if (net.nodes.get(s.a === n.id ? s.b : s.a)!.ring) ringHw = Math.max(ringHw, HALF_WIDTH[s.kind]);
+    for (const s of net.segsAt(n.id)) {
+      if (s.oneway || s.structure || net.nodes.get(s.a === n.id ? s.b : s.a)!.ring) continue;
+      // Clear of the inner lanes' cars on both sides.
+      const inner = Math.min(Math.abs(laneCentre(net, s, true, lanesFor(net, s, true) - 1)), Math.abs(laneCentre(net, s, false, lanesFor(net, s, false) - 1)));
+      const w0 = Math.max(0.03, Math.min(0.16, inner - 0.13));
+      const start = ringHw + 0.1, len = Math.min(2.2, s.len * 0.4 - start);
+      if (len < 0.5) continue;
+      const k = s.a === n.id ? 1 : s.n - 1, e = s.a === n.id ? 0 : s.n;
+      let ux = s.pts[k * 2] - s.pts[e * 2], uz = s.pts[k * 2 + 1] - s.pts[e * 2 + 1];
+      const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
+      const rx = -uz, rz = ux, bx = n.x + ux * start - half, bz = n.z + uz * start - half;
+      const tip = [bx + ux * len, bz + uz * len];
+      const outline = [bx + rx * w0, bz + rz * w0, bx + rx * w0 * 0.6 + ux * len * 0.35, bz + rz * w0 * 0.6 + uz * len * 0.35, tip[0], tip[1],
+        bx - rx * w0 * 0.6 + ux * len * 0.35, bz - rz * w0 * 0.6 + uz * len * 0.35, bx - rx * w0, bz - rz * w0];
+      b.fan(bx + ux * len * 0.3, bz + uz * len * 0.3, [...outline, outline[0], outline[1]], 6, 0.068, MEDIAN_GRASS);
+      b.ribbon([...outline, outline[0], outline[1]], 6, 0.014, 0.07, CURB);
+      count++;
+    }
+  }
+  return count;
 }
 
 /**

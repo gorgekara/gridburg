@@ -343,6 +343,38 @@ test('signalled crossings get a pedestrian head at each end; every zebra gets ta
   assert.equal(zebra.marks.ramps, 8);
 });
 
+test('roundabouts get splitter islands on two-way arms; avenues get medians short of junctions; expressways get barriers', () => {
+  const net = new Network();
+  net.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD);
+  net.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD);
+  assert.ok(net.addRoundabout(40, 40, 2.3, KIND_ROAD));
+  const ring = new RoadLayer();
+  ring.rebuild(net, flat());
+  assert.equal(ring.marks.splitters, 4);
+  const one = new Network();
+  one.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD);
+  one.insertPath([{ x: 40, z: 20 }, { x: 40, z: 40 }], KIND_ROAD, true);
+  one.insertPath([{ x: 40, z: 40 }, { x: 40, z: 60 }], KIND_ROAD);
+  assert.ok(one.addRoundabout(40, 40, 2.3, KIND_ROAD));
+  const oneLayer = new RoadLayer();
+  oneLayer.rebuild(one, flat());
+  assert.equal(oneLayer.marks.splitters, 3, 'none on the one-way arm');
+  const av = new Network();
+  av.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], KIND_AVENUE);
+  av.insertPath([{ x: 40, z: 40 }, { x: 40, z: 62 }], KIND_ROAD);
+  const avLayer = new RoadLayer();
+  avLayer.rebuild(av, flat());
+  assert.equal(avLayer.marks.medians, 2, 'a median on each avenue arm');
+  assert.equal(avLayer.marks.barriers, 0);
+  const ex = new Network();
+  ex.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], 3);
+  const exLayer = new RoadLayer();
+  exLayer.rebuild(ex, flat());
+  assert.equal(exLayer.marks.barriers, 1);
+  assert.equal(exLayer.marks.guardrails, 2);
+  assert.equal(exLayer.marks.medians, 0);
+});
+
 const Ctl = await import('../src/roads/control.ts');
 const { crossingApproaches } = await import('../src/roads/crossings.ts');
 const { speedLimitKmh } = await import('../src/render/streetDetail.ts');

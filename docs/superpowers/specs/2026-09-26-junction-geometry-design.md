@@ -53,6 +53,22 @@ lane, with a wide apron.
 - **Shoulders:** a solid edge line inset from the carriageway's outer edge. The strip outside it gets a
   rumble texture: darker transverse bars.
 
+## As built
+
+- **Roundabouts:**
+  - Built: the splitter islands, the truck apron and the ring without arrows.
+  - Not built: the ring's outer edge line. It would cross every entry, where it reads as a stop line.
+  - The islands are narrow enough to stay clear of both lanes' traffic: 0.03–0.16 wide at the ring. So
+    the simulation needs no entry deflection. The turn speed already slows entering cars.
+- **Avenue medians:**
+  - Built: the kerbed grass median, stopping 1.5 short of junctions, with the double yellow through the
+    bay.
+  - Not yet: trees on medians in street view, and medians on avenues with added lanes.
+- **Expressways:**
+  - Built: the barrier on two-way expressways, and guardrails on expressways, motorway carriageways and
+    slip roads. They open at junctions and ramp mouths, and are left off bridges and roundabouts.
+  - Not built: the rumble strip. The shoulder outside the edge line is too narrow to show it.
+
 ## Testing
 
 - **Renderer counts (`marks`):** splitter islands, median runs, barrier runs, guardrail runs.
