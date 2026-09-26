@@ -124,6 +124,7 @@ const I: Record<string, string> = {
   plaza: '<path d="M3 3h18v18H3zM9 3v18m6-18v18M3 9h18M3 15h18"/>',
   lawn: '<path d="M3 21h18M6 21l-2-7m5 7V9m3 12 2-8m3 8 3-10"/>',
   trolley: '<rect x="5" y="7" width="14" height="13" rx="3"/><path d="M8 7l4-5h7M5 14h14M8 20v2m8-2v2"/><circle cx="8" cy="17" r="1"/><circle cx="16" cy="17" r="1"/>',
+  buslane: '<path d="M4 3v18M20 3v18"/><rect x="8" y="6" width="8" height="11" rx="2"/><path d="M8 12h8M10 17v2m4-2v2"/>',
   bikelane: '<circle cx="5" cy="16" r="4"/><circle cx="19" cy="16" r="4"/><path d="m5 16 5-8 4 8H5m9 0 3-10h3M8 6h5"/>',
   'ring-auto': '<circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>',
   'ring-single': '<circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1.5"/>',

@@ -210,14 +210,21 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 
 .modes-wrap {
   position: sticky; left: 0; z-index: 2; display: flex; gap: 6px; align-self: stretch;
-  padding-right: 8px; margin-right: 2px; background: var(--bg-solid); border-right: 1px solid var(--line);
+  padding-right: 8px; margin-right: 2px; background: var(--bg-solid);
+  box-shadow: 10px 0 10px -10px rgba(0, 0, 0, 0.55);
 }
-/* Two buttons a row, so a group of five (the road heights) is no taller than a row of tool cards. */
-.modes { display: grid; grid-template-columns: repeat(2, 34px); grid-auto-rows: 28px; gap: 4px; align-content: center; }
+/* Each group of modes is a small card of its own, as tall as the tool cards beside it: a label on
+   top and its buttons in three rows (one column, or two where there are more than three buttons). */
+.modes {
+  display: grid; grid-template-columns: 34px; grid-auto-rows: 26px; gap: 4px; align-content: start; justify-content: center;
+  padding: 6px 7px; border-radius: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07);
+}
+.modes.cols2 { grid-template-columns: repeat(2, 34px); }
+.modes.cols2 > .mode:last-child:nth-child(even) { grid-column: 1 / -1; justify-self: center; }
 .modes[hidden] { display: none; }
-.mlabel { grid-column: 1 / -1; align-self: end; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
+.mlabel { grid-column: 1 / -1; height: 12px; line-height: 12px; text-align: center; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
 .mode {
-  display: flex; align-items: center; justify-content: center; width: 34px; height: 28px; border-radius: 7px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; width: 34px; height: 26px; border-radius: 7px; cursor: pointer;
   background: rgba(255,255,255,0.06); color: var(--fg); border: 1.5px solid transparent; font: inherit; font-size: 12px;
 }
 .mode:hover { background: rgba(255,255,255,0.12); }

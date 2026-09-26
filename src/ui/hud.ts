@@ -667,6 +667,8 @@ export class Hud {
         }
         side.append(brush);
       }
+      // Groups of more than three buttons lay them out two to a row, so every group keeps to three rows.
+      for (const g of side.querySelectorAll('.modes')) g.classList.toggle('cols2', g.querySelectorAll('.mode').length > 3);
       if (side.childElementCount) body.append(side);
       for (const t of c.tools) {
         const b = el('button', `card ${t.id}`);
