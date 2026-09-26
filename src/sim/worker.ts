@@ -219,13 +219,15 @@ let sigApproaches: { seg: number; fwd: boolean }[][] = [];
 let sigCheck = 0;
 /** Tests only: box admissions at signals, by the state the car's movement was in. */
 const sigAdmits: Record<string, number> = {};
-let lockOwner = new Int32Array(0); // per node: the slot holding the junction box, or -1
+let lockOwner = new Int32Array(0); // per node and half (node·2 + 0 outer, + 1 inner): the slot holding it, or -1
 let ringClaim = new Int32Array(0); // per roundabout node: the slot of an entering car whose turn is next
 let ringRoomless = new Float32Array(0); // per roundabout node: when its booker was last held for want of room on the ring
 let ringArc = new Uint8Array(0); // one-way segment between two roundabout nodes
 /** Per slip road: which side of the carriageway it leaves from / joins on (±1, 0 for none) and how long the merge runs. */
 let rampStart = new Int8Array(0), rampEnd = new Int8Array(0), rampMouth = new Float32Array(0), rampLane = new Float32Array(0);
 let ringIn: number[][] = []; // per node: lane keys of the ring arcs that feed it
+/** Per ring arc: the length of its ring all the way round. */
+let ringLength = new Float32Array(0);
 let nodeHalf = new Float32Array(0); // half width of the widest road meeting the node
 let reach = new Uint8Array(0);
 let component = new Int32Array(0);
@@ -355,7 +357,7 @@ interface Car {
   /** A callout's view of the road ahead: an oncoming car close enough that it must not pull out. */
   oncoming?: boolean;
   /** A callout with cars pulled over ahead of it, waiting for room to pass them. */
-  wantPass?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  wantPass?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; lockMask: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
   lane: number; nextLane: number; prevLane: number;
   /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
@@ -484,14 +486,30 @@ function applyNetwork(p: EditPayload): void {
     const lanes = lanesFor(net, s, true) + lanesFor(net, s, false), usual = oneWay(s) ? (isOneWayKind(s.kind) ? DEFAULT_LANES[s.kind] : 2 * DEFAULT_LANES[s.kind]) : 2 * DEFAULT_LANES[s.kind];
     if (!s.fixed) { roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1) * Math.max(0.5, lanes / Math.max(1, usual)); roadLength += s.len; }
   });
-  lockOwner = new Int32Array(nodeIds.length).fill(-1);
+  lockOwner = new Int32Array(nodeIds.length * 2).fill(-1);
   ringClaim = new Int32Array(nodeIds.length).fill(-1);
   ringRoomless = new Float32Array(nodeIds.length).fill(-1e9);
   ringArc = new Uint8Array(newSegs.length);
   ringIn = nodeIds.map(() => []);
   newSegs.forEach((s, i) => {
     if (!s.oneway || nodeType[segA[i]] !== J_RING || nodeType[segB[i]] !== J_RING) return;
-    ringArc[i] = 1; ringIn[segB[i]].push(i * 2 * MAXL);
+    ringArc[i] = 1;
+    for (let l = 0; l < lanesFor(net, s, true); l++) ringIn[segB[i]].push(i * 2 * MAXL + l);
+  });
+  // Each ring's length all the way round, for choosing a lane on the way in.
+  ringLength = new Float32Array(newSegs.length);
+  newSegs.forEach((_, i) => {
+    if (!ringArc[i] || ringLength[i]) return;
+    const loop: number[] = [];
+    let cur = i;
+    for (let k = 0; k < 64; k++) {
+      loop.push(cur);
+      const nx = nodeEdges[segB[cur]].find(e => ringArc[e.seg] && e.fwd);
+      if (!nx || nx.seg === i) break;
+      cur = nx.seg;
+    }
+    const total = loop.reduce((t, k) => t + newSegs[k].len, 0);
+    for (const k of loop) ringLength[k] = total;
   });
   // Slip roads: note which carriageway they leave or join, on which side, and how far they run
   // alongside it, so cars drift out of the outer lane instead of cutting across from the centre.
@@ -861,7 +879,7 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0, dir
 function freeCar(slot: number): void {
   const c = slots[slot];
   if (!c) return;
-  if (c.lock >= 0 && c.lock < lockOwner.length && lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
+  releaseLock(c, slot);
   if (c.box >= 0 && c.box < boxCars.length) leaveBox(slot);
   for (let n = 0; n < boxWait.length; n++) if (boxWait[n] === slot) boxWait[n] = -1;
   trafficSpace.remove(slot);
@@ -985,7 +1003,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   // Traffic from beyond the map edge arrives already at speed; everyone else pulls away from the kerb.
   const pace = drivingPace(vehicle);
   const rolling = entries.some(e => e.seg === legs[0].seg && Math.abs(e.s - legs[0].p0) < 0.05);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, loop, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop, ...(calls ? { calls, callIdx: 0 } : {}),
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, loop, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, lockMask: 0, vehicle, line, mission, taxiStop, ...(calls ? { calls, callIdx: 0 } : {}),
     lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
@@ -1267,7 +1285,7 @@ function latOf(c: Car, li: number, p: number): number {
   } else if (li === c.li + 1) lat = centreOf(leg, c.nextLane >= 0 ? c.nextLane : 0);
   else lat = centreOf(leg, c.prevLane);
   // A ramp's own offset is measured along the ramp; on a ring there is only the one lane.
-  return ringArc[leg.seg] ? 0 : lat + rampOffset(leg.seg, seg, along) * (leg.fwd ? 1 : -1);
+  return ringArc[leg.seg] ? lat : lat + rampOffset(leg.seg, seg, along) * (leg.fwd ? 1 : -1);
 }
 
 function carPoseAt(leg: Leg, progress: number, type: number, lane: number): VehiclePose {
@@ -1281,7 +1299,7 @@ function carPoseAt(leg: Leg, progress: number, type: number, lane: number): Vehi
 /** A pose in lane `lane` of a leg, for placing a car before it has a record (spawning, lining up on a ring). */
 function carPose(leg: Leg, progress: number, type: number, lane = 0): VehiclePose {
   const seg = segs[leg.seg];
-  const lat = ringArc[leg.seg] ? 0 : centreOf(leg, type === 8 ? 0 : lane) + rampOffset(leg.seg, seg, leg.fwd ? progress : seg.len - progress) * (leg.fwd ? 1 : -1);
+  const lat = centreOf(leg, type === 8 ? 0 : lane) + (ringArc[leg.seg] ? 0 : rampOffset(leg.seg, seg, leg.fwd ? progress : seg.len - progress) * (leg.fwd ? 1 : -1));
   return carPoseAt(leg, progress, type, lat);
 }
 
@@ -1341,7 +1359,7 @@ function cornerPose(c: Car, li: number, p: number): VehiclePose | null {
   }
   // Measured from the lanes' own centres, not where the car happens to be mid lane change, so the
   // corner does not move under a car already rounding it.
-  const laneAt = (l: number): number => c.vehicle === 8 || ringArc[c.legs[l].seg] ? 0 : centreOf(c.legs[l], l === c.li ? c.lane : l === c.li + 1 ? Math.max(0, c.nextLane) : c.prevLane);
+  const laneAt = (l: number): number => c.vehicle === 8 ? 0 : centreOf(c.legs[l], l === c.li ? c.lane : l === c.li + 1 ? Math.max(0, c.nextLane) : c.prevLane);
   const here = laneAt(li);
   if (next && leg.p1 - p < reach(leg, laneAt(li + 1))) {
     const there = laneAt(li + 1);
@@ -1441,9 +1459,25 @@ function barredFromKerb(c: Car): boolean {
   return !(c.li === c.legs.length - 1 && leg.p1 - c.p < BUS_BAY);
 }
 
+/**
+ * Which lane of a roundabout's ring a car takes for the ring legs from `li` on: the outer lane (0) for
+ * a first exit, up to about a third of the way round; the inner lane (1) for anything further, on a
+ * ring with two lanes.
+ */
+function ringLaneFor(c: Car, li: number): number {
+  const first = c.legs[li];
+  if (!first || !ringArc[first.seg] || legLanes(first) < 2) return 0;
+  let round = 0;
+  for (let k = li; k < c.legs.length && ringArc[c.legs[k].seg]; k++) round += c.legs[k].p1 - c.legs[k].p0;
+  return round <= ringLength[first.seg] * 0.3 ? 0 : 1;
+}
+
 function wantedLanes(c: Car): number[] | null {
   if (c.vehicle === 8) return null;
   const leg = c.legs[c.li], n = legLanes(leg);
+  // Coming up to a two-lane roundabout: the kerb lane for the outer ring lane, the next for the inner.
+  const nextLeg = c.legs[c.li + 1];
+  if (nextLeg && ringArc[nextLeg.seg] && !ringArc[leg.seg] && n > 1 && legLanes(nextLeg) > 1 && !barredFromKerb(c)) return [Math.min(n - 1, ringLaneFor(c, c.li + 1))];
   // A bus with a stop coming up on this road gets over to the kerb for it.
   const call = c.calls?.[c.callIdx ?? 0];
   if (call && call.li === c.li && call.p - c.p < 8 && n > 1) return [0];
@@ -1461,7 +1495,9 @@ function chooseNext(c: Car): void {
   if (c.nextLane >= 0) return;
   const leg = c.legs[c.li], next = c.legs[c.li + 1];
   if (!next) return;
-  if (c.vehicle === 8 || ringArc[next.seg]) { c.nextLane = 0; return; }
+  if (c.vehicle === 8) { c.nextLane = 0; return; }
+  // Round a roundabout: the ring lane chosen on entry, kept all the way round.
+  if (ringArc[next.seg]) { c.nextLane = ringArc[leg.seg] ? Math.min(c.lane, legLanes(next) - 1) : ringLaneFor(c, c.li + 1); return; }
   const a = approachOf(leg), e = exitOf(a, next), n = legLanes(next);
   let options = e >= 0 ? a.targets(c.lane, e).filter(l => l >= 0 && l < n) : [];
   if (!options.length) options = [Math.min(n - 1, c.lane)];
@@ -1644,8 +1680,33 @@ function leaveBox(slot: number): void {
  * box is handed to circulating traffic first anyway. Treating it as oncoming made every arm wait out
  * RING_PATIENCE before it could ever enter, because a queued arc always has someone parked near a node.
  */
-function ringApproaching(node: number): boolean {
+/** Free the node halves a car holds. */
+function releaseLock(c: Car, slot: number): void {
+  if (c.lock >= 0 && c.lock * 2 + 1 < lockOwner.length) for (let r = 0; r < 2; r++) if (lockOwner[c.lock * 2 + r] === slot) lockOwner[c.lock * 2 + r] = -1;
+  c.lock = -1; c.lockMask = 0;
+}
+
+/**
+ * The halves of a roundabout node (bit 0 outer, bit 1 inner) a car needs crossing it to its next leg:
+ * the outer half to circulate in the outer lane or to join or leave by it, the inner half to circulate
+ * in the inner lane, both to join or leave the inner lane (which crosses the outer).
+ */
+function ringMask(c: Car, node: number): number {
+  const leg = c.legs[c.li], next = c.legs[c.li + 1];
+  const ring = ringArc[leg.seg] ? leg : next && ringArc[next.seg] ? next : null;
+  if (!ring || legLanes(ring) < 2 || legEndNode(leg) !== node) return 1;
+  if (ringArc[leg.seg] && next && ringArc[next.seg]) return c.lane === 0 ? 1 : 2;
+  const lane = ringArc[leg.seg] ? c.lane : ringLaneFor(c, c.li + 1);
+  return lane === 0 ? 1 : 3;
+}
+
+/**
+ * Whether circulating traffic is coming up to a roundabout node, so a car must wait to join: only the
+ * outer lane's, for one joining the outer lane.
+ */
+function ringApproaching(node: number, outerOnly = false): boolean {
   for (const key of ringIn[node]) {
+    if (outerOnly && key % MAXL !== 0) continue;
     const len = segs[dirKeyOf(key) >> 1].len;
     for (const slot of laneCars[key]) {
       const c = slots[slot];
@@ -1868,10 +1929,7 @@ function stepCars(dt: number): void {
       // as the tail is past the node: a car queued on the arc stops short of the usual release point,
       // and a full ring of cars each still holding the node behind them waits on itself for ever.
       const clearOf = ringArc[leg.seg] ? Math.min(0.8, seg.len * 0.5, leg.p0 + vehicleLength(c.vehicle) / 2 + 0.12) : Math.min(0.8, seg.len * 0.5);
-      if (c.lock >= 0 && c.li > c.lockLi && c.p > clearOf) {
-        if (lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
-        c.lock = -1;
-      }
+      if (c.lock >= 0 && c.li > c.lockLi && c.p > clearOf) releaseLock(c, slot);
       // Out of the box once its tail is clear of the junction: on a wide one that is further than 0.8.
       if (c.box >= 0 && c.li > c.boxLi && c.p > Math.min(Math.max(0.8, nodeHalf[c.box] + vehicleLength(c.vehicle) / 2 + 0.1), seg.len * 0.5)) leaveBox(slot);
       // A finished lane change; one that has been stuck for a while goes back to where it was.
@@ -1997,19 +2055,24 @@ function stepCars(dt: number): void {
           if (entering && leaderP === Infinity && c.stuck >= RING_PATIENCE && ringClaim[node] < 0) ringClaim[node] = slot;
           if (ringClaim[node] === slot && !canGo) ringRoomless[node] = simTime;
         }
-        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node)) canGo = false;
+        if (entering && c.lock !== node && c.stuck < RING_PATIENCE && ringApproaching(node, ringLaneFor(c, c.li + 1) === 0)) canGo = false;
         // Blue lights coming: nobody else goes into the junction.
         if (blueAt[node] && !onCallout(c) && c.lock !== node && c.box !== node && blueFrom[node] !== leg.seg * 2 + (leg.fwd ? 0 : 1)) canGo = false;
         if (type === J_RING && c.lock !== node) {
           const front = leaderP === Infinity;
-          const owner = lockOwner[node];
-          const holder = owner >= 0 && owner !== slot ? slots[owner] : null;
-          if (owner >= 0 && (!holder || holder.lock !== node)) lockOwner[node] = -1;
-          else if (holder) {
+          // Which halves of the node it crosses: on a two-lane ring, circulating in the outer lane and in
+          // the inner one go side by side, but getting to or from the inner lane crosses the outer.
+          const mask = ringMask(c, node);
+          for (let r = 0; r < 2; r++) {
+            if (!(mask & (1 << r))) continue;
+            const owner = lockOwner[node * 2 + r];
+            const holder = owner >= 0 && owner !== slot ? slots[owner] : null;
+            if (owner >= 0 && (!holder || holder.lock !== node)) { lockOwner[node * 2 + r] = -1; continue; }
+            if (!holder) continue;
             const hLeg = holder.legs[holder.li];
             // Only the front car of a lane may claim the box. A follower holding it (a car spawned or merged
             // in ahead of it after it claimed) would wait on its own leader forever, so the front car takes it over.
-            const stale = front && hLeg.seg === leg.seg && hLeg.fwd === leg.fwd && holder.p < c.p;
+            const stale = front && hLeg.seg === leg.seg && hLeg.fwd === leg.fwd && holder.lane === c.lane && holder.p < c.p;
             // Circulating traffic owns the circle. A car queued on an arm may claim the box before it can
             // actually merge, and then it holds up the very ring traffic it is waiting for a gap in, so a
             // car already on the ring takes the box back off anyone still waiting outside it.
@@ -2018,7 +2081,7 @@ function stepCars(dt: number): void {
             // traffic flows as a stream instead of stopping at every node for the car ahead to clear it.
             // The lock stays with circulating traffic, so no one pulls out in between.
             const through = ringArc[leg.seg] && holder.li > holder.lockLi && front;
-            if (stale || yielding || through) { holder.lock = -1; lockOwner[node] = -1; }
+            if (stale || yielding || through) releaseLock(holder, owner);
           }
           // A booking holds back traffic going on round the circle. Traffic leaving it here only makes room,
           // so while the booker is itself waiting for room on the ring it goes: held behind that booking it
@@ -2028,14 +2091,16 @@ function stepCars(dt: number): void {
           if (canGo && front && !booked && c.p < stopP - reach) {
             pending = true;
             canGo = false;
-          } else if (canGo && front && !booked && lockOwner[node] < 0) {
+          } else if (canGo && front && !booked && !(mask & 1 && lockOwner[node * 2] >= 0) && !(mask & 2 && lockOwner[node * 2 + 1] >= 0)) {
             // Hand over rather than overwrite: on short links (roundabout arcs) the next box is claimed
             // before the previous one is released, and overwriting leaked that lock forever.
-            if (c.lock >= 0 && lockOwner[c.lock] === slot) lockOwner[c.lock] = -1;
+            releaseLock(c, slot);
             c.lock = node;
             c.lockLi = c.li;
             c.lockStop = stopP;
-            lockOwner[node] = slot;
+            c.lockMask = mask;
+            if (mask & 1) lockOwner[node * 2] = slot;
+            if (mask & 2) lockOwner[node * 2 + 1] = slot;
             if (ringClaim[node] === slot) ringClaim[node] = -1;
           } else {
             canGo = false;

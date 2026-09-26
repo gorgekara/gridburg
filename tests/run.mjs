@@ -17,12 +17,12 @@ const { encode, decode } = await import('../src/save.ts');
 const { buildingGeometry, Builder, BANNER_COLORS, VARIANTS, WINDOW_DARK, WINDOW_LIT } = await import('../src/render/buildingGeo.ts');
 const { demoCity } = await import('../src/demo.ts');
 const X = await import('../src/extras.ts');
-/** Bytes the v13 extras block takes for a city that has changed none of them. */
-/** Bytes the v13 extras block takes for a city, mirroring what encode() writes (including motorway kind bits). */
+/** The extras block that closes a saved city (its four-byte length and the JSON), read from the encoding. */
 const extrasLength = (city) => {
-  const segHi = city.net.segs.flatMap((seg, k) => (seg[5] & 256 ? [k] : []));
-  const json = { ...X.extrasToJson(city.extras ?? X.defaultExtras(city.tax)), ...(segHi.length ? { segHi } : {}) };
-  return 4 + new TextEncoder().encode(JSON.stringify(json)).length;
+  const bytes = Buffer.from(encode(city), 'base64url');
+  let at = bytes.length - 5;
+  while (at > 0 && bytes.readUInt32BE(at) !== bytes.length - at - 4) at--;
+  return bytes.length - at;
 };
 const { newCity, DOOR, HIGHWAY_END, highwayLayout } = await import('../src/game.ts');
 const N = await import('../src/roads/network.ts');

@@ -22,8 +22,14 @@ const MAX_TWO_WAY = 4, MAX_ONE_WAY = 6;
 export const oneWay = (s: RSeg): boolean => s.oneway || isOneWayKind(s.kind);
 const addR = (s: RSeg): number => s.addR ?? 0;
 const addL = (s: RSeg): number => s.addL ?? 0;
-/** A roundabout ring circulates in a single lane, whatever it is built of. */
+/** An arc of a roundabout's ring. */
 const ringArc = (net: Network, s: RSeg): boolean => !!net.nodes.get(s.a)?.ring && !!net.nodes.get(s.b)?.ring && s.oneway;
+/**
+ * How many lanes a roundabout's ring circulates in: two when it is built of a road with two lanes or
+ * more each way (an avenue, an expressway), turbo-style (lane chosen on entry, no changing on the
+ * ring); one otherwise.
+ */
+export const ringLaneCount = (s: RSeg): number => Math.min(2, DEFAULT_LANES[s.kind]);
 
 /** Lanes before any were added: each way on a two-way road, in all on a one-way one. */
 function baseLanes(s: RSeg): number {
@@ -39,7 +45,8 @@ function shoulder(kind: number): number {
 /** How many lanes carry traffic a→b (`fwd`) or b→a. */
 export function lanesFor(net: Network, s: RSeg, fwd: boolean): number {
   if (oneWay(s) && !fwd) return 0;
-  if (s.kind === KIND_LANE || ringArc(net, s)) return 1;
+  if (s.kind === KIND_LANE) return 1;
+  if (ringArc(net, s)) return ringLaneCount(s);
   return oneWay(s) ? baseLanes(s) + addR(s) + addL(s) : DEFAULT_LANES[s.kind] + (fwd ? addR(s) : addL(s));
 }
 
@@ -55,7 +62,7 @@ export function roadHalf(s: RSeg): number {
 
 /** Where the middle of lane `i` sits, to the right of travel. */
 export function laneCentre(net: Network, s: RSeg, fwd: boolean, i: number): number {
-  if (ringArc(net, s)) return 0;
+  if (ringArc(net, s)) return ringLaneCount(s) === 2 ? (i === 0 ? 0.5 : -0.5) * LANE_WIDTH[s.kind] : 0;
   if (s.kind === KIND_LANE) return oneWay(s) ? 0 : 0.1;
   const edge = oneWay(s) || fwd ? sideHalf(s, 1) : sideHalf(s, -1);
   return edge - shoulder(s.kind) - (i + 0.5) * LANE_WIDTH[s.kind];

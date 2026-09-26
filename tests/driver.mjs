@@ -657,6 +657,41 @@ test('the way back from a far stop goes round, not round in the junction ahead',
   assert.ok(seen.length > 2 && seen[1].split(':')[0] !== String(sg.id), `route ${seen.join(' ')}`);
 });
 
+test('a two-lane roundabout: first exits keep to the outer lane, others use the inner, side by side', () => {
+  Math.random = C.mulberry32(56);
+  const net = new N.Network();
+  net.insertPath([{ x: 14, z: 40 }, { x: 66, z: 40 }], N.KIND_AVENUE);
+  net.insertPath([{ x: 40, z: 14 }, { x: 40, z: 66 }], N.KIND_AVENUE);
+  assert.ok(net.addRoundabout(40, 40, N.ROUNDABOUT_RADIUS[N.KIND_AVENUE], N.KIND_AVENUE));
+  load(net);
+  const ring = new Set([...net.segs.values()].filter(q => q.oneway && net.nodes.get(q.a).ring && net.nodes.get(q.b).ring).map(q => q.id));
+  const end = (x, z) => { const nd = net.nearestNode(x, z, 0.1), sg = net.segsAt(nd.id)[0]; return { seg: sg.id, far: sg.a === nd.id ? 0.6 : sg.len - 0.6 }; };
+  const arms = [end(14, 40), end(40, 14), end(66, 40), end(40, 66)];
+  const start = ask([]);
+  let t = 0, laneSteps = [0, 0], sideBySide = 0, broken = 0, hard = 0;
+  const lastV = new Map(), first = new Set(), innerFirst = new Set();
+  const next = arms.map(() => 0);
+  for (let i = 0; i < 150 * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trips = [];
+    arms.forEach((a, k) => { if (t >= next[k]) { next[k] += -Math.log(1 - Math.random()) * 1.4; trips.push({ a: a.seg, as: a.far, b: arms[(k + 1 + Math.floor(Math.random() * 3)) % 4].seg, bs: 1 }); } });
+    const r = ask(trips, true);
+    broken = Math.max(broken, r.broken ?? 0);
+    const onRing = r.detail.filter(c => ring.has(c.seg));
+    for (const c of onRing) laneSteps[c.lane]++;
+    for (const c of onRing) if (c.lane === 0 && onRing.some(o => o.seg === c.seg && o.lane === 1 && Math.abs(o.p - c.p) < 0.3)) sideBySide++;
+    for (const c of r.detail) { const b = lastV.get(c.uid); if (b !== undefined && (b - c.v) * C.SIM_HZ > D.MAX_BRAKE + 0.5) hard++; lastV.set(c.uid, c.v); }
+  }
+  const done = ask([]).arrived - start.arrived, gave = ask([]).gaveUp - start.gaveUp;
+  console.log(`  two-lane roundabout: ${done} through, ${gave} gave up; ring lanes ${laneSteps[0]} outer / ${laneSteps[1]} inner car-steps, ${sideBySide} side by side; ${hard} hard stops`);
+  // A first exit is a short way round, so the outer lane holds its cars for less time than the inner.
+  assert.ok(laneSteps[0] > 0.1 * (laneSteps[0] + laneSteps[1]) && laneSteps[1] > 0.3 * (laneSteps[0] + laneSteps[1]), 'both ring lanes carry traffic');
+  assert.ok(sideBySide > 50, 'cars circulate side by side');
+  assert.ok(done >= 140, `${done} through`);
+  assert.ok(gave <= 5, `${gave} gave up`);
+  assert.equal(broken, 0);
+});
+
 /** An avenue meeting a side street on its right, with or without bus lanes: through traffic, kerbside turners and buses. */
 function busLaneRun(lanes) {
   Math.random = C.mulberry32(54);

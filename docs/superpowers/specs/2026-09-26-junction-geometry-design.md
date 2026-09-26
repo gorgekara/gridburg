@@ -79,3 +79,21 @@ lane, with a wide apron.
   `onRoad`).
 - **Existing suites** stay green.
 - **Browser:** a roundabout, an avenue junction and an expressway, seen close up.
+
+## Built later (after phase E)
+
+- **Two-lane roundabouts.** A ring built of an avenue or bigger circulates in two lanes (`ringLaneCount`
+  in `src/roads/lanes.ts`). It works turbo-style:
+  - The lane is chosen on entry: the outer lane for a first exit (up to 30% of the way round), the
+    inner lane otherwise.
+  - No changing lanes on the ring, and the arm's lanes line up for it.
+  - Each node's lock is split into an outer half and an inner half (`ringMask` in the worker):
+    - circulating in the outer lane takes the outer half
+    - circulating in the inner lane takes the inner half
+    - joining or leaving by the inner lane crosses the outer, so it takes both
+  - Joining the outer lane gives way only to the outer lane.
+  - Street rings are unchanged.
+  - The flooded avenue roundabout carried 299 vehicles against 233 with one lane (+28%).
+  - The ring is painted with a single broken line between its lanes.
+- **Median trees:** every two cells along each avenue median, in the road layer's decorations.
+- **Rumble strips:** transverse bars outside the edge lines of expressways and motorway carriageways.

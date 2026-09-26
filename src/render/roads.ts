@@ -2,7 +2,7 @@ import { roadHeight, tunnelMouth, levelY } from '../roads/structures';
 import { Builder } from './buildingGeo';
 import { entrySite } from '../roads/entries';
 import * as THREE from 'three';
-import { GRID } from '../constants';
+import { GRID, tileHash } from '../constants';
 import { Network, HALF_WIDTH, KIND_AVENUE, KIND_HIGHWAY, KIND_LANE, KIND_ROAD, KIND_MOTORWAY, KIND_RAMP, KIND_HIGHWAY2, isCarriageway } from '../roads/network';
 import type { Pose, RSeg } from '../roads/network';
 import type { Terrain } from '../terrain';
@@ -11,7 +11,7 @@ import { crossingApproaches } from '../roads/crossings';
 import { stopLine } from '../roads/control';
 import { junctionPaint, chevronSpots } from './junctionMarks';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
-import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay } from '../roads/lanes';
+import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay, ringLaneCount } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
 import { planFor, movements, stateIn, fixedClock, moveKey, crossingState, crossingFrom } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
@@ -46,6 +46,8 @@ const one = new THREE.Vector3(0.72, 0.72, 0.72);
 const TACTILE = 0xe2b93b, MEDIAN_GRASS = 0x6f9f52, APRON = 0xb3a58c;
 /** How far short of a junction an avenue's median stops, leaving room for its turn bay. */
 const MEDIAN_BAY = 1.5;
+/** The darker transverse bars of a rumble strip on an expressway's shoulder. */
+const RUMBLE = 0x2c2d31;
 const WALK = new THREE.Color(0xf4f1e8), DONT_WALK = new THREE.Color(0xff7a1a), PED_OFF = new THREE.Color(0x2a2a2a);
 const LAMP_RED = new THREE.Color(0xff3b30);
 const LAMP_AMBER = new THREE.Color(0xffbf35);
@@ -69,7 +71,7 @@ export class RoadLayer {
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
   /** What the last rebuild painted and put up at junctions and curves. */
-  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0 };
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0 };
   /** Pedestrian signal heads: a box on a post at each end of a signalled crossing, and its lamp. */
   readonly pedHeads: THREE.InstancedMesh;
   private pedLamps: THREE.InstancedMesh;
@@ -197,7 +199,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
-    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0 };
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -341,6 +343,23 @@ export class RoadLayer {
         decorations.taper(0, r * 0.11, scale * 0.32, tx, 0.06 + scale * 0.36, z, 0x579163, 7);
       }
     }
+    // Trees down the planted median of every two-way avenue, every two cells, where the median runs
+    // (see the markings below: clear of each junction, short of it by the turn bay).
+    for (const s of net.segs.values()) {
+      if (s.kind !== KIND_AVENUE || s.oneway || s.structure || customLanes(s, tapers)) continue;
+      const clearA = Math.max(net.degree(s.a) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[0] ?? 0) + 0.23) + (net.degree(s.a) >= 3 ? MEDIAN_BAY : 0);
+      const clearB = Math.max(net.degree(s.b) >= 3 ? 1.0 : 0.2, (crossings.get(s.id)?.[1] ?? 0) + 0.23) + (net.degree(s.b) >= 3 ? MEDIAN_BAY : 0);
+      const m0 = clearA + 0.6, m1 = s.len - clearB - 0.6;
+      if (m1 - m0 < 0) continue;
+      const count = Math.floor((m1 - m0) / 2) + 1, start = m0 + ((m1 - m0) - (count - 1) * 2) / 2;
+      for (let k = 0; k < count; k++) {
+        Network.poseAt(s, start + k * 2, pose);
+        const x = pose.x - half, z = pose.z - half, v = tileHash(s.id * 977 + k) ;
+        decorations.cyl(0.018, 0.16, x, 0.07, z, 0x7a5a3e, 6);
+        decorations.taper(0.075 + v * 0.02, 0.012, 0.3 + v * 0.08, x, 0.16, z, v > 0.5 ? 0x4f8a50 : 0x5d9656, 7);
+        this.marks.medianTrees++;
+      }
+    }
     this.islands.geometry.dispose();
     this.islands.geometry = decorations.build();
     // Barriers and guardrails: their own mesh, which casts no shadow, as it is long and thin.
@@ -400,6 +419,8 @@ export class RoadLayer {
           const openB = mouthB && s.kind !== KIND_RAMP && mouthB.side === side ? mouthB.length : 0;
           const f = Math.max(from, openA), t = Math.min(to, s.len - openB);
           if (t - f > 0.3) strip(f, t, 0.02, side * edge, side > 0 || s.kind === KIND_RAMP ? WHITE : LINE);
+          // A rumble strip along the shoulder outside the edge line (not on slip roads).
+          if (t - f > 0.3 && s.kind !== KIND_RAMP && !s.structure && ++this.marks.rumbles) for (let d = f; d + 0.03 < t; d += 0.14) strip(d, d + 0.03, 0.018, side * (edge + 0.035), RUMBLE);
         }
         const laneLines = s.kind === KIND_MOTORWAY ? [-0.22, 0.22] : s.kind === KIND_HIGHWAY2 ? [0] : [];
         for (let d = from; d + 0.5 < to; d += 1.1) for (const l of laneLines) strip(d, d + 0.5, 0.018, l, WHITE);
@@ -411,11 +432,13 @@ export class RoadLayer {
       } else if (s.oneway) {
         // (A roundabout's ring needs no arrows: everyone knows which way it goes.)
         const isRing = !!net.nodes.get(s.a)?.ring && !!net.nodes.get(s.b)?.ring;
+        // A two-lane ring gets a broken line between its lanes.
+        if (isRing && ringLaneCount(s) === 2) for (let d = 0.1; d + 0.35 < s.len; d += 0.7) strip(d, d + 0.35, 0.018, 0, WHITE);
         for (let d = from + 0.3; d < to && !isRing; d += 1.6) {
           Network.poseAt(s, d, pose);
           b.arrow(pose.x - half, pose.z - half, pose.tx, pose.tz, 0.2, 0.057, WHITE);
         }
-        if (wide) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of lanes) { strip(d, d + 0.5, 0.018, l - 0.22, WHITE); strip(d, d + 0.5, 0.018, -(l - 0.22), WHITE); }
+        if (wide && !isRing) for (let d = from; d + 0.5 < to; d += 1.1) for (const l of lanes) { strip(d, d + 0.5, 0.018, l - 0.22, WHITE); strip(d, d + 0.5, 0.018, -(l - 0.22), WHITE); }
       } else if (wide) {
         // A divider down the middle, a dashed line between each pair of lanes, and an edge line
         // along the shoulder so an expressway reads as three lanes each way.
@@ -440,6 +463,8 @@ export class RoadLayer {
         const shoulder = HALF_WIDTH[s.kind] - 0.07;
         strip(from, to, 0.02, shoulder, WHITE);
         strip(from, to, 0.02, -shoulder, WHITE);
+        // An expressway's shoulders get rumble strips outside the edge lines.
+        if (highway && !s.structure && (this.marks.rumbles += 2)) for (let d = from; d + 0.03 < to; d += 0.14) for (const side of [1, -1]) strip(d, d + 0.03, 0.018, side * (shoulder + 0.038), RUMBLE);
       } else if (lane) {
         // A lane is a single shared carriageway: no centre line, just a worn edge.
         for (let d = from; d + 0.2 < to; d += 1.4) strip(d, d + 0.2, 0.016, 0, DASH);

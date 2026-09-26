@@ -12,7 +12,7 @@ import { curveSpeed } from '../sim/driver';
 import type { MeshBuilder } from './meshBuilder';
 
 /** How many of each mark a rebuild laid down, for tests and for the curious. */
-export interface JunctionMarks { stopLines: number; giveWays: number; yieldSigns: number; chevrons: number; gores: number; ramps: number; pedHeads: number; splitters: number; medians: number; barriers: number; guardrails: number }
+export interface JunctionMarks { stopLines: number; giveWays: number; yieldSigns: number; chevrons: number; gores: number; ramps: number; pedHeads: number; splitters: number; medians: number; barriers: number; guardrails: number; medianTrees: number; rumbles: number }
 
 /** Where a sign stands (map coordinates), which way it faces, and the road (and distance along it) it serves. */
 export interface SignSpot { x: number; z: number; tx: number; tz: number; seg?: RSeg; s?: number }

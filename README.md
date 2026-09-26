@@ -41,7 +41,14 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
 ## What is in it
 
 - **A main menu.** Continue your saved city, start a new one, load the demo, or change settings.
-- **The demo city.** A city of some twenty thousand filling the whole map: an old town on a street grid with a downtown of shops and offices round a roundabout, industry behind a green belt, suburbs, a riverside park on the peninsula inside the river's loop, and a new town across three bridges with farms, industry and the airport. Rail, metro, buses and taxis run, and the river leaves the map over a waterfall.
+- **The demo city.** Laid out as a traffic engineer would finish it:
+  - two-lane roundabouts downtown and on the south bank, and adaptive signals where avenues cross
+  - turn pockets on the streets coming up to every signal
+  - bus lanes and a chain of stops along the central and south-bank avenues, with lay-bys on the
+    cross-town avenue and the feeder streets
+  - all-way stops at quiet crossings, calmed suburban crescents, and bike lanes on two streets
+
+  A city of some twenty thousand filling the whole map: an old town on a street grid with a downtown of shops and offices round a roundabout, industry behind a green belt, suburbs, a riverside park on the peninsula inside the river's loop, and a new town across three bridges with farms, industry and the airport. Rail, metro, buses and taxis run, and the river leaves the map over a waterfall.
   The HUD menu button reopens it in game and pauses. Settings cover visual detail (Low, Balanced or High), shadows, day length, autosaving and the
   infinite money cheat, and they persist in the browser. Visual detail changes apply immediately: Low simplifies buildings, trees and vehicles; Balanced keeps moderate detail; High adds shutters, flower boxes, roof seams, balconies, roof terraces, shop displays, denser foliage and vehicle trim.
 - **Six silhouettes per building type.** Shops, blocks, offices and towers come in six shapes and
@@ -479,9 +486,14 @@ The city autosaves in your browser, and **Share** copies a link that contains th
     On a bus lane the stop is a painted stand in the lane instead.
 - **Built like real roads:**
   - Every two-way road into a roundabout has a splitter island, and the central island a truck apron.
-  - Two-way avenues have a raised, planted median that stops short of each junction for its turn bay.
+  - A roundabout built of avenues circulates in two lanes, turbo-style:
+    - a first exit keeps to the outer lane, anything further takes the inner one, chosen on the way in
+    - no changing lanes on the ring, so the two lanes run side by side
+    - joining the outer lane gives way only to the outer lane's traffic
+  - Two-way avenues have a raised, planted median with trees, stopping short of each junction for its
+    turn bay.
   - Expressways have a concrete median barrier, and guardrails line expressways, motorways and slip
-    roads.
+    roads. Their shoulders carry rumble strips.
 - **Rendering** is a handful of draw calls: the whole road network is one vertex-colored mesh that is
   re-tinted by congestion, buildings and cars are `InstancedMesh`, and pollution is a 80×80 texture.
 - **Day and night:** an eight-minute simulation day starts at 09:00. The city clock, sunlight, dusk, moonlight, glowing windows and streetlights follow pause/speed controls and saved city time.

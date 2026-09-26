@@ -11,7 +11,7 @@ import { crossingApproaches } from './crossings';
  * The stretch where a bus lane gives way to ordinary traffic before a junction, so a car turning
  * kerbside can move over into it, across a broken line, before the solid stretch up to the stop line.
  */
-export const BUS_BAY = 1.5;
+export const BUS_BAY = 1.0;
 /** How far out of its lane a bus pulls into a lay-by: enough for a car to pass it alongside. */
 export const BAY_SIDE = 0.29;
 /** How far a bus stop's shelter stands back from where a lot would sit, so its lay-by fits in front of it. */
@@ -19,7 +19,7 @@ export const BAY_SETBACK = 0.26;
 /** A lay-by's length along the kerb, and the taper at each end of it. */
 export const BAY_LENGTH = 1.8, BAY_TAPER = 0.4;
 /** Past a junction, how far beyond its mouth (or its zebra) the bus lane starts. */
-const BUS_START = 0.4;
+const BUS_START = 0.2;
 /** A span shorter than this is not worth painting or enforcing. */
 const MIN_SPAN = 1;
 
@@ -40,7 +40,7 @@ export function busLaneSpan(net: Network, seg: RSeg, fwd: boolean, zebras?: Map<
 }
 
 /** A bus stop's lay-by (or, where its kerb lane is a bus lane, its stand in that lane). */
-export interface BusBay { seg: RSeg; s: number; side: number; fwd: boolean; inLane: boolean; edge: number; outer: number }
+export interface BusBay { tile: number; seg: RSeg; s: number; side: number; fwd: boolean; inLane: boolean; edge: number; outer: number }
 
 /** How far out from the centre line a lay-by's back kerb is: room for a bus pulled BAY_SIDE out of its lane. */
 export function bayOuter(net: Network, seg: RSeg, fwd: boolean): number {
@@ -86,7 +86,7 @@ export function busBays(net: Network, kind: ArrayLike<number>, accSeg: ArrayLike
     const side = stopSideOf(seg, s, i % GRID + 0.5, Math.floor(i / GRID) + 0.5, pose), fwd = side > 0;
     const how = stopKind(net, seg, s, side, zebras);
     if (!how) continue;
-    out.push({ seg, s, side, fwd, inLane: how === 'stand', edge: sideHalf(seg, side), outer: bayOuter(net, seg, fwd) });
+    out.push({ tile: i, seg, s, side, fwd, inLane: how === 'stand', edge: sideHalf(seg, side), outer: bayOuter(net, seg, fwd) });
   }
   return out;
 }

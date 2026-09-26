@@ -568,7 +568,7 @@ game.onEdit = () => {
   cyclists.rebuild(game.net);
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles);
   verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
@@ -579,7 +579,7 @@ game.onEdit = () => {
 game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles);
   verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);

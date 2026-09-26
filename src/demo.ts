@@ -9,6 +9,9 @@ import {
 } from './constants';
 import { footprint, siteOwners } from './sites';
 import { Network, KIND_AVENUE, KIND_ROAD, ROUNDABOUT_RADIUS } from './roads/network';
+import { planFor } from './roads/signals';
+import { canAddBusLane } from './roads/lanes';
+import { stopKind, stopSideOf } from './roads/busLanes';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import { newCity } from './game';
@@ -152,10 +155,11 @@ export function demoCity(expanded = false): SaveData {
   // The south-east corner below the avenue is left open for the airfield.
   for (const x of [8.5, 12.5, 24.5, 30.5, 36.5, 48.5, 54.5, 60.5, 66.5, 72.5]) street([{ x, z: 58.5 }, { x, z: x > 56 ? 70.5 : 77.5 }]);
 
-  // Traffic control: roundabouts at the two centres, lights where avenues cross.
+  // Traffic control: two-lane roundabouts downtown and where the south bank's avenues cross (the
+  // south centre itself is too near the bridge for one), lights where avenues cross.
   net.addRoundabout(42.5, 24.5, ROUNDABOUT_RADIUS[KIND_AVENUE], KIND_AVENUE);
-  net.addRoundabout(42.5, 70.5, ROUNDABOUT_RADIUS[KIND_AVENUE], KIND_AVENUE);
-  for (const [x, z] of [[18.5, 12.5], [18.5, 24.5], [42.5, 12.5], [18.5, 70.5], [30.5, 24.5], [54.5, 24.5], [42.5, 36.5], [42.5, 18.5]]) {
+  net.addRoundabout(18.5, 70.5, ROUNDABOUT_RADIUS[KIND_AVENUE], KIND_AVENUE);
+  for (const [x, z] of [[18.5, 12.5], [18.5, 24.5], [42.5, 12.5], [42.5, 70.5], [30.5, 24.5], [54.5, 24.5], [42.5, 36.5], [42.5, 18.5]]) {
     const node = net.nearestNode(x, z, 1.0);
     if (node && net.degree(node.id) >= 3 && !node.ring) node.light = true;
   }
@@ -179,6 +183,49 @@ export function demoCity(expanded = false): SaveData {
     }
     for (const seg of [...net.segs.values()]) if (!seen.has(seg.a) && !seen.has(seg.b)) net.removeSeg(seg.id);
   }
+
+  // ---- the roads as a traffic engineer would finish them -------------------------------------------
+  // Bus corridors: the central avenue and the south-bank avenue keep their kerb lanes for buses, with
+  // stops along them (placed below). The cross-town avenue is the city's main artery and keeps all its
+  // lanes for general traffic (bus lanes there cost more than they gave), its buses stopping in lay-bys.
+  const onLine = (sg: { pts: Float32Array; n: number }, x: number | null, z: number | null): boolean => {
+    for (let i = 0; i <= sg.n; i++) {
+      if (x !== null && Math.abs(sg.pts[i * 2] - x) > 0.3) return false;
+      if (z !== null && Math.abs(sg.pts[i * 2 + 1] - z) > 0.3) return false;
+    }
+    return true;
+  };
+  const corridor = (sg: { pts: Float32Array; n: number }): boolean => onLine(sg, 42.5, null) || onLine(sg, null, 70.5);
+  for (const sg of net.segs.values()) if (sg.kind === KIND_AVENUE && !sg.structure && corridor(sg) && canAddBusLane(sg, net)) sg.bus = true;
+  // Signals: where two avenues cross, they time themselves to the traffic.
+  for (const nd of net.nodes.values()) {
+    if (!nd.light || nd.ring) continue;
+    const arms = net.segsAt(nd.id);
+    if (arms.filter(a => a.kind === KIND_AVENUE).length >= 3) { const plan = planFor(net, nd.id); plan.adaptive = true; nd.signal = plan; }
+  }
+  // Turn pockets: every street coming up to a signal gets a second lane for its last stretch, so
+  // turners wait beside the traffic going straight on instead of in front of it.
+  for (const nd of [...net.nodes.values()]) {
+    if (!nd.light || nd.ring) continue;
+    for (const arm of [...net.segsAt(nd.id)]) {
+      if (arm.kind !== KIND_ROAD || arm.oneway || arm.structure || arm.len < 5) continue;
+      const atB = arm.b === nd.id;
+      // Arriving at the b end, traffic runs a→b and its right is +1; arriving at the a end, −1.
+      net.addLaneRange(arm.id, atB ? arm.len - 2.6 : 0, atB ? arm.len : 2.6, atB ? 1 : -1, 1);
+    }
+  }
+  // Quiet crossings of two residential streets in the new town are all-way stops.
+  for (const [x, z] of [[24.5, 76.5], [30.5, 64.5], [48.5, 64.5], [12.5, 64.5], [66.5, 64.5]]) {
+    const nd = net.nearestNode(x, z, 1.0);
+    if (nd && !nd.ring && !nd.light && net.degree(nd.id) === 4 && net.segsAt(nd.id).every(a => a.kind === KIND_ROAD)) nd.stop = true;
+  }
+  // The suburban crescents are calmed, and two cross-town streets carry bike lanes.
+  for (const sg of net.segs.values()) {
+    const curved = Math.hypot(sg.cx - (sg.pts[0] + sg.pts[sg.n * 2]) / 2, sg.cz - (sg.pts[1] + sg.pts[sg.n * 2 + 1]) / 2) > 0.3;
+    if (sg.kind === KIND_ROAD && !sg.structure && curved && sg.pts[0] < 20 && sg.pts[1] > 29 && sg.pts[1] < 50) sg.calm = true;
+    if (sg.kind === KIND_ROAD && !sg.structure && (onLine(sg, null, 36.5) || onLine(sg, 30.5, null))) sg.bike = true;
+  }
+  net.version++;
 
   // ---- zoning --------------------------------------------------------------------------------------
   const ras = rasterize(net);
@@ -312,8 +359,22 @@ export function demoCity(expanded = false): SaveData {
     placeLarge({ x: 50, z: 22 }, T_STATION);
     placeLarge({ x: 36, z: 66 }, T_STATION);
     for (const p of [{ x: 38, z: 22 }, { x: 22, z: 38 }, { x: 58, z: 40 }, { x: 46, z: 72 }, { x: 14, z: 66 }]) place(p, T_SUBWAY);
-    for (let z = 10; z <= 46; z += 9) for (let x = 8; x <= 72; x += 12) place({ x, z }, T_BUS);
-    for (const x of [8, 26, 50, 68]) place({ x, z: 67 }, T_BUS);
+    // Bus corridors: a chain of stops along each bus-lane avenue (each stop joins the one before it),
+    // standing in the bus lane; and feeder routes on the house streets, stopping in lay-bys.
+    // Only where a bus can call: clear of the junctions at either end of the block.
+    const served = (i: number, want: 'bay' | 'stand'): boolean => {
+      const sg = net.segs.get(ras.accSeg[i]);
+      return !!sg && stopKind(net, sg, ras.accS[i], stopSideOf(sg, ras.accS[i], i % GRID + 0.5, Math.floor(i / GRID) + 0.5)) === want;
+    };
+    const onBusLane = (i: number): boolean => !!net.segs.get(ras.accSeg[i])?.bus && served(i, 'stand');
+    const onStreet = (i: number): boolean => net.segs.get(ras.accSeg[i])?.kind === KIND_ROAD && served(i, 'bay');
+    const onAvenue = (i: number): boolean => net.segs.get(ras.accSeg[i])?.kind === KIND_AVENUE && served(i, 'bay');
+    for (let x = 8; x <= 74; x += 9) place({ x, z: 26 }, T_BUS, onAvenue); // the cross-town avenue keeps all its lanes: lay-bys
+    for (let z = 8; z <= 58; z += 8) place({ x: 44, z }, T_BUS, onBusLane);
+    for (let x = 6; x <= 76; x += 10) place({ x, z: 72 }, T_BUS, onBusLane);
+    for (let x = 8; x <= 72; x += 12) place({ x, z: 38 }, T_BUS, onStreet);
+    for (let z = 14; z <= 48; z += 11) place({ x: 26, z }, T_BUS, onStreet);
+    for (const x of [8, 26, 50, 68]) place({ x, z: 66 }, T_BUS, onStreet);
     for (const p of [{ x: 40, z: 27 }, { x: 44, z: 72 }]) place(p, T_TAXI);
     placeLarge({ x: 62, z: 72 }, T_AIRPORT);
     // Fishing docks on the southern bank, downstream of nothing dirty.

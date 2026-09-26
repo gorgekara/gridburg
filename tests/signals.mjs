@@ -366,6 +366,9 @@ test('roundabouts get splitter islands on two-way arms; avenues get medians shor
   avLayer.rebuild(av, flat());
   assert.equal(avLayer.marks.medians, 2, 'a median on each avenue arm');
   assert.equal(avLayer.marks.barriers, 0);
+  // Arms 24 and 22 long, less the junction and turn bay at one end: a tree every two cells.
+  assert.ok(avLayer.marks.medianTrees >= 16 && avLayer.marks.medianTrees <= 24, `${avLayer.marks.medianTrees} median trees`);
+  assert.equal(avLayer.marks.rumbles, 0, 'no rumble strips on an avenue');
   const ex = new Network();
   ex.insertPath([{ x: 16, z: 40 }, { x: 64, z: 40 }], 3);
   const exLayer = new RoadLayer();
@@ -373,6 +376,8 @@ test('roundabouts get splitter islands on two-way arms; avenues get medians shor
   assert.equal(exLayer.marks.barriers, 1);
   assert.equal(exLayer.marks.guardrails, 2);
   assert.equal(exLayer.marks.medians, 0);
+  assert.equal(exLayer.marks.rumbles, 2, 'a rumble strip on each shoulder');
+  assert.equal(exLayer.marks.medianTrees, 0);
 });
 
 test('where two expressways meet, no guardrail or barrier stands on either carriageway', () => {

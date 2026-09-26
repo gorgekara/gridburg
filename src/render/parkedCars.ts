@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { sideHalf, roadHalf } from '../roads/lanes';
+import { sideHalf, roadHalf, busLaneOn } from '../roads/lanes';
 import { GRID, N_TILES, T_BUS, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
@@ -140,7 +140,7 @@ export class ParkedCarLayer {
       // Streets and avenues only: a lane is too narrow, and nobody parks on an expressway, a bridge or in a tunnel.
       if (seg.structure || (seg.kind !== KIND_ROAD && seg.kind !== KIND_AVENUE)) continue;
       // Nor on a roundabout, nor over a kerbside bike track, nor on a road with bus lanes.
-      if (seg.bike || seg.bus || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
+      if (seg.bike || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
       const offOf = (side: number): number => sideHalf(seg, side) + PARK_INSET;
       // Stay back from each end by more than the widest road crossing there.
       const clear = (node: number): number => CLEAR + Math.max(0, ...net.segsAt(node).filter(o => o.id !== seg.id).map(o => roadHalf(o)));
@@ -148,6 +148,8 @@ export class ParkedCarLayer {
       const zebra = crossings.get(seg.id) ?? [0, 0];
       const from = Math.max(clear(seg.a), zebra[0] + 0.4), to = seg.len - Math.max(clear(seg.b), zebra[1] + 0.4);
       for (const side of [-1, 1]) {
+        // Not along a bus lane (the kerb lane of the traffic on that side).
+        if (busLaneOn(net, seg, side > 0)) continue;
         const off = offOf(side);
         for (let s = from, n = 0; s < to; s += SLOT, n++) {
           const id = seg.id * 4099 + n * 2 + (side > 0 ? 1 : 0);

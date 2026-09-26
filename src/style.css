@@ -212,11 +212,12 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
   position: sticky; left: 0; z-index: 2; display: flex; gap: 6px; align-self: stretch;
   padding-right: 8px; margin-right: 2px; background: var(--bg-solid); border-right: 1px solid var(--line);
 }
-.modes { display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+/* Two buttons a row, so a group of five (the road heights) is no taller than a row of tool cards. */
+.modes { display: grid; grid-template-columns: repeat(2, 34px); grid-auto-rows: 28px; gap: 4px; align-content: center; }
 .modes[hidden] { display: none; }
-.mlabel { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
+.mlabel { grid-column: 1 / -1; align-self: end; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
 .mode {
-  display: flex; align-items: center; justify-content: center; width: 36px; height: 32px; border-radius: 7px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; width: 34px; height: 28px; border-radius: 7px; cursor: pointer;
   background: rgba(255,255,255,0.06); color: var(--fg); border: 1.5px solid transparent; font: inherit; font-size: 12px;
 }
 .mode:hover { background: rgba(255,255,255,0.12); }

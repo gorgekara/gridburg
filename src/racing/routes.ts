@@ -204,7 +204,8 @@ function build(kind: RaceKind, name: string, steps: Step[], net: Network, loop: 
   // Start and finish in the middle of a street, never on a junction: a loop starts halfway along its
   // longest street; a run starts halfway along its first street and ends halfway along its last.
   const raw = measure(), full = raw[raw.length - 1];
-  const bounds = [0, ...traced.joints.map(i => raw[i]), loop ? raw[raw.length - 2] + Math.hypot(xs[xs.length - 1] - xs[xs.length - 2], zs[zs.length - 1] - zs[zs.length - 2]) : full];
+  // (A street runs junction to junction: a node joining only two pieces, where a turn pocket opens, is not an end.)
+  const bounds = [0, ...traced.joints.filter((_, k) => net.degree(steps[k].to) >= 3).map(i => raw[i]), loop ? raw[raw.length - 2] + Math.hypot(xs[xs.length - 1] - xs[xs.length - 2], zs[zs.length - 1] - zs[zs.length - 2]) : full];
   if (loop) {
     let best = 0;
     for (let k = 1; k < bounds.length - 1; k++) if (bounds[k + 1] - bounds[k] > bounds[best + 1] - bounds[best]) best = k;
@@ -212,7 +213,9 @@ function build(kind: RaceKind, name: string, steps: Step[], net: Network, loop: 
     const tail = slice(xs, zs, ys, raw, mid, full), head = slice(xs, zs, ys, raw, 0, mid);
     xs = [...tail.xs, ...head.xs.slice(1)]; zs = [...tail.zs, ...head.zs.slice(1)]; ys = [...tail.ys, ...head.ys.slice(1)];
   } else if (steps.length > 1 && kind !== 'drag') {
-    const from = (bounds[0] + bounds[1]) / 2, to = (bounds[bounds.length - 2] + bounds[bounds.length - 1]) / 2;
+    // (On a stub too short for halfway to be clear of the junction, at its far end instead.)
+    const first = bounds[1] - bounds[0], last = bounds[bounds.length - 1] - bounds[bounds.length - 2];
+    const from = first < 1.6 ? bounds[0] : (bounds[0] + bounds[1]) / 2, to = last < 1.6 ? bounds[bounds.length - 1] : (bounds[bounds.length - 2] + bounds[bounds.length - 1]) / 2;
     ({ xs, zs, ys } = slice(xs, zs, ys, raw, from, to));
   }
   const cum = Float32Array.from(measure());

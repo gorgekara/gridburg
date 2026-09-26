@@ -25,6 +25,8 @@ export class BusLaneLayer {
   readonly group = new THREE.Group();
   marks: BusMarks = { busLanes: 0, busBays: 0, busStands: 0 };
   bays: BayView[] = [];
+  /** The stop tiles with a lay-by in front, whose shelter stands back behind it. */
+  bayTiles = new Set<number>();
   private mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93 }));
   private key = '';
 
@@ -101,7 +103,7 @@ export class BusLaneLayer {
     }
 
     // ---- bus stops ----
-    this.bays = [];
+    this.bays = []; this.bayTiles = new Set();
     for (const bay of busBays(net, kind, raster.accSeg, raster.accS, T_BUS)) {
       const { seg: s, s: at, side, fwd, edge, outer } = bay;
       const sign = side;
@@ -119,6 +121,7 @@ export class BusLaneLayer {
       }
       // A lay-by: paved out from the kerb to its own back kerb, tapering in and out.
       this.marks.busBays++;
+      this.bayTiles.add(bay.tile);
       const r = along(s, d0, d1), depth: number[] = [];
       for (let k = 0; k < r.count; k++) {
         const d = d0 + ((d1 - d0) * k) / (r.count - 1);

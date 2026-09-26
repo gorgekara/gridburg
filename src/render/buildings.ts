@@ -136,7 +136,7 @@ export class BuildingLayer {
 
   showZones(show: boolean): void { this.zones.visible = show; this.cells.visible = show; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array, bayTiles?: ReadonlySet<number>): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
@@ -159,7 +159,7 @@ export class BuildingLayer {
       const tz = multi || isDecoration(k) ? Math.floor(i / GRID) + 0.5 : raster.lotZ[i];
       pos.set(tx - half, 0, tz - half);
       // A bus stop stands back behind its lay-by.
-      if (k === T_BUS && !multi && raster.accSeg[i] >= 0) {
+      if (k === T_BUS && !multi && raster.accSeg[i] >= 0 && bayTiles?.has(i)) {
         const dx = tx - raster.accX[i], dz = tz - raster.accZ[i], l = Math.hypot(dx, dz) || 1;
         pos.x += (dx / l) * BAY_SETBACK; pos.z += (dz / l) * BAY_SETBACK;
       }
