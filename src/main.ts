@@ -647,6 +647,7 @@ function applySettings(s: Settings): void {
   renderer.shadowMap.enabled = s.shadows;
   scene.traverse(o => { const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material; if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true; });
   setDayLength(s.dayLength);
+  game.setDayLength(s.dayLength);
   if (s.infiniteMoney !== game.infiniteMoney) game.setInfiniteMoney(s.infiniteMoney);
   game.setDisasters(s.disasters);
   hud.setCheatLabel(s.infiniteMoney);

@@ -480,6 +480,9 @@ export class Game {
     return out;
   }
 
+  /** The day's length in seconds, for the traffic's rush hours; the sky follows it in render/daylight. */
+  setDayLength(seconds: number): void { this.send({ type: 'dayLength', seconds }); }
+
   setDisasters(on: boolean, trigger?: DisasterKind): void {
     this.extras.disasters = on;
     this.send({ type: 'disasters', on, rate: this.disasterRate, trigger });

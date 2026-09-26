@@ -100,6 +100,8 @@ export type MainToWorker =
   | { type: 'taxes'; taxes: Taxes }
   | { type: 'districtPolicy'; district: number; mask: number }
   | { type: 'disasters'; on: boolean; rate?: number; trigger?: DisasterKind }
+  /** How many seconds the day lasts (the settings' day length), so the traffic keeps the clock the player sees. */
+  | { type: 'dayLength'; seconds: number }
   | { type: 'warm'; ticks: number }
   | { type: 'funding'; key: FundingKey; value: number }
   | { type: 'policy'; id: PolicyId; on: boolean }

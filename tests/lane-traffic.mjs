@@ -104,8 +104,10 @@ test('an avenue crossing, with two lanes each way, carries well over a street cr
   assert.ok(avenue.gaveUp <= avenue.arrived * 0.1, `${avenue.gaveUp} gave up`);
 });
 test('a street crossing carries about a car a second', () => {
-  // Cars stop before the zebra now, so each one crosses a little more junction: about 0.9 a second.
-  assert.ok(street.arrived >= 125, `${street.arrived} trips`);
+  // Cars stop before the zebra now, so each one crosses a little more junction, and the city's clock
+  // starts at 9:00, so people cross at the daytime rate (about 136 trips with night's thinner walkers,
+  // about 121 by day): about 0.8 a second.
+  assert.ok(street.arrived >= 112, `${street.arrived} trips`);
   assert.ok(street.gaveUp <= street.arrived * 0.1, `${street.gaveUp} gave up`);
 });
 test('cars queued at a red light do not hold up the green traffic', () => {

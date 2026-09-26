@@ -56,3 +56,18 @@ This is phase E of `2026-09-26-rce-polish-roadmap.md`. Decisions agreed: the ite
 - **A bus:** it stops at its far stop, stands at least 2.5 s, then drives back.
 - **The demo city (measured):** 13,700 residents after 240 s against 10,400 before, commutes of 63 s
   against 80 s, and fewer give-ups.
+
+## As built, after review
+
+- **The demand clock:** it follows the city's own clock, which starts at 9:00, and the day length set
+  in the game. At first the worker counted from midnight on a fixed 480 s day, 9 hours out.
+- **Rerouting:**
+  - A reroute keeps the arc it is on: the leg's end is reset to the new route's.
+  - It waits 15 s after the last one.
+  - It is skipped just after passing a light, and for looping trips.
+- **Bus dwell:** the flag sits on the last driven leg, and the bus is released only once its stand has
+  started and run out.
+- **Callouts in a busy street:** with the city starting near the morning peak, an engine behind pulled-over
+  cars could meet an unbroken oncoming queue and never pass. Oncoming drivers now pull over too while a
+  callout is waiting to get past, and it goes once they have.
+- **The demo city after these fixes:** 13,300 residents after 240 s, commutes of about 65 s.

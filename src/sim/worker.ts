@@ -322,8 +322,12 @@ interface Car {
   insistent: boolean;
   /** At a bus stop: until when it stands there, and the leg whose stop it has already made. */
   dwellUntil?: number; dwellLi?: number;
+  /** A trip out and back (a probe's bus run), which keeps its route; and when it last rerouted. */
+  loop?: boolean; rerouteAt?: number;
   /** A callout's view of the road ahead: an oncoming car close enough that it must not pull out. */
-  oncoming?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
+  oncoming?: boolean;
+  /** A callout with cars pulled over ahead of it, waiting for room to pass them. */
+  wantPass?: boolean; pace: number; stuck: number; stopAt?: number; lock: number; lockLi: number; lockStop: number; vehicle: number; taxiStop?: number; line?: number; mission?: Mission; crash?: number; working?: boolean; through?: boolean;
   /** The lane on the current leg (0 = kerb), the one it will take on the next leg (−1 until chosen), and the one it came from. */
   lane: number; nextLane: number; prevLane: number;
   /** A lane change in progress: the sideways offset it started from, where and when; chT < 0 when not changing. */
@@ -908,8 +912,10 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   if (line !== undefined || loop) {
     const back = findRoute(gSeg, gS, sSeg, sS);
     if (!back) return false;
-    // The far stop: the bus pulls in there and stands a while before the run back.
-    legs[legs.length - 1].dwell = true;
+    // The far stop: the bus pulls in there and stands a while before the run back (on the last leg
+    // that is driven at all, since an empty one at a node is dropped below).
+    const out = legs.filter(l => l.p1 - l.p0 > 1e-3);
+    (out.length ? out[out.length - 1] : legs[legs.length - 1]).dwell = true;
     legs.push(...back);
   }
   // A trip that starts or ends right on a node has an empty leg there, pointing along a road the car
@@ -925,7 +931,7 @@ function spawnTrip(sSeg: number, sS: number, gSeg: number, gS: number, vehicle =
   // Traffic from beyond the map edge arrives already at speed; everyone else pulls away from the kerb.
   const pace = drivingPace(vehicle);
   const rolling = entries.some(e => e.seg === legs[0].seg && Math.abs(e.s - legs[0].p0) < 0.05);
-  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
+  slots[slot] = { uid: ++carSequence, legs, li: 0, p: legs[0].p0, time: 0, v: rolling ? segSpeed(segs[legs[0].seg]) * pace : 0, stood: 0, loop, accel: 0, brakeT: -1, side: 0, sideGoal: 0, yieldUntil: -1, yieldTo: -1, insistent: false, pace, stuck: 0, lock: -1, lockLi: -1, lockStop: 0, vehicle, line, mission, taxiStop,
     lane: 0, nextLane: -1, prevLane: 0, chFrom: 0, chP: 0, chT: -1, chLane: 0, lcCool: 0, laneWait: 0, box: -1, boxLi: -1, boxBlockedAt: -1 };
   activeCars++;
   return true;
@@ -959,7 +965,13 @@ function byIntercityRail(tile: number): boolean {
 }
 
 /** Whether the city clock says it is late enough for the racers to come out. */
-const nightTime = (): boolean => { const h = (tick / 20) % 24; return h > 22 || h < 4; };
+/**
+ * The hour on the city's clock, as the player sees it (render/daylight): the day starts at 9:00 and
+ * lasts `dayLength` seconds (480 unless the settings change it).
+ */
+let dayLength = 480;
+const cityHour = (): number => (((9 + ((tick + subCount / SIM_HZ) * 24) / dayLength) % 24) + 24) % 24;
+const nightTime = (): boolean => { const h = cityHour(); return h > 22 || h < 4; };
 
 /**
  * Street racers: a handful of cars that run a long route across the city at speed once the streets
@@ -1022,7 +1034,7 @@ function spawn(dt: number): void {
     startRace();
   }
   // The day's rhythm: peaks morning and evening, a trickle in the small hours, the same trips in all.
-  const hour = ((tick + subCount / SIM_HZ) / 20) % 24, rhythm = dayProfile(hour);
+  const hour = cityHour(), rhythm = dayProfile(hour);
   spawnBudget = Math.min(8, spawnBudget + tripRate * dt * trafficScale * rhythm);
   extBudget = Math.min(4, extBudget + extRate * dt * trafficScale * rhythm);
   // Through traffic keeps rolling whatever the city does; it never counts towards commutes.
@@ -1580,8 +1592,10 @@ function stepCars(dt: number): void {
       if (!oc || onCallout(oc)) continue;
       const theirs = leg.fwd ? seg.len - oc.p : oc.p, ahead = leg.fwd ? theirs - along : along - theirs;
       if (ahead < -0.5 || ahead > ONCOMING_CLEAR) continue;
-      m.oncoming = true;
-      if (m.side < -0.05) { oc.yieldUntil = simTime + 0.5; oc.yieldTo = s; }
+      // Oncoming drivers pull over too, for a callout already out or waiting to get past: once they
+      // have, there is room to pass between them.
+      if (m.side < -0.05 || m.wantPass) { oc.yieldUntil = simTime + 0.5; oc.yieldTo = s; }
+      if (oc.side < PULL_OVER * 0.8) m.oncoming = true;
     }
     // Ahead of it, and just passed by it: a car stays pulled over until the callout is a cell clear,
     // and the callout stays out until then too, or the two would slide back into each other.
@@ -1612,7 +1626,9 @@ function stepCars(dt: number): void {
       // A callout passes cars that have pulled over for it: it follows the first one that has not.
       // (A callout marks itself with yieldUntil while it is beside a car that pulled over for it.)
       // It only pulls out to pass while the oncoming lane ahead is clear (or it is already out).
-      const passing = onCallout(c) && (firmP !== leaderP || c.yieldUntil > simTime) && (!c.oncoming || c.side < -0.05);
+      const wantsPast = onCallout(c) && (firmP !== leaderP || c.yieldUntil > simTime);
+      c.wantPass = wantsPast;
+      const passing = wantsPast && (!c.oncoming || c.side < -0.05);
       if (passing) { leaderP = firmP; leaderLength = firmLength; leaderStuck = firmStuck; leaderV = firmV; leaderSlot = firmSlot; }
       const yielding = !onCallout(c) && c.yieldUntil > simTime && onCallout(slots[c.yieldTo]);
       // On one lane, or in the kerb lane of several, it pulls over; in another lane it moves across.
@@ -1658,8 +1674,8 @@ function stepCars(dt: number): void {
       // A bus at its stop: pull in, stand there, then carry on.
       const atStop = !!leg.dwell && c.dwellLi !== c.li;
       if (atStop && c.p >= leg.p1 - 0.03) {
-        if (!((c.dwellUntil ?? 0) > simTime)) c.dwellUntil = simTime + BUS_DWELL;
-        else if ((c.dwellUntil ?? 0) <= simTime + dt) { c.dwellLi = c.li; c.dwellUntil = 0; }
+        if (!c.dwellUntil) c.dwellUntil = simTime + BUS_DWELL;
+        else if (c.dwellUntil <= simTime) { c.dwellLi = c.li; c.dwellUntil = 0; }
       }
       if (atStop && leg.p1 - c.p < 1.2) c.sideGoal = Math.max(c.sideGoal, 0.08);
       // Pulled over for a callout, it comes to a stop at the kerb until it has passed.
@@ -1963,7 +1979,9 @@ function stepCars(dt: number): void {
           if (c.p < laneTail[nextKey]) { laneTail[nextKey] = c.p; laneTailV[nextKey] = c.v; }
           if (c.p < laneFresh[nextKey]) laneFresh[nextKey] = c.p;
           leaderP = Infinity; leaderStuck = false; leaderSlot = -1;
-          if (delayed > REROUTE_DELAY && !c.mission && c.line === undefined && c.vehicle !== 8) reroute(c);
+          // Not for a wait at a red light (it would clear anyway), nor more than once in a while.
+          const passedLight = nodeType[legEndNode(leg)] === J_LIGHT;
+          if (delayed > REROUTE_DELAY && !passedLight && !c.loop && !c.mission && c.line === undefined && c.vehicle !== 8 && simTime - (c.rerouteAt ?? -99) > 15) reroute(c);
           break;
         }
       }
@@ -2107,7 +2125,10 @@ function reroute(c: Car): void {
   if (!fresh || fresh.length < 2 || fresh[0].seg !== cur.seg || fresh[0].fwd !== cur.fwd) return;
   const rest = fresh.slice(1);
   if (rest.every((l, k) => c.legs[c.li + 1 + k]?.seg === l.seg && c.legs[c.li + 1 + k]?.fwd === l.fwd)) return;
+  c.rerouteAt = simTime;
   if (legsCost([{ ...cur, p0: c.p }, ...rest]) > legsCost([{ ...cur, p0: c.p }, ...c.legs.slice(c.li + 1)]) * 0.9) return;
+  // The current leg runs to its node again (a ring arc's may have been cut short for the old exit).
+  cur.p1 = fresh[0].p1;
   c.legs = [...c.legs.slice(0, c.li + 1), ...rest];
   markRampLegs(c.legs);
   alignRingLegs(c.legs, c.vehicle);
@@ -2201,7 +2222,7 @@ function walkersOnCrossingsAt(node: number): boolean {
 
 /** People arrive at the kerbs, step out when their crossing lets them, and walk across. */
 function stepWalkers(dt: number): void {
-  const hour = (tick / 20) % 24, night = hour < 6 || hour > 22 ? 0.3 : 1;
+  const hour = cityHour(), night = hour < 6 || hour > 22 ? 0.3 : 1;
   // Start somewhere different each step, so when the city's walkers run out no crossing always misses.
   walkerStart = crossings.length ? (walkerStart + 1) % crossings.length : 0;
   for (let ci = 0; ci < crossings.length; ci++) {
@@ -2388,6 +2409,7 @@ function writeFrame(): void {
 // ---- census, utilities, pollution, growth --------------------------------------------------------
 function census(): void {
   refreshCrossingRates();
+  comCache = null; // the shops, re-listed from the new job tiles when next wanted
   parkReach = parkAccess(kind, roadConnected);
   pop = 0; comJobs = 0; indJobs = 0; officeJobs = 0; buildings = 0;
   resTiles = []; resW = []; jobTiles = []; jobW = [];
@@ -3074,6 +3096,9 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       if (!Number.isInteger(m.district) || m.district < 1 || m.district > DISTRICT_COUNT || !Number.isInteger(m.mask) || m.mask < 0 || m.mask >= 1 << DISTRICT_POLICY_IDS.length) break;
       extras.districtPolicies[m.district - 1] = m.mask;
       census(); postState();
+      break;
+    case 'dayLength':
+      if (Number.isFinite(m.seconds) && m.seconds >= 60) dayLength = m.seconds;
       break;
     case 'disasters':
       extras.disasters = !!m.on;
