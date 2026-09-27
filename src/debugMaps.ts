@@ -6,6 +6,7 @@ import { highwayLayout, HIGHWAY_END, newCity } from './game';
 import { GRID, N_TILES, idx, inBounds, T_RES, T_COM, T_IND, T_COAL, T_PUMP, T_OUTLET, T_TOWER, T_BUS } from './constants';
 import { Network, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY2, KIND_RAMP, ROUNDABOUT_RADIUS } from './roads/network';
 import { planFor, allTurns, turnName } from './roads/signals';
+import { canStyle } from './roads/lanes';
 import { rasterize } from './roads/raster';
 import { generateTerrain, touchesWater, adjacentFlow } from './terrain';
 import type { SaveData } from './save';
@@ -156,6 +157,15 @@ export function junctionLab(): SaveData {
     const ys = [s.pts[1], s.pts[s.n * 2 + 1]], xs = [s.pts[0], s.pts[s.n * 2]];
     if (s.kind === KIND_AVENUE && ys.every(z => Math.abs(z - 20.5) < 0.2) && Math.min(...xs) >= 52) s.bus = true;
     if (s.kind === KIND_ROAD && ys.every(z => Math.abs(z - 36.5) < 0.2) && Math.min(...xs) >= 52 && Math.max(...xs) <= 65) { s.bike = true; s.calm = true; }
+  }
+  // Street styles: the bottom avenue is a boulevard, the west of the top street has parking lanes and
+  // the west of the lower one is tree-lined.
+  for (const sg of net.segs.values()) {
+    const ys = [sg.pts[1], sg.pts[sg.n * 2 + 1]], xs = [sg.pts[0], sg.pts[sg.n * 2]];
+    if (!canStyle(sg, net)) continue;
+    if (sg.kind === KIND_AVENUE && ys.every(z => Math.abs(z - 46.5) < 0.2)) { sg.parking = true; sg.trees = true; }
+    if (sg.kind === KIND_ROAD && ys.every(z => Math.abs(z - 20.5) < 0.2) && Math.max(...xs) <= 22.6) sg.parking = true;
+    if (sg.kind === KIND_ROAD && ys.every(z => Math.abs(z - 36.5) < 0.2) && Math.max(...xs) <= 22.6) sg.trees = true;
   }
   // x 70.5: narrow lanes with a bend and a dead end; below, a five-way junction.
   street([{ x: 70.5, z: 24.5 }, { x: 66, z: 26 }, { x: 64.5, z: 29.5 }], KIND_LANE);

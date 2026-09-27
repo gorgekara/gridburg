@@ -65,12 +65,16 @@ const CATEGORIES: Category[] = [
       { id: 'lane', label: 'Lane', key: 'L', price: `${money(COST_LANE)} / cell`, note: 'One shared lane', hint: 'A narrow, cheap, slow street for the inside of a block. Traffic shares a single carriageway, so keep it away from through routes' },
       { id: 'road', label: 'Road', key: 'R', price: `${money(COST_ROAD)} / cell`, note: 'Two lanes', hint: 'Click to start, click again to finish. It keeps going from the last point until you join a road, right-click, or press Esc' },
       { id: 'avenue', label: 'Avenue', key: 'V', price: `${money(COST_AVENUE)} / cell`, note: 'Four lanes, faster', hint: 'A wide, fast road that holds far more traffic. Placed the same way as a road' },
+      { id: 'parkstreet', label: 'Parking street', price: `${money(COST_ROAD + 8)} / cell`, note: 'Parking lanes', hint: 'A two-lane street with a parking lane each side, marked out in bays: cars park there instead of on the kerb' },
+      { id: 'treestreet', label: 'Tree-lined street', price: `${money(COST_ROAD + 14)} / cell`, note: 'Planted verges', hint: 'A two-lane street with a planted verge and a row of trees each side' },
+      { id: 'boulevard', label: 'Boulevard', price: `${money(COST_AVENUE + 22)} / cell`, note: 'Trees and parking', hint: 'An avenue with a planted median, parking lanes and a row of trees down each side' },
       { id: 'highway', label: 'Expressway', key: 'X', price: `${money(COST_HIGHWAY)} / cell`, note: 'Fastest · no frontage', hint: 'Six lanes at expressway speed for crossing the city. Nothing can be zoned or built along it, so feed it with ordinary streets' },
       { id: 'motorway', label: 'One-way highway', price: `${money(COST_MOTORWAY)} / cell`, note: '3 lanes · one way', hint: 'One carriageway of a motorway, three lanes in the direction you draw it. Draw the other direction as a second road beside it, as in Cities: Skylines 2. No frontage' },
       { id: 'highway2', label: 'Two-lane highway', price: `${money(COST_HIGHWAY2)} / cell`, note: '2 lanes · one way', hint: 'A smaller one-way highway, two lanes in the direction you draw it. Pair two of them for a regional road; slip roads join it the same way as the motorway' },
       { id: 'ramp', label: 'Highway ramp', price: `${money(COST_RAMP)} / cell`, note: '1 lane · one way', hint: 'A slip road on or off a highway, one way in the direction you draw it. Start it from a highway to make an exit, end it on one to make an on-ramp; press + for a flyover or − to dive under' },
       { id: 'entry', label: 'City entrance', price: money(COST_ENTRY), note: 'New highway access', hint: 'Choose a clear map edge. Adds a seven-cell avenue connecting to the outside world. Unlocks at Small town' },
       { id: 'bikelane', label: 'Bike lanes', price: '$12 / cell', note: 'Upgrade a street', hint: 'Click a surface street or avenue to add compact bike lanes beside its curbs. Click again to remove. Not available on highways, narrow lanes, bridges or roundabouts' },
+      { id: 'style', label: 'Street style', price: 'From $8 / cell', note: 'Parking, trees', hint: 'Click a street or avenue to step it through its styles: plain, with parking lanes, tree-lined, and both' },
       { id: 'buslane', label: 'Bus lanes', price: '$10 / cell', note: 'Upgrade a road', hint: 'Click a road with two or more lanes each way to keep its kerb lanes for buses, trolleybuses, taxis and emergency calls. Other traffic may only cross into them just before a junction to turn. Click again to remove' },
       { id: 'upgrade', label: 'Upgrade', key: 'U', price: 'Difference', note: 'Widen one step', hint: 'Click a road to widen it one step: lane, street, avenue, expressway, then back to a lane. Drag along a road to change just that stretch. Widening costs the difference; narrowing is free' },
       { id: 'edit', label: 'Edit roads', key: 'N', price: 'Extra length', note: 'Drag points and bends', hint: 'Drag a junction or road end to move it: the roads follow, keep their curves, and join whatever they cross. Drag the middle of a road to bend it. You pay only for road you add' },
@@ -854,7 +858,7 @@ export class Hud {
   private refreshHint(): void {
     const def = CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === this.tool);
     if (!def) { this.hint.textContent = ''; return; }
-    if (['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'parkpath'].includes(this.tool)) {
+    if (['lane', 'road', 'avenue', 'highway', 'motorway', 'highway2', 'ramp', 'parkpath', 'parkstreet', 'treestreet', 'boulevard'].includes(this.tool)) {
       const m = MODES.find((x) => x.id === this.mode)!;
       const height = this.elevation > 0 ? `Level ${this.elevation}: the next point goes in ${this.elevation} up. Ramps need 4 cells per level; roads at the same level join, a level apart they pass. ` : this.elevation < 0 ? 'Tunnel: the next point goes in underground; ramps need 4 cells. ' : '';
       this.hint.textContent = `${height}${m.label}: ${m.hint.toLowerCase()}. Keeps going until you join a road, right-click or press Esc`;

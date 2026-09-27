@@ -12,7 +12,7 @@ import { stopLine } from '../roads/control';
 import { junctionPaint, chevronSpots } from './junctionMarks';
 import { rampJoin, rampMouthShape } from '../roads/rampMouth';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
-import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay, ringLaneCount } from '../roads/lanes';
+import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay, ringLaneCount, carriageHalf, PARK_W, TREE_W } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
 import { planFor, movements, stateIn, fixedClock, moveKey, crossingState, crossingFrom, allTurns, turnName } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
@@ -31,6 +31,8 @@ const customLanes = (s: RSeg, tapers: Tapers): boolean => !!(s.addR || s.addL) |
 
 const ASPHALT = 0x4c4d55;
 const CURB = 0xb9b6ad;
+/** The planted verge of a tree-lined street. */
+const VERGE = 0x6f9a55;
 const DECK = 0x9a968c;
 const RAIL = 0xd8d5cc;
 const DASH = 0xf1d36a;
@@ -47,6 +49,8 @@ const one = new THREE.Vector3(0.72, 0.72, 0.72);
 const TACTILE = 0xe2b93b, MEDIAN_GRASS = 0x6f9f52, APRON = 0xb3a58c;
 /** How far short of a junction an avenue's median stops, leaving room for its turn bay. */
 const MEDIAN_BAY = 1.5;
+/** How long a marked parking bay is along a parking lane. */
+export const PARK_BAY = 0.42;
 /** The darker transverse bars of a rumble strip on an expressway's shoulder. */
 const RUMBLE = 0x2c2d31;
 const WALK = new THREE.Color(0xf4f1e8), DONT_WALK = new THREE.Color(0xff7a1a), PED_OFF = new THREE.Color(0x2a2a2a);
@@ -72,7 +76,7 @@ export class RoadLayer {
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
   /** What the last rebuild painted and put up at junctions and curves. */
-  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0 };
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0, streetTrees: 0, parkingBays: 0 };
   /** Pedestrian signal heads: a box on a post at each end of a signalled crossing, and its lamp. */
   readonly pedHeads: THREE.InstancedMesh;
   private pedLamps: THREE.InstancedMesh;
@@ -226,7 +230,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
-    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0 };
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0, streetTrees: 0, parkingBays: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -288,7 +292,17 @@ export class RoadLayer {
       b.heightAt = s.structure ? (x, z) => roadHeight(s, Network.nearestOn(s, x + half, z + half).s) : null;
       const pts = world(s.pts, s.n + 1);
       const e = edges(s, tapers);
-      this.ranges.set(s.id, b.band(pts, s.n + 1, e.left, e.right, 0.045, ASPHALT));
+      // A tree-lined street is paved only to its verge; the verge beyond is planted.
+      const tw = s.trees ? TREE_W : 0;
+      const aL = tw ? e.left.map(v => v - tw) : e.left, aR = tw ? e.right.map(v => v - tw) : e.right;
+      this.ranges.set(s.id, b.band(pts, s.n + 1, aL, aR, 0.045, ASPHALT));
+      if (tw) {
+        b.band(pts, s.n + 1, aR.map(v => -v), e.right, 0.049, VERGE);
+        b.band(pts, s.n + 1, e.left, aL.map(v => -v), 0.049, VERGE);
+        // A low kerb along the inside of each verge.
+        b.band(pts, s.n + 1, aR.map(v => -v), aR.map(v => v + 0.035), 0.055, CURB);
+        b.band(pts, s.n + 1, aL.map(v => v + 0.035), aL.map(v => -v), 0.055, CURB);
+      }
     }
     b.heightAt = null;
     // A tunnel's approaches are ordinary street up to the portal, so draw them as such, running a
@@ -390,6 +404,19 @@ export class RoadLayer {
         this.marks.medianTrees++;
       }
     }
+    // Street trees down each planted verge, every cell and a half, clear of the junctions and zebras.
+    for (const s of net.segs.values()) {
+      if (!s.trees || s.structure) continue;
+      const clearA = Math.max(net.degree(s.a) >= 3 ? 1.2 : 0.4, (crossings.get(s.id)?.[0] ?? 0) + 0.4);
+      const clearB = Math.max(net.degree(s.b) >= 3 ? 1.2 : 0.4, (crossings.get(s.id)?.[1] ?? 0) + 0.4);
+      for (let d = clearA; d < s.len - clearB; d += 1.5) for (const side of [1, -1]) {
+        Network.poseAt(s, d, pose);
+        const off = (sideHalf(s, side) - TREE_W / 2) * side, x = pose.x - half - pose.tz * off, z = pose.z - half + pose.tx * off, v = tileHash(s.id * 131 + Math.round(d * 7) + (side > 0 ? 3 : 0));
+        decorations.cyl(0.02, 0.18, x, 0.05, z, 0x7a5a3e, 6);
+        decorations.taper(0.08 + v * 0.025, 0.012, 0.32 + v * 0.1, x, 0.18, z, v > 0.5 ? 0x4f8a50 : 0x5d9656, 7);
+        this.marks.streetTrees++;
+      }
+    }
     this.islands.geometry.dispose();
     this.islands.geometry = decorations.build();
     // Barriers and guardrails: their own mesh, which casts no shadow, as it is long and thin.
@@ -433,6 +460,16 @@ export class RoadLayer {
         }
         b.ribbon(arr, steps + 1, halfW, y, color, offset);
       };
+      if (s.parking) {
+        // Parking lanes: a line along the edge of the traffic lanes, and the bays marked across.
+        for (const side of [1, -1]) {
+          const c = carriageHalf(s, side);
+          strip(from, to, 0.012, side * c, WHITE, 0.057);
+          // Bays counted from the road's start, so the parked cars (see parkedCars) sit between the lines.
+          for (let d = Math.ceil(from / PARK_BAY) * PARK_BAY; d < to; d += PARK_BAY) strip(d, d + 0.018, PARK_W / 2 - 0.02, side * (c + PARK_W / 2), WHITE, 0.057);
+        }
+        this.marks.parkingBays++;
+      }
       if (s.calm) {
         // Ladders of white bars across the carriageway read as a calmed street.
         const hw = HALF_WIDTH[s.kind];

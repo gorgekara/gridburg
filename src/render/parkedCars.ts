@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { sideHalf, roadHalf, busLaneOn } from '../roads/lanes';
+import { sideHalf, roadHalf, busLaneOn, carriageHalf, PARK_W } from '../roads/lanes';
 import { GRID, N_TILES, T_BUS, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
@@ -71,7 +71,7 @@ export class ParkedCarLayer {
   rebuild(net: Network, kind: Uint8Array, level: Uint8Array, raster?: Raster, rot?: Uint8Array): void {
     let built = 0;
     for (let i = 0; i < N_TILES; i++) if (level[i] || isParking(kind[i])) built = (built * 31 + i * 4 + level[i] + kind[i] * 7 + (rot?.[i] ?? 0) * 3) >>> 0;
-    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike || x.bus).length}:${raster ? 1 : 0}`;
+    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike || x.bus || x.parking).length}:${raster ? 1 : 0}`;
     if (signature === this.signature) return;
     this.signature = signature;
     this.byTile.clear();
@@ -153,7 +153,8 @@ export class ParkedCarLayer {
       if (seg.structure || (seg.kind !== KIND_ROAD && seg.kind !== KIND_AVENUE)) continue;
       // Nor on a roundabout, nor over a kerbside bike track, nor on a road with bus lanes.
       if (seg.bike || net.nodes.get(seg.a)?.ring || net.nodes.get(seg.b)?.ring) continue;
-      const offOf = (side: number): number => sideHalf(seg, side) + PARK_INSET;
+      // In a parking lane's bays where the street has them, otherwise up against the kerb.
+      const offOf = (side: number): number => seg.parking ? carriageHalf(seg, side) + PARK_W / 2 : sideHalf(seg, side) + PARK_INSET;
       // Stay back from each end by more than the widest road crossing there.
       const clear = (node: number): number => CLEAR + Math.max(0, ...net.segsAt(node).filter(o => o.id !== seg.id).map(o => roadHalf(o)));
       // ...and behind the zebra crossing, where there is one.
@@ -163,10 +164,12 @@ export class ParkedCarLayer {
         // Not along a bus lane (the kerb lane of the traffic on that side).
         if (busLaneOn(net, seg, side > 0)) continue;
         const off = offOf(side);
-        for (let s = from, n = 0; s < to; s += SLOT, n++) {
+        // In a parking lane, in the middle of each marked bay (bays counted from the road's start).
+        const first = seg.parking ? (Math.ceil(from / SLOT) + 0.5) * SLOT : from;
+        for (let s = first, n = 0; s < to - (seg.parking ? SLOT / 2 : 0); s += SLOT, n++) {
           const id = seg.id * 4099 + n * 2 + (side > 0 ? 1 : 0);
           const h = tileHash(id);
-          if (h < 0.42) continue; // an empty space
+          if (h < (seg.parking ? 0.25 : 0.42)) continue; // an empty space
           const at = sample(seg, s);
           const rx = -at.tz * side, rz = at.tx * side; // towards this kerb
           // Only in front of a built lot on this side of the street.
@@ -179,7 +182,7 @@ export class ParkedCarLayer {
           const type = h > 0.9 ? 2 : 1, m = type - 1;
           if (counts[m] >= CAP) continue;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;
-          if (nearLot[Math.floor(z + half) * GRID + Math.floor(x + half)]) continue;
+          if (!seg.parking && nearLot[Math.floor(z + half) * GRID + Math.floor(x + half)]) continue;
           if (net.onRoad(x + half, z + half, seg.id, 0.12)) continue;
           if (mouths.some(m => Math.abs(m.x - x) + Math.abs(m.z - z) < 0.3)) continue;
           // Parked facing the way traffic runs on that side, nose slightly out now and then.

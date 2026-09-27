@@ -1,4 +1,4 @@
-import { Network, HALF_WIDTH, KIND_LANE, isOneWayKind, isMotorway, KIND_RAMP } from './network';
+import { Network, HALF_WIDTH, KIND_LANE, isOneWayKind, isMotorway, KIND_RAMP, KIND_ROAD, KIND_AVENUE } from './network';
 import type { RSeg, Pose } from './network';
 
 /**
@@ -50,8 +50,24 @@ export function lanesFor(net: Network, s: RSeg, fwd: boolean): number {
   return oneWay(s) ? baseLanes(s) + addR(s) + addL(s) : DEFAULT_LANES[s.kind] + (fwd ? addR(s) : addL(s));
 }
 
+/** A street's parking lane each side: wide enough for a car at the kerb, out of the traffic lanes. */
+export const PARK_W = 0.22;
+/** A tree-lined street's planted verge each side, between the kerb and the pavement. */
+export const TREE_W = 0.2;
+/** The width a street's style adds each side beyond its traffic lanes: parking lanes, a planted verge. */
+export const styleHalf = (s: RSeg): number => (s.parking ? PARK_W : 0) + (s.trees ? TREE_W : 0);
+/** Whether a road can take a style (parking lanes, street trees): a surface street or avenue, off any roundabout. */
+export function canStyle(s: RSeg, net: Network): boolean {
+  return (s.kind === KIND_ROAD || s.kind === KIND_AVENUE) && !s.structure && !s.fixed && !ringArc(net, s);
+}
+
 /** Distance from the centre line to the road's edge on one side (+1 right, −1 left, seen a→b), ignoring tapers. */
 export function sideHalf(s: RSeg, side: number): number {
+  return carriageHalf(s, side) + styleHalf(s);
+}
+
+/** Distance from the centre line to the outside of the traffic lanes on one side: the road less its style. */
+export function carriageHalf(s: RSeg, side: number): number {
   return HALF_WIDTH[s.kind] + (side > 0 ? addR(s) : addL(s)) * LANE_WIDTH[s.kind];
 }
 
@@ -64,7 +80,7 @@ export function roadHalf(s: RSeg): number {
 export function laneCentre(net: Network, s: RSeg, fwd: boolean, i: number): number {
   if (ringArc(net, s)) return ringLaneCount(s) === 2 ? (i === 0 ? 0.5 : -0.5) * LANE_WIDTH[s.kind] : 0;
   if (s.kind === KIND_LANE) return oneWay(s) ? 0 : 0.1;
-  const edge = oneWay(s) || fwd ? sideHalf(s, 1) : sideHalf(s, -1);
+  const edge = oneWay(s) || fwd ? carriageHalf(s, 1) : carriageHalf(s, -1);
   return edge - shoulder(s.kind) - (i + 0.5) * LANE_WIDTH[s.kind];
 }
 

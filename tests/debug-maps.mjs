@@ -34,6 +34,7 @@ test('the junction lab has every kind of junction it promises, all joined up, wi
   assert.ok((d.net.signals ?? []).some(([, p]) => p.adaptive), 'an adaptive signal');
   assert.ok(nodes.some(n => n.stop), 'an all-way stop');
   assert.ok(nodes.some(n => n.bans?.length), 'a banned turn');
+  assert.ok(segs.some(s => s.parking) && segs.some(s => s.trees), 'streets with parking lanes and trees');
   assert.equal(net.roundabouts().length, 2, 'a street and an avenue roundabout');
   assert.ok(segs.some(s => s.bus) && segs.some(s => s.bike) && segs.some(s => s.calm), 'bus and bike lanes, calming');
   assert.ok(segs.some(s => s.addR || s.addL), 'turn pockets');

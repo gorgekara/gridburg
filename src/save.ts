@@ -105,6 +105,9 @@ export function encode(d: SaveData): string {
   const segHi = segs.flatMap((s, k) => (s[5] & 256 ? [k] : []));
   // Bus lanes, by segment index.
   const segBus = segs.flatMap((s, k) => (s[5] & 512 ? [k] : []));
+  // Street styles: parking lanes and street trees, by segment index.
+  const segParking = segs.flatMap((s, k) => (s[5] & 1024 ? [k] : []));
+  const segTrees = segs.flatMap((s, k) => (s[5] & 2048 ? [k] : []));
   // Added lanes: only the segments that have any, by their index in the list above.
   const segLanes = segs.flatMap((s, k) => (s[6] !== undefined ? [[k, ...unpackLanes(s[6])]] : []));
   // Signal plans, by node index, with their movements keyed by segment index.
@@ -119,7 +122,7 @@ export function encode(d: SaveData): string {
     const mapped = keys.map(key => remapKey(key, sid => segAt.get(sid))).filter((v): v is string => !!v);
     return k === undefined || !mapped.length ? [] : [[k, mapped] as [number, string[]]];
   });
-  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segBus.length ? { segBus } : {}), ...(segLanes.length ? { segLanes } : {}), ...(signals.length ? { signals } : {}), ...(bans.length ? { bans } : {}) }));
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segBus.length ? { segBus } : {}), ...(segParking.length ? { segParking } : {}), ...(segTrees.length ? { segTrees } : {}), ...(segLanes.length ? { segLanes } : {}), ...(signals.length ? { signals } : {}), ...(bans.length ? { bans } : {}) }));
   bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
   for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
@@ -243,6 +246,11 @@ export function decode(str: string): SaveData | null {
       if (json.segHi !== undefined) {
         if (!Array.isArray(json.segHi) || !json.segHi.every((k: unknown) => Number.isInteger(k) && (k as number) >= 0 && (k as number) < net.segs.length)) return null;
         for (const k of json.segHi as number[]) net.segs[k][5] |= 256;
+      }
+      for (const [field, bit] of [['segParking', 1024], ['segTrees', 2048]] as const) {
+        if (json[field] === undefined) continue;
+        if (!Array.isArray(json[field]) || !json[field].every((k: unknown) => Number.isInteger(k) && (k as number) >= 0 && (k as number) < net.segs.length)) return null;
+        for (const k of json[field] as number[]) net.segs[k][5] |= bit;
       }
       if (json.segBus !== undefined) {
         if (!Array.isArray(json.segBus) || !json.segBus.every((k: unknown) => Number.isInteger(k) && (k as number) >= 0 && (k as number) < net.segs.length)) return null;
