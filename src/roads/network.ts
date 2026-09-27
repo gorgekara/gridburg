@@ -12,6 +12,8 @@ export const KIND_HIGHWAY = 3;
 export const KIND_MOTORWAY = 4;
 /** A single-lane, one-way slip road on and off the highways. */
 export const KIND_RAMP = 5;
+/** How far before an exit, or after an entrance, a carriageway carries the ramp's own lane. */
+export const AUX_LENGTH = 6;
 /** A smaller one-way highway: two lanes one way. */
 export const KIND_HIGHWAY2 = 6;
 /** A one-way highway carriageway of either size. */
@@ -704,6 +706,37 @@ export class Network {
     if (seg.bus && !canAddBusLane(seg, this)) delete seg.bus;
     this.version++;
     return [target];
+  }
+
+  /**
+   * Give each of these ramps a lane of its own where it leaves or joins a carriageway, as a highway
+   * engineer builds one: before an exit the carriageway gains a lane on the ramp's side for its last
+   * AUX_LENGTH, which peels off as the ramp; after an entrance it gains one for its first AUX_LENGTH,
+   * which the ramp's traffic merges out of. Nothing where the carriageway is a fixed map road, already
+   * has the lane, or is too short.
+   */
+  addRampLanes(rampIds: number[]): void {
+    const pose = { x: 0, z: 0, tx: 0, tz: 0 };
+    for (const rid of rampIds) {
+      const ramp = this.segs.get(rid);
+      if (!ramp || ramp.kind !== KIND_RAMP) continue;
+      for (const node of [ramp.a, ramp.b]) {
+        if (this.degree(node) !== 3) continue;
+        const ways = this.segsAt(node).filter(o => o.id !== rid && isCarriageway(o.kind));
+        const into = ways.find(o => o.b === node), out = ways.find(o => o.a === node);
+        if (ways.length !== 2 || !into || !out) continue;
+        // Exit (the ramp leaves here) or entrance (it arrives here); widen the carriageway on its side.
+        const exit = ramp.a === node, seg = exit ? into : out;
+        Network.poseAt(out, 0, pose);
+        const cx = pose.tx, cz = pose.tz;
+        Network.poseAt(ramp, exit ? Math.min(1, ramp.len) : Math.max(0, ramp.len - 1), pose);
+        const at = this.nodes.get(node)!, rx = pose.x - at.x, rz = pose.z - at.z;
+        const side = rx * -cz + rz * cx > 0 ? 1 : -1;
+        const len = Math.min(AUX_LENGTH, seg.len - 1);
+        if (len < 1.5 || (side > 0 ? seg.addR ?? 0 : seg.addL ?? 0) > 0) continue;
+        this.addLaneRange(seg.id, exit ? seg.len - len : 0, exit ? seg.len : len, side, 1);
+      }
+    }
   }
 
   /** Tidy a requested stretch: ordered, clamped, and swallowing ends closer than a cell, so no stub is left. */

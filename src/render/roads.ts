@@ -10,6 +10,7 @@ import { MeshBuilder } from './meshBuilder';
 import { crossingApproaches } from '../roads/crossings';
 import { stopLine } from '../roads/control';
 import { junctionPaint, chevronSpots } from './junctionMarks';
+import { rampJoin, rampMouthShape } from '../roads/rampMouth';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay, ringLaneCount } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
@@ -292,7 +293,10 @@ export class RoadLayer {
     for (const n of net.nodes.values()) {
       if ((n.level ?? 0) < 0) continue;
       let hw = 0;
-      for (const s of net.segsAt(n.id)) hw = Math.max(hw, nodeEdge(s, n.id, tapers, Math.max));
+      // Where a ramp leaves or joins a carriageway, the ramp's own lane widens one side only: a disc
+      // as wide as that would bulge out of the other side, so it is only as wide as the roads are.
+      const join = rampJoin(net, n.id);
+      for (const s of net.segsAt(n.id)) hw = Math.max(hw, join ? HALF_WIDTH[s.kind] : nodeEdge(s, n.id, tapers, Math.max));
       const ny = levelY(n.level ?? 0);
       b.heightAt = ny ? () => ny : null;
       if (hw > 0) b.disc(n.x - half, n.z - half, hw, 0.046, ASPHALT);
@@ -419,6 +423,10 @@ export class RoadLayer {
           const openB = mouthB && s.kind !== KIND_RAMP && mouthB.side === side ? mouthB.length : 0;
           const f = Math.max(from, openA), t = Math.min(to, s.len - openB);
           if (t - f > 0.3) strip(f, t, 0.02, side * edge, side > 0 || s.kind === KIND_RAMP ? WHITE : LINE);
+          // From the node to the gore's nose the ramp's traffic is still a lane of the carriageway: a
+          // broken lane line there, where the edge line opens for the mouth.
+          if (openA) { const nose = Math.min(openA, mouthNose(net, s, s.a)); for (let d = 0.1; d + 0.3 < nose; d += 0.55) strip(d, d + 0.3, 0.018, side * edge, WHITE); }
+          if (openB) { const nose = Math.min(openB, mouthNose(net, s, s.b)); for (let d = 0.1; d + 0.3 < nose; d += 0.55) strip(s.len - d - 0.3, s.len - d, 0.018, side * edge, WHITE); }
           // A rumble strip along the shoulder outside the edge line (not on slip roads).
           if (t - f > 0.3 && s.kind !== KIND_RAMP && !s.structure && ++this.marks.rumbles) for (let d = f; d + 0.03 < t; d += 0.14) strip(d, d + 0.03, 0.018, side * (edge + 0.035), RUMBLE);
         }
@@ -892,7 +900,8 @@ function roundaboutFlares(net: Network, b: MeshBuilder): void {
  * side of `seg` (+1 right of a → b, -1 left) the other road lies. Null when no ramp meets there.
  */
 function rampMouth(net: Network, seg: RSeg, node: number): { length: number; side: number } | null {
-  const others = net.segsAt(node).filter(o => o.id !== seg.id && (isCarriageway(o.kind) || o.kind === KIND_RAMP) && !o.structure);
+  // (On the ground, or both up on the same deck: a tunnel's roads are out of sight.)
+  const others = net.segsAt(node).filter(o => o.id !== seg.id && (isCarriageway(o.kind) || o.kind === KIND_RAMP) && o.structure === seg.structure && o.structure !== 2);
   if (!others.length || net.degree(node) !== 3) return null;
   if (seg.kind !== KIND_RAMP && !others.some(o => o.kind === KIND_RAMP)) return null;
   // Pair with the road that runs the same way from the node: a ramp with the carriageway it shadows,
@@ -907,7 +916,6 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
   if (other.dot <= 0) return null;
   const otherSeg = other.o;
   const clearance = HALF_WIDTH[seg.kind] + HALF_WIDTH[otherSeg.kind] + 0.06;
-  const fromA = seg.a === node;
   // A ramp is measured along its whole chain of pieces, since its first piece may end while it is
   // still alongside the carriageway; a carriageway only along this one piece.
   const walk = seg.kind === KIND_RAMP;
@@ -924,12 +932,81 @@ function rampMouth(net: Network, seg: RSeg, node: number): { length: number; sid
     const hit = Network.nearestOn(otherSeg, pose.x, pose.z);
     // Which side the other road's nearest point falls on, relative to this road's direction of travel.
     const cross = (hit.x - pose.x) * pose.tz - (hit.z - pose.z) * pose.tx;
-    if (piece === seg) side = (cross > 0 ? -1 : 1) * (fromA ? 1 : -1);
+    // (The pose's direction is always a → b, whichever end the walk started from.)
+    if (piece === seg) side = cross > 0 ? -1 : 1;
     length = d;
     if (hit.dist > clearance) break;
   }
   return { length: walk ? length + 0.3 : Math.min(length + 0.3, seg.len * 0.6), side };
 }
+
+/**
+ * The gore's nose where a ramp leaves or joins carriageway `road` at `node`: how far out from the
+ * node the ramp's near edge leaves the carriageway's own edge (its kerb before any lane was added).
+ * Up to there the ramp's traffic is still in a lane of the carriageway, beside the others.
+ */
+function rampNose(net: Network, ramp: RSeg, road: RSeg, node: number): number {
+  const p = { x: 0, z: 0, tx: 0, tz: 0 }, n = net.nodes.get(node)!, fromA = ramp.a === node, roadFromA = road.a === node;
+  Network.poseAt(ramp, fromA ? Math.min(1, ramp.len) : Math.max(0, ramp.len - 1), p);
+  const rx = p.x - n.x, rz = p.z - n.z;
+  // Which side of the carriageway (seen heading away from the node) the ramp goes off to.
+  Network.poseAt(road, roadFromA ? Math.min(0.5, road.len) : Math.max(0, road.len - 0.5), p);
+  const gx = roadFromA ? p.tx : -p.tx, gz = roadFromA ? p.tz : -p.tz, off = (-gz * rx + gx * rz) > 0 ? 1 : -1;
+  for (let d = 0; d < Math.min(ramp.len, 8); d += 0.05) {
+    Network.poseAt(ramp, fromA ? d : ramp.len - d, p);
+    const tx = fromA ? p.tx : -p.tx, tz = fromA ? p.tz : -p.tz;
+    // The ramp's edge on the carriageway's side: the other side from the way the ramp goes off.
+    const side = -off;
+    const ex = p.x - tz * HALF_WIDTH[KIND_RAMP] * side, ez = p.z + tx * HALF_WIDTH[KIND_RAMP] * side;
+    if (Network.nearestOn(road, ex, ez).dist >= HALF_WIDTH[road.kind] - 0.01) return d;
+  }
+  return Math.min(ramp.len, 8);
+}
+
+/**
+ * The ramp's own lane carried round into the ramp: where the carriageway was widened for it (the piece
+ * before an exit, or after an entrance), its outer kerb runs on straight past the node until it meets
+ * the ramp's outer edge, and the ground between is paved, so the lane flows into the ramp with no step.
+ */
+function rampMouthFill(net: Network, ramp: RSeg, road: RSeg, node: number, b: MeshBuilder): void {
+  const shape = rampMouthShape(net, ramp, road, node);
+  if (!shape) return;
+  const half = GRID / 2;
+  const outer = shape.outer.map(v => v - half), inner = shape.inner.map(v => v - half);
+  const count = outer.length / 2;
+  if (count < 3) return;
+  const pts = [...outer];
+  for (let k = count - 1; k >= 0; k--) pts.push(inner[k * 2], inner[k * 2 + 1]);
+  let mx = 0, mz = 0;
+  for (let k = 0; k < pts.length; k += 2) { mx += pts[k]; mz += pts[k + 1]; }
+  mx /= pts.length / 2; mz /= pts.length / 2;
+  // (A fan joins each point to the next: back to the first, to close it across the node.)
+  pts.push(pts[0], pts[1]);
+  b.fan(mx, mz, pts, pts.length / 2, 0.045, ASPHALT);
+  // The kerb along the widened edge, carried on to where it meets the ramp's.
+  const kerb: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const x = outer[k * 2], z = outer[k * 2 + 1], cx = inner[k * 2], cz = inner[k * 2 + 1];
+    const dl = Math.hypot(x - cx, z - cz) || 1;
+    kerb.push(x + ((x - cx) / dl) * 0.045, z + ((z - cz) / dl) * 0.045);
+  }
+  b.ribbon(kerb, count, 0.045, 0.031, CURB);
+  // And its edge line, carried round the same way.
+  const line: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const x = outer[k * 2], z = outer[k * 2 + 1], cx = inner[k * 2], cz = inner[k * 2 + 1];
+    const dl = Math.hypot(x - cx, z - cz) || 1;
+    line.push(x - ((x - cx) / dl) * 0.06, z - ((z - cz) / dl) * 0.06);
+  }
+  b.ribbon(line, count, 0.02, 0.056, WHITE);
+}
+
+/** The gore's nose along carriageway `road` from `node`, for the ramp meeting it there (0 if none). */
+function mouthNose(net: Network, road: RSeg, node: number): number {
+  const ramp = net.segsAt(node).find(o => o.kind === KIND_RAMP);
+  return ramp ? rampNose(net, ramp, road, node) : 0;
+}
+
 
 /** How far the paved corner at a ramp's mouth reaches along the ramp past the point where it is clear of the carriageway. */
 const MOUTH_CORNER = 1.2;
@@ -941,7 +1018,7 @@ const MOUTH_CORNER = 1.2;
 function rampTrims(net: Network): Map<number, [number, number]> {
   const trims = new Map<number, [number, number]>();
   for (const ramp of net.segs.values()) {
-    if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
+    if (ramp.kind !== KIND_RAMP || ramp.structure === 2) continue;
     for (const node of [ramp.a, ramp.b]) {
       const mouth = rampMouth(net, ramp, node);
       if (!mouth) continue;
@@ -1150,7 +1227,7 @@ function junctionFillets(net: Network, b: MeshBuilder, tapers: Tapers): void {
 function rampGores(net: Network, b: MeshBuilder, marks: JunctionMarks): void {
   const half = GRID / 2, p = { x: 0, z: 0, tx: 0, tz: 0 };
   for (const ramp of net.segs.values()) {
-    if (ramp.kind !== KIND_RAMP || ramp.structure) continue;
+    if (ramp.kind !== KIND_RAMP || ramp.structure === 2) continue;
     for (const node of [ramp.a, ramp.b]) {
       const mouth = rampMouth(net, ramp, node);
       // Only a shallow merge gets a paved gore; a ramp turning sharply off is an ordinary corner.
@@ -1161,18 +1238,25 @@ function rampGores(net: Network, b: MeshBuilder, marks: JunctionMarks): void {
       const rx = (p.x - net.nodes.get(node)!.x), rz = (p.z - net.nodes.get(node)!.z), rl = Math.hypot(rx, rz) || 1;
       let road: RSeg | null = null, best = -1;
       for (const o of net.segsAt(node)) {
-        if (o.id === ramp.id || !isCarriageway(o.kind) || o.structure) continue;
+        if (o.id === ramp.id || !isCarriageway(o.kind) || o.structure !== ramp.structure) continue;
         Network.poseAt(o, o.a === node ? 0.3 : o.len - 0.3, p);
         const n = net.nodes.get(node)!, dot = ((p.x - n.x) * rx + (p.z - n.z) * rz) / rl / (Math.hypot(p.x - n.x, p.z - n.z) || 1);
         if (dot > best) { best = dot; road = o; }
       }
       if (!road || best < 0.5) continue;
       const length = Math.min(mouth.length + 0.4, 5.5, ramp.len - 0.3, road.len - 0.3);
+      b.heightAt = road.structure ? (x, z) => roadHeight(road!, Network.nearestOn(road!, x + half, z + half).s) : null;
+      rampMouthFill(net, ramp, road, node, b);
+      // The gore starts at its nose, where the ramp's edge leaves the carriageway's; short of that the
+      // ramp is still a lane of the carriageway.
+      const nose = rampNose(net, ramp, road, node);
+      if (length - nose < 0.5) continue;
+      b.heightAt = road.structure ? (x, z) => roadHeight(road!, Network.nearestOn(road!, x + half, z + half).s) : null;
       const steps = 10, pts: number[] = [];
       // Out along the carriageway's edge on the ramp's side, then back along the ramp's near edge.
       const roadFromA = road.a === node, rampSide = mouth.side * (fromA ? 1 : -1);
       for (let k = 0; k <= steps; k++) {
-        const d = (k / steps) * length;
+        const d = nose + (k / steps) * (length - nose);
         Network.poseAt(road, roadFromA ? d : road.len - d, p);
         const tx = roadFromA ? p.tx : -p.tx, tz = roadFromA ? p.tz : -p.tz;
         // The ramp lies to `rampSide` of the carriageway's direction of travel away from the node.
@@ -1180,14 +1264,16 @@ function rampGores(net: Network, b: MeshBuilder, marks: JunctionMarks): void {
         pts.push(p.x - tz * HALF_WIDTH[road.kind] * sideSign - half, p.z + tx * HALF_WIDTH[road.kind] * sideSign - half);
       }
       for (let k = steps; k >= 0; k--) {
-        const d = (k / steps) * length;
+        const d = nose + (k / steps) * (length - nose);
         Network.poseAt(ramp, fromA ? d : ramp.len - d, p);
         const tx = fromA ? p.tx : -p.tx, tz = fromA ? p.tz : -p.tz;
         // The ramp's edge that faces the carriageway.
         pts.push(p.x - tz * HALF_WIDTH[KIND_RAMP] * rampSide - half, p.z + tx * HALF_WIDTH[KIND_RAMP] * rampSide - half);
       }
-      const n = net.nodes.get(node)!;
-      b.fan(n.x - half, n.z - half, pts, pts.length / 2, 0.045, ASPHALT);
+      // Fanned from the middle of the gore, now that it no longer reaches back to the node.
+      let mx = 0, mz = 0;
+      for (let k = 0; k < pts.length; k += 2) { mx += pts[k]; mz += pts[k + 1]; }
+      b.fan(mx / (pts.length / 2), mz / (pts.length / 2), pts, pts.length / 2, 0.045, ASPHALT);
       // The gore painted as drivers know it: a white V round its edges, hatched across inside.
       const edgeRoad = pts.slice(0, (steps + 1) * 2), edgeRamp: number[] = [];
       for (let k = 0; k <= steps; k++) edgeRamp.push(pts[(steps + 1 + (steps - k)) * 2], pts[(steps + 1 + (steps - k)) * 2 + 1]);
@@ -1201,4 +1287,5 @@ function rampGores(net: Network, b: MeshBuilder, marks: JunctionMarks): void {
       marks.gores++;
     }
   }
+  b.heightAt = null;
 }

@@ -692,6 +692,54 @@ test('a two-lane roundabout: first exits keep to the outer lane, others use the 
   assert.equal(broken, 0);
 });
 
+test('a ramp gets a lane of its own: exiting traffic takes it, traffic going on stays out of it', () => {
+  Math.random = C.mulberry32(57);
+  const net = new N.Network();
+  net.insertPath([{ x: 16, z: 76 }, { x: 16, z: 20 }], N.KIND_HIGHWAY2);
+  const exit = net.insertPath([{ x: 16, z: 60 }, { x: 17.5, z: 55 }, { x: 21, z: 51.5 }, { x: 30, z: 50 }], N.KIND_RAMP);
+  const entry = net.insertPath([{ x: 30, z: 44 }, { x: 21, z: 43.5 }, { x: 17.5, z: 41 }, { x: 16, z: 37 }], N.KIND_RAMP);
+  net.addRampLanes([...exit, ...entry]);
+  const widened = [...net.segs.values()].filter(q => q.addR || q.addL);
+  assert.equal(widened.length, 2, 'the carriageway widened before the exit and after the entrance');
+  load(net);
+  const byEnd = (x, z) => { const nd = net.nearestNode(x, z, 0.1), sg = net.segsAt(nd.id)[0]; return { seg: sg.id, s: sg.a === nd.id ? 0.6 : sg.len - 0.6 }; };
+  const south = byEnd(16, 76), north = byEnd(16, 20), off = byEnd(30, 50), on = byEnd(30, 44);
+  const before = widened.find(q => Math.max(net.nodes.get(q.a).z, net.nodes.get(q.b).z) > 59);
+  let t = 0, exitIn0 = 0, exitSteps = 0, onIn0 = 0, onSteps = 0, hard = 0;
+  const kind = new Map(), lastV = new Map();
+  const start = ask([]);
+  const next = [0, 0, 0];
+  for (let i = 0; i < 150 * C.SIM_HZ; i++) {
+    clock(); t += 1 / C.SIM_HZ;
+    const trips = [], who = [];
+    if (t >= next[0]) { next[0] += -Math.log(1 - Math.random()) * 1.5; trips.push({ a: south.seg, as: south.s, b: north.seg, bs: north.s }); who.push('on'); }
+    if (t >= next[1]) { next[1] += -Math.log(1 - Math.random()) * 3; trips.push({ a: south.seg, as: south.s, b: off.seg, bs: off.s }); who.push('exit'); }
+    if (t >= next[2]) { next[2] += -Math.log(1 - Math.random()) * 3; trips.push({ a: on.seg, as: on.s, b: north.seg, bs: north.s }); who.push('in'); }
+    const known = new Set(ask([], true).detail.map(c => c.uid));
+    const r = ask(trips, true);
+    r.detail.filter(c => !known.has(c.uid)).forEach((c, k) => kind.set(c.uid, who[k]));
+    for (const c of r.detail) {
+      const b = lastV.get(c.uid); if (b !== undefined && (b - c.v) * C.SIM_HZ > D.MAX_BRAKE + 0.5) hard++; lastV.set(c.uid, c.v);
+      // Over the last two cells before the exit, on the widened piece.
+      if (c.seg !== before.id) continue;
+      const along = c.fwd ? c.p : before.len - c.p;
+      if (along < before.len - 2) continue;
+      if (kind.get(c.uid) === 'exit') { exitSteps++; if (c.lane === 0) exitIn0++; }
+      if (kind.get(c.uid) === 'on') { onSteps++; if (c.lane === 0) onIn0++; }
+    }
+  }
+  const end = ask([]);
+  const got = (a, b) => (end.trips[`${a.seg}>${b.seg}`] ?? 0) - (start.trips[`${a.seg}>${b.seg}`] ?? 0);
+  console.log(`  ramp lanes: exiting in its lane ${exitIn0}/${exitSteps}, going on in it ${onIn0}/${onSteps}; ${got(south, off)} off, ${got(south, north)} through, ${got(on, north)} on; ${hard} hard stops, ${end.gaveUp - start.gaveUp} gave up`);
+  assert.ok(exitIn0 >= exitSteps * 0.9, 'exiting traffic is in the exit lane before the exit');
+  assert.ok(onIn0 <= onSteps * 0.1, 'traffic going on keeps out of it');
+  // Every trip starts at one of two points, so how many of each get away there is noisy: this checks
+  // that all three movements flow, not how evenly.
+  assert.ok(got(south, off) >= 15 && got(on, north) >= 25 && got(south, north) >= 45, 'all three movements flow');
+  assert.ok(hard <= 5, `${hard} hard stops`);
+  assert.ok(end.gaveUp - start.gaveUp <= 2);
+});
+
 /** An avenue meeting a side street on its right, with or without bus lanes: through traffic, kerbside turners and buses. */
 function busLaneRun(lanes) {
   Math.random = C.mulberry32(54);

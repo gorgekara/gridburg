@@ -722,6 +722,8 @@ export class Input {
     } else {
       // One-way highways and ramps run the way they were drawn, start to finish.
       const added = g.net.insertPath(path, this.drawKind(), isOneWayKind(this.drawKind()), this.legacySpan(path) ? this.roadStructure(path) : 0, true, this.levels(path));
+      // A ramp gets a lane of its own on the carriageway it leaves or joins.
+      if (added.length && this.drawKind() === KIND_RAMP) g.net.addRampLanes(added);
       if (added.length) { g.spend(cost); g.flush(); }
     }
     // Keep laying from where this piece ended, unless it joined an existing road.

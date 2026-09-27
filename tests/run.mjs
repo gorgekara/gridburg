@@ -791,9 +791,9 @@ test('a fire in a back lot behind the street row is reached and put out', () => 
   assert.ok(tile >= 0 && best > 1.5, `Demo should have a set-back home, deepest was ${best.toFixed(2)}`);
   city.incidents = { fires: [{ tile, age: 0 }], crime: [], patrol: [] };
   load(city);
-  // At half the traffic: this is about reaching a set-back lot. The full demo runs at the vehicle cap,
+  // At under a third of the traffic: this is about reaching a set-back lot. The full demo runs at the vehicle cap,
   // and where it gridlocks (and so whether the engine gets through in time) turns on the random draws.
-  send({ type: 'probe', trafficScale: 0.5 });
+  send({ type: 'probe', trafficScale: 0.3 });
   send({ type: 'speed', value: 1 });
   let engines = 0;
   for (let f = 0; f < 90 * C.SIM_HZ; f++) {

@@ -519,7 +519,10 @@ function applyNetwork(p: EditPayload): void {
     if (s.kind !== KIND_RAMP) return;
     for (const end of [0, 1]) {
       const node = end ? segB[i] : segA[i];
-      const road = newSegs.find((o, j) => j !== i && isCarriageway(o.kind) && (segA[j] === node || segB[j] === node));
+      // The carriageway at the node; where one was widened for the ramp, that one, whose kerb lane is
+      // the ramp's own, so ramp traffic runs in that lane and not across the next one in.
+      const ways = newSegs.filter((o, j) => j !== i && isCarriageway(o.kind) && (segA[j] === node || segB[j] === node));
+      const road = ways.sort((p, q) => lanesFor(net, q, true) - lanesFor(net, p, true))[0];
       if (!road) continue;
       // Travel direction of the carriageway at the node, and the ramp a little way from it.
       const j = newSegs.indexOf(road);
@@ -1501,6 +1504,10 @@ function chooseNext(c: Car): void {
   const a = approachOf(leg), e = exitOf(a, next), n = legLanes(next);
   let options = e >= 0 ? a.targets(c.lane, e).filter(l => l >= 0 && l < n) : [];
   if (!options.length) options = [Math.min(n - 1, c.lane)];
+  // Off a ramp onto a carriageway: into the lane on the ramp's side, where it has been running
+  // alongside (the kerb lane, or on a left-hand ramp the outside one).
+  const rs = segs[leg.seg].kind === KIND_RAMP ? (leg.fwd ? rampEnd[leg.seg] : rampStart[leg.seg]) : 0;
+  if (rs && isCarriageway(segs[next.seg].kind)) options = [rs > 0 ? 0 : n - 1];
   // Onto a road with a bus lane: others take a general lane if their turn allows, a bus takes its own.
   if (n > 1 && busTo[next.seg * 2 + (next.fwd ? 0 : 1)] >= 0) {
     if (c.vehicle === 4 && options.includes(0)) options = [0];

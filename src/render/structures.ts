@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { roadHalf } from '../roads/lanes';
-import { Network } from '../roads/network';
+import { Network, KIND_RAMP } from '../roads/network';
+import { rampJoin, pairedRoad, rampMouthShape, inMouth } from '../roads/rampMouth';
 import type { RSeg } from '../roads/network';
 import { roadHeight, tunnelMouth, levelY, isLegacySpan } from '../roads/structures';
 import { Builder } from './buildingGeo';
@@ -29,7 +30,7 @@ const PIER_SPACING = 4;
  * Road bridges as solid low-poly structures: a swept slab with fascia bands, parapet walls with caps,
  * lamp posts, twin-column piers with pier caps, and retaining-wall embankments under the ramps.
  */
-function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Builder, trim: [number, number], arms: RSeg[] = []): void {
+function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Builder, trim: [number, number], arms: RSeg[] = [], mouths: MouthShape[] = []): void {
   const hw = roadHalf(seg), W = hw + 0.28, len = seg.len;
   const pose = { x: 0, z: 0, tx: 0, tz: 0 };
   const steps = Math.max(8, Math.ceil(len / 0.35));
@@ -52,6 +53,8 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
   const rail = between(trim[0], len - trim[1]);
   const onOtherDeck = (p: SweepPoint, side: number, extra = 0): boolean => {
     const x = p.x + OFFSET - p.tz * side * (W + extra), z = p.z + OFFSET + p.tx * side * (W + extra);
+    // Inside the mouth of a ramp's own lane, which has a parapet of its own round it.
+    if (mouths.some(m => inMouth(m, x, z) || nearEdge(m.outer, x, z, 0.4))) return true;
     // The other deck at the wall's own height, or above it but low enough that the wall (0.205 tall)
     // would poke up into its slab. One well below (an exit already dropping away under this road) is
     // passed over, as is one high enough to clear the wall.
@@ -132,6 +135,34 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     sweep.sweep(straightPath(x, top, z, x - rx * 0.26, top, z - rz * 0.26), [[-0.018, -0.03], [0.018, -0.03], [0.018, 0], [-0.018, 0]], POLE);
     sweep.sweep(straightPath(x - rx * 0.16, top, z - rz * 0.16, x - rx * 0.32, top, z - rz * 0.32), [[-0.045, -0.055], [0.045, -0.055], [0.045, -0.02], [-0.045, -0.02]], [LAMP, POLE, POLE, POLE], { capColor: POLE });
   }
+}
+
+type MouthShape = NonNullable<ReturnType<typeof rampMouthShape>>;
+
+/** Whether (x, z) is within `r` of a polyline sampled finely enough that its points will do. */
+function nearEdge(pts: number[], x: number, z: number, r: number): boolean {
+  for (let k = 0; k < pts.length; k += 2) if (Math.hypot(pts[k] - x, pts[k + 1] - z) < r) return true;
+  return false;
+}
+
+/**
+ * Up in the air, a ramp lane's mouth on a slab of its own beside the carriageway it leaves or joins,
+ * with a parapet along its outer edge from the node to where the ramp's own wall takes over.
+ */
+function buildMouthDeck(road: RSeg, node: number, shape: MouthShape, sweep: SweepBuilder): void {
+  const fromA = road.a === node, count = shape.outer.length / 2, pose = { x: 0, z: 0, tx: 0, tz: 0 };
+  const path: SweepPoint[] = [];
+  for (let k = 0; k < count; k++) {
+    const d = Math.min(road.len, k * 0.1);
+    Network.poseAt(road, fromA ? d : road.len - d, pose);
+    path.push({ x: pose.x - OFFSET, y: roadHeight(road, fromA ? d : road.len - d), z: pose.z - OFFSET, tx: fromA ? pose.tx : -pose.tx, tz: fromA ? pose.tz : -pose.tz });
+  }
+  if (path.length < 2) return;
+  const s = shape.sgn, a0 = roadHalf(road) + 0.2, a1 = shape.W + 0.28;
+  const side = (v: readonly [number, number][]): ProfileVertex[] => v.map(([a, u]) => [a * s, u] as const);
+  sweep.sweep(path, side([[a0, DECK_BOTTOM], [a1 - 0.08, DECK_BOTTOM], [a1, DECK_BOTTOM + 0.1], [a1, DECK_TOP], [a0, DECK_TOP]]), [SOFFIT, BAND, BAND, CONCRETE, BAND], { capColor: BAND });
+  sweep.sweep(path, side([[a1 - 0.13, 0], [a1, 0], [a1, 0.17], [a1 - 0.13, 0.17]]), PARAPET);
+  sweep.sweep(path, side([[a1 - 0.155, 0.17], [a1 + 0.02, 0.17], [a1 + 0.02, 0.205], [a1 - 0.155, 0.205]]), CAP);
 }
 
 /**
@@ -216,7 +247,18 @@ export class StructureLayer {
     // node, cut only where it would stand on another road's deck (the arms meeting at either end).
     const trim = [seg.a, seg.b].map(id => ((net.nodes.get(id)!.level ?? 0) > 0 ? 0 : 0.9)) as [number, number];
     const arms = [seg.a, seg.b].flatMap(id => ((net.nodes.get(id)!.level ?? 0) > 0 ? net.segsAt(id).filter(o => o.id !== seg.id) : []));
-    buildBridge(seg, others, sweep, cols, trim, arms);
+    // Ramp lanes' mouths at either end, up in the air: walls inside one are cut, and the carriageway
+    // the ramp shadows carries the mouth on a slab of its own with a parapet round its outer edge.
+    const mouths: MouthShape[] = [];
+    for (const id of [seg.a, seg.b]) {
+      if ((net.nodes.get(id)!.level ?? 0) <= 0 || !rampJoin(net, id)) continue;
+      const ramp = net.segsAt(id).find(o => o.kind === KIND_RAMP)!, road = pairedRoad(net, ramp, id);
+      const shape = road ? rampMouthShape(net, ramp, road, id) : null;
+      if (!shape || !road) continue;
+      mouths.push(shape);
+      if (road.id === seg.id) buildMouthDeck(seg, id, shape, sweep);
+    }
+    buildBridge(seg, others, sweep, cols, trim, arms, mouths);
     return [sweep.build(), cols.build()].map(geometry => {
       const mesh = new THREE.Mesh(geometry, this.material);
       mesh.castShadow = true; mesh.receiveShadow = true;
