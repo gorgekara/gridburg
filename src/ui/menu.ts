@@ -1,6 +1,7 @@
 import { visualDetail, type VisualDetail } from '../render/detail';
 import { icon } from './icons';
 import { deleteSlot, listSlots } from '../slots';
+import { TUTORIALS, finished } from '../tutorials';
 
 export interface Settings {
   shadows: boolean;
@@ -34,6 +35,8 @@ export interface MenuActions {
   demoCity(): void;
   /** One of the test maps: 'junctions' or 'highways'. */
   testMap(name: 'junctions' | 'highways'): void;
+  /** Start one of the tutorials, by id. */
+  tutorial(id: string): void;
   resume(): void;
   help(): void;
   apply(settings: Settings): void;
@@ -122,6 +125,7 @@ export class MainMenu {
       this.continueBtn,
       this.button('New city', 'A fresh river valley to build on', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
       this.button('Demo city', 'A finished city to look around', () => this.actions.demoCity(), 'city'),
+      this.button('Tutorials', 'Learn roads, zones, services and traffic, a lesson at a time', () => { this.buildTutorials(); this.show('tutorials'); }, 'help'),
       this.button('Test maps', 'Every kind of junction, ramp and level, side by side', () => this.show('tests'), 'road'),
       this.button('Saved cities', 'Cities you saved by name', () => { this.buildSlots(); this.show('slots'); }, 'save'),
       this.button('Settings', 'Graphics, day length and cheats', () => this.show('settings'), 'menu'),
@@ -129,6 +133,16 @@ export class MainMenu {
     );
     this.pages.set('home', page);
     this.panels.append(page);
+  }
+
+  private tutorialsPage = el('div', 'menu-page');
+
+  private buildTutorials(): void {
+    const page = this.tutorialsPage, done = finished();
+    page.replaceChildren(el('h2', 'menu-heading', 'Tutorials'), el('p', 'menu-note', 'Each lesson starts on a map of its own, with steps to follow and a goal to reach.'));
+    TUTORIALS.forEach((t, k) => page.append(this.button(`${k + 1}. ${t.title}${done.has(t.id) ? ' ✓' : ''}`, t.blurb, () => this.actions.tutorial(t.id), done.has(t.id) ? 'check' : 'play')));
+    page.append(this.back());
+    if (!this.pages.has('tutorials')) { this.pages.set('tutorials', page); this.panels.append(page); }
   }
 
   private buildTests(): void {

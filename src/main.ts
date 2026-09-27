@@ -45,6 +45,8 @@ import { Input } from './input';
 import { SignalOverlay } from './render/signalOverlay';
 import { SignalPanel, cycleMove } from './ui/signalPanel';
 import { TurnPanel } from './ui/turnPanel';
+import { TutorialPanel } from './ui/tutorialPanel';
+import { TUTORIALS, markFinished } from './tutorials';
 import { planFor, planFits, clonePlan } from './roads/signals';
 import type { SignalPlan } from './roads/signals';
 import { Hud } from './ui/hud';
@@ -693,6 +695,7 @@ const menu: MainMenu = new MainMenu(uiRoot, {
   continueCity: () => { const save = loadLocal(); if (save) startCity(save); },
   newCity: (seed) => { clearLocal(); history.replaceState(null, '', location.pathname); startCity(newCity(seed)); hud.setTax(10); },
   demoCity: () => { history.replaceState(null, '', location.pathname); startCity(demoCity(true), 'Demo city loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
+  tutorial: (id) => startTutorial(id),
   testMap: (name) => { history.replaceState(null, '', location.pathname); startCity(name === 'junctions' ? junctionLab() : highwayLab(), name === 'junctions' ? 'Junction lab loaded' : 'Highway lab loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
   resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
   help: () => { menu.setOpen(false); hud.showWelcome(); },
@@ -810,6 +813,35 @@ input.onTurnEdit = (node) => turnPanel.open(game.net, node);
   game.load = (...args: Parameters<typeof load>) => { turnPanel.close(); load(...args); };
   const onTool = input.onToolChange;
   input.onToolChange = (t) => { onTool?.(t); if (t !== 'turns') turnPanel.close(); };
+}
+
+// Tutorials: a lesson's map, and its steps checked against the city every time it changes.
+const tutorialPanel = new TutorialPanel({
+  next: () => { const t = tutorialPanel.active; const k = t ? TUTORIALS.indexOf(t) : -1; if (k >= 0 && k + 1 < TUTORIALS.length) startTutorial(TUTORIALS[k + 1].id); },
+  exit: () => tutorialPanel.close(),
+});
+uiRoot.append(tutorialPanel.root);
+function startTutorial(id: string): void {
+  const k = TUTORIALS.findIndex(t => t.id === id);
+  if (k < 0) return;
+  const t = TUTORIALS[k];
+  history.replaceState(null, '', location.pathname);
+  startCity(t.setup(), `Tutorial: ${t.title}`);
+  focusCity(true); input.setTool('none'); hud.setTax(10);
+  tutorialPanel.open(t, k, TUTORIALS.length, k + 1 < TUTORIALS.length);
+}
+function checkTutorial(): void {
+  const t = tutorialPanel.active;
+  if (!t) return;
+  if (tutorialPanel.check({ net: game.net, kind: game.kind, flags: game.flags, stats: game.stats })) { markFinished(t.id); audio.play('build'); hud.toast(`Tutorial complete: ${t.title}`); }
+}
+{
+  const onEdit = game.onEdit, onState = game.onState;
+  game.onEdit = () => { onEdit?.(); checkTutorial(); };
+  game.onState = () => { onState?.(); checkTutorial(); };
+  // Another city: the lesson is over (a tutorial opens its panel again after loading its own map).
+  const load = game.load.bind(game);
+  game.load = (...args: Parameters<typeof load>) => { tutorialPanel.close(); load(...args); };
 }
 
 const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };

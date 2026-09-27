@@ -366,6 +366,7 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 .menu-item.primary { background: #315e4c; color: #f4f7ef; }
 .menu-item.primary:hover { background: #3b6d59; }
 .menu-item[hidden] { display: none; }
+.menu-item > svg { flex-shrink: 0; }
 .menu-label { display: grid; gap: 2px; }
 .menu-label strong { font-size: 15px; font-weight: 650; }
 .menu-note { font-size: 12px; color: #55705f; }
@@ -543,6 +544,20 @@ body.touch canvas { touch-action: none; }
 .race-results h2 { margin: 0 0 4px; font-size: 30px; }
 .race-results p { margin: 0; color: var(--dim); }
 .race-buttons { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+/* ---- tutorials ----------------------------------------------------------------------------- */
+.popover.tutorial { top: 236px; left: 12px; right: auto; width: 320px; max-width: calc(100vw - 24px); max-height: calc(100vh - 340px); overflow-y: auto; }
+.tutorial-steps { list-style: none; margin: 8px 0 4px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tutorial-steps li { display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; align-items: start; color: var(--dim); }
+.tutorial-steps li.current { color: var(--fg); }
+.tutorial-steps li.done { color: #8fd19e; }
+.tutorial-check { width: 20px; height: 20px; border-radius: 50%; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+.tutorial-steps li.current .tutorial-check { background: var(--accent); color: #1c1c1c; }
+.tutorial-steps li.done .tutorial-check { background: rgba(143, 209, 158, 0.25); }
+.tutorial-hint { grid-column: 2; font-size: 12px; color: var(--dim); background: rgba(255,255,255,0.05); border-radius: 6px; padding: 5px 7px; }
+.tutorial-steps li.goal { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+.tutorial-done { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 8px; border-radius: 8px; background: rgba(143, 209, 158, 0.12); }
+.signal-btn.primary { background: var(--accent); color: #1c1c1c; border-color: transparent; font-weight: 600; }
 
 /* ---- turn editor --------------------------------------------------------------------------- */
 .popover.turns { top: 62px; left: 12px; width: 300px; max-height: calc(100vh - 200px); overflow-y: auto; }

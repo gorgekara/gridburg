@@ -3,7 +3,7 @@
 // behave without building each one by hand. Built on the demo city's terrain, whose north bank is dry.
 import { defaultExtras } from './extras';
 import { highwayLayout, HIGHWAY_END, newCity } from './game';
-import { GRID, N_TILES, idx, inBounds, T_RES, T_COM, T_IND, T_COAL, T_PUMP, T_OUTLET, T_TOWER, T_BUS } from './constants';
+import { GRID, N_TILES, idx, inBounds, T_RES, T_COM, T_IND, T_COAL, T_PUMP, T_OUTLET, T_TOWER, T_BUS, T_CLINIC, T_SCHOOL, T_FIRE, T_POLICE } from './constants';
 import { Network, KIND_AVENUE, KIND_ROAD, KIND_LANE, KIND_HIGHWAY2, KIND_RAMP, ROUNDABOUT_RADIUS } from './roads/network';
 import { planFor, allTurns, turnName } from './roads/signals';
 import { canStyle } from './roads/lanes';
@@ -15,7 +15,7 @@ const SEED = 214;
 type Pt = { x: number; z: number };
 
 /** The shared start: the demo terrain with its highway, a gate road in, and helpers to lay roads on dry land. */
-function start(): { d: SaveData; net: Network; terrain: ReturnType<typeof generateTerrain>; street: (pts: Pt[], kind?: number) => number[] } {
+export function mapStart(): { d: SaveData; net: Network; terrain: ReturnType<typeof generateTerrain>; street: (pts: Pt[], kind?: number) => number[] } {
   const d = newCity(SEED), terrain = generateTerrain(SEED), net = Network.fromPlain(d.net), water = terrain.water;
   const dry = (x: number, z: number): boolean => {
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
@@ -53,41 +53,72 @@ function start(): { d: SaveData; net: Network; terrain: ReturnType<typeof genera
  * Homes to the west and work to the east of every street, so trips cross the whole map; and power,
  * water and sewage for them.
  */
-function populate(d: SaveData, net: Network, terrain: ReturnType<typeof generateTerrain>): void {
+/** How a map's town is filled in: how built up it starts, how far south it reaches, whether it has power and water, and whether its jobs include industry (and the freight it draws). */
+export interface TownOptions { level?: number; south?: number; utilities?: boolean; homesWest?: number; services?: boolean; industry?: boolean }
+
+export function populate(d: SaveData, net: Network, terrain: ReturnType<typeof generateTerrain>, opts: TownOptions = {}): void {
+  const level = opts.level ?? 2, south = opts.south ?? 50, utilities = opts.utilities ?? true, homesWest = opts.homesWest ?? 40;
   const water = terrain.water;
-  // Two streets on south from the bottom avenue to the river, for the pumps and outfalls.
-  for (const x of [14.5, 62.5]) {
-    let z = 46.5;
+  // Two streets on south to the river from the town's southernmost roads, west and east, for the
+  // pumps and outfalls.
+  const ends = [...net.nodes.values()].filter(nd => !nd.fixed && (nd.level ?? 0) === 0 && net.degree(nd.id) > 0 && nd.z < 52);
+  for (const west of [true, false]) {
+    const side = ends.filter(nd => (nd.x < 40) === west);
+    if (!side.length) continue;
+    const from = side.reduce((a, b) => (b.z > a.z || (b.z === a.z && Math.abs(b.x - (west ? 14 : 62)) < Math.abs(a.x - (west ? 14 : 62))) ? b : a));
+    const x = from.x;
+    let z = from.z;
     const wet = (zz: number): boolean => { for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) { const tx = Math.floor(x + dx * 0.9), tz = Math.floor(zz + dz * 0.9); if (!inBounds(tx, tz) || water[idx(tx, tz)]) return true; } return false; };
     while (z < GRID - 2 && !wet(z + 0.5)) z += 0.5;
-    if (z - 46.5 > 2) net.insertPath([{ x, z: 46.5 }, { x, z }], KIND_ROAD);
+    if (z - from.z > 2) net.insertPath([{ x, z: from.z }, { x, z }], KIND_ROAD);
   }
   const ras = rasterize(net), kind = new Uint8Array(N_TILES);
   const free = (i: number): boolean => !water[i] && !terrain.shore[i] && !ras.cover[i] && ras.accSeg[i] >= 0;
   for (let i = 0; i < N_TILES; i++) {
     if (!free(i)) continue;
     const x = i % GRID, z = Math.floor(i / GRID);
-    if (z > 50) continue;
-    kind[i] = x < 40 ? T_RES : (x + z) % 5 === 0 ? T_IND : T_COM;
+    if (z > south) continue;
+    kind[i] = x < homesWest ? T_RES : opts.industry !== false && (x + z) % 5 === 0 ? T_IND : T_COM;
   }
-  // Power in the north-east corner, water from the river bank, a tower or two.
-  let coal = 0;
+  // Power at the town's east end (among the jobs, where there are any), water from the river bank,
+  // a tower or two.
   // (Right beside a road: a tile further back may lose its access once the zone cells are laid.)
   const kerbside = (i: number): boolean => Math.hypot(ras.accX[i] - (i % GRID + 0.5), ras.accZ[i] - (Math.floor(i / GRID) + 0.5)) < 1.3;
-  for (let i = 0; i < N_TILES && coal < 7; i++) { const x = i % GRID; if (x > 62 && (kind[i] === T_COM || kind[i] === T_IND) && kerbside(i)) { kind[i] = T_COAL; coal++; } }
+  if (utilities) {
+    const site = (kinds: number[]): number[] => [...kind.keys()].filter(i => kinds.includes(kind[i]) && kerbside(i)).sort((a, b) => b % GRID - a % GRID || a - b);
+    const jobs = site([T_COM, T_IND]);
+    for (const i of (jobs.length >= 7 ? jobs : site([T_RES, T_COM, T_IND])).slice(0, 7)) kind[i] = T_COAL;
+  }
   const bank: { i: number; f: number }[] = [];
   for (let i = 0; i < N_TILES; i++) {
     const x = i % GRID, z = Math.floor(i / GRID);
     if (!water[i] && ras.accSeg[i] >= 0 && !ras.cover[i] && touchesWater(terrain, x, z)) bank.push({ i, f: adjacentFlow(terrain, x, z) });
   }
   bank.sort((a, b) => a.f - b.f);
-  for (const { i } of bank.slice(0, 4)) kind[i] = T_PUMP;
-  for (const { i } of bank.slice(-6)) kind[i] = T_OUTLET;
+  if (utilities) {
+    for (const { i } of bank.slice(0, 5)) kind[i] = T_PUMP;
+    for (const { i } of bank.slice(-6)) kind[i] = T_OUTLET;
+  }
   let towers = 0;
-  for (let i = 0; i < N_TILES && towers < 2; i++) { const x = i % GRID; if ((towers ? x > 50 : x > 12) && kind[i] === T_RES && kerbside(i)) { kind[i] = T_TOWER; towers++; } }
+  for (let i = 0; i < N_TILES && towers < 2 && utilities; i++) { const x = i % GRID; if ((towers ? x > 50 : x > 12) && kind[i] === T_RES && kerbside(i)) { kind[i] = T_TOWER; towers++; } }
+  // Services spread over the town, so it keeps its people: a clinic, school, fire and police station
+  // every twelve cells or so.
+  if (opts.services) {
+    const take = (x0: number, z0: number, k: number): void => {
+      for (let r = 0; r < 5; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+        const x = x0 + dx, z = z0 + dz;
+        if (!inBounds(x, z)) continue;
+        const i = idx(x, z);
+        if ((kind[i] === T_RES || kind[i] === T_COM) && kerbside(i)) { kind[i] = k; return; }
+      }
+    };
+    for (let z = 16; z <= south; z += 12) for (let x = 10; x < GRID - 4; x += 12) {
+      take(x, z, T_CLINIC); take(x + 3, z, T_SCHOOL); take(x, z + 3, T_FIRE); take(x + 3, z + 3, T_POLICE);
+    }
+  }
   d.kind = kind; d.level = new Uint8Array(N_TILES);
   // Built already, so traffic flows from the start rather than waiting for the town to grow.
-  for (let i = 0; i < N_TILES; i++) d.level[i] = kind[i] >= T_COAL ? 1 : kind[i] ? 2 : 0;
+  for (let i = 0; i < N_TILES; i++) d.level[i] = kind[i] >= T_COAL ? 1 : kind[i] ? level : 0;
   d.net = net.toPlain(); d.money = 1e6; d.cityLevel = 6; d.extras = defaultExtras(10);
 }
 
@@ -104,7 +135,7 @@ function populate(d: SaveData, net: Network, terrain: ReturnType<typeof generate
  *  x 70.5: narrow lanes, a bend and a dead end · a five-way junction
  */
 export function junctionLab(): SaveData {
-  const { d, net, terrain, street } = start();
+  const { d, net, terrain, street } = mapStart();
   street([{ x: 6.5, z: 12.5 }, { x: 74.5, z: 12.5 }], KIND_AVENUE);
   street([{ x: 6.5, z: 46.5 }, { x: 74.5, z: 46.5 }], KIND_AVENUE);
   street([{ x: 18.5, z: HIGHWAY_END + 5 }, { x: 18.5, z: 12.5 }]);
@@ -191,7 +222,7 @@ export function junctionLab(): SaveData {
  * the ground), a tunnel under the grid, and the avenue's bridge over the river.
  */
 export function highwayLab(): SaveData {
-  const { d, net, terrain, street } = start();
+  const { d, net, terrain, street } = mapStart();
   street([{ x: 6.5, z: 12.5 }, { x: 74.5, z: 12.5 }], KIND_AVENUE);
   street([{ x: 18.5, z: HIGHWAY_END + 5 }, { x: 18.5, z: 12.5 }]);
   for (const z of [24.5, 36.5, 46.5]) street([{ x: 6.5, z }, { x: 74.5, z }]);

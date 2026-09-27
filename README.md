@@ -127,6 +127,16 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   roundabout tool offers four rings, picked beside the cards: one matched to the widest road that
   meets it, a small single-lane circle ($900), a two-lane one ($1,350) or a grand two-lane circle
   ($2,160) for the busiest crossings.
+- **Ban turns at a junction.** **Traffic → Turns** opens a junction's turn editor: every road arriving,
+  with a left, straight and right button for each way on from it. A banned movement loses its lane
+  arrow and its signal phase, a no-left or no-right sign goes up on the approach, and drivers route
+  round it. Each road always keeps one way on. Bans survive splitting, reversing and saving the road.
+- **Street styles.** Streets and avenues come plain, with **parking lanes** (marked bays along both
+  kerbs, where cars park instead of on the pavement), **tree-lined** (a planted verge each side) or as
+  a **boulevard** (both). Draw a new street in a style, or use **Street style** to restyle a stretch.
+  Cars never park at the kerb beside a car park.
+- **Ramps get lanes of their own.** An exit peels off a lane added before it, an entrance joins one
+  that runs on after it, and the ramp's mouth never cuts across the carriageway's lane lines.
 - **Turn a building before you place it.** Right-click, press G, or use the Rotate button in the tool
   panel. Rectangular sites like the railway station turn with it, and the facing is saved.
 - **Robberies, street racing and helicopters.** From City level a robbery occasionally hits a shop or
@@ -137,7 +147,8 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   curb, threaded between its neighbours. Fire engines and patrol cars answer calls there as usual.
 - **Dry land only.** The river is drawn a little wider than the tile mask that decides what is water, so
   the strip either side counts as shore: nothing may be zoned or built there and no empty lot fills in.
-  Waterside works are the exception — a pump, an outlet or a treatment plant belongs on the bank.
+  Waterside works are the exception — a pump, an outlet or a treatment plant belongs on the bank,
+  standing on a concrete pad with its pipes running down into the river.
 - **City messages.** Problems gather behind the bell in the top-right corner with a count; each new one
   pops out for a few seconds, clicking the bell lists everything outstanding, and clicking a message
   takes the camera to what it is about.
@@ -310,6 +321,8 @@ From Small town onward, random incidents add management pressure:
 Emergency vehicles obey traffic and can be delayed by jams. Each station handles one dispatch at a time. Inspect shows local fire/crime status; city overview reports active patrols, engines, extinguished fires and prevented crimes. Fires, crime pressure and patrol protection survive reloading. Traffic trips and collision scenes restart with the traffic simulation.
 
 ## City life and transport
+
+**Menu → Tutorials** has five lessons, each on a map of its own with steps that tick off as you do them and a goal to reach: first streets (roads, zones, power and water), services (coverage), junctions (control a crossing, pocket lanes and banned turns, then capacity), highways (exit and entrance ramps) and buses (stops, routes and bus lanes). **Menu → Test maps** opens a junction lab (every kind of junction, signal, stop, roundabout, pocket, banned turn and street style) and a highway lab (ramps with their lanes, roads on three levels, an exit dropping to the ground, a tunnel), each with a town to drive them.
 
 The first visit opens a five-step welcome tutorial explaining the goal (6,500 residents), the first neighborhood, utilities, services and transport. It pauses the simulation, can be skipped, and is available again from Menu → Welcome tutorial. Keyboard help remains available under H.
 
