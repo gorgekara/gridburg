@@ -11,6 +11,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 const C = await import('../src/constants.ts');
 const N = await import('../src/roads/network.ts');
 const S = await import('../src/roads/signals.ts');
+const { allTurns, turnName, movements, planFor } = S;
 const { Network, KIND_ROAD, KIND_AVENUE } = N;
 let failures = 0, checks = 0;
 function test(name, run) {
@@ -377,6 +378,19 @@ test('roundabouts get splitter islands on two-way arms; avenues get medians shor
   assert.equal(exLayer.marks.guardrails, 2);
   assert.equal(exLayer.marks.medians, 0);
   assert.equal(exLayer.marks.rumbles, 2, 'a rumble strip on each shoulder');
+  // A banned left turn gets its sign, and the lane arrows and signal plan leave the turn out.
+  const ban = new Network();
+  ban.insertPath([{ x: 20, z: 40 }, { x: 60, z: 40 }], KIND_ROAD);
+  ban.insertPath([{ x: 40, z: 20 }, { x: 40, z: 60 }], KIND_ROAD);
+  const bc = ban.nearestNode(40, 40, 0.1);
+  const turns = allTurns(ban, bc.id), left = turns.find(m => turnName(m) === 'Left');
+  bc.bans = [left.key];
+  assert.equal(movements(ban, bc.id).length, turns.length - 1, 'the banned turn is no movement');
+  bc.light = true;
+  assert.ok(!Object.keys(planFor(ban, bc.id).phases.flatMap(p => Object.keys(p.moves))).includes(left.key), 'nor in the signal plan');
+  const banLayer = new RoadLayer();
+  banLayer.rebuild(ban, flat());
+  assert.equal(banLayer.marks.banSigns, 1, 'one no-left-turn sign');
   assert.equal(exLayer.marks.medianTrees, 0);
 });
 

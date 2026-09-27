@@ -68,6 +68,8 @@ export interface RNode {
   stop: boolean; // an all-way stop: every approach halts before entering
   /** A signal plan the player has set; absent means the default for the junction. */
   signal?: SignalPlan;
+  /** Turns banned here, as movement keys (`moveKey`: from a road arriving, into a road leaving). */
+  bans?: string[];
   /** How high the node is: −1 a tunnel, 0 (or absent) the ground, 1 to 3 levels above it. */
   level?: number;
 }
@@ -105,6 +107,8 @@ export interface PlainNet {
   segs: number[][]; // id, a, b, cx, cz, flags
   /** Signal plans the player has set, by node id. */
   signals?: [number, SignalPlan][];
+  /** Banned turns, by node id. */
+  bans?: [number, string[]][];
 }
 
 export interface Pose { x: number; z: number; tx: number; tz: number }
@@ -170,6 +174,20 @@ export function buildPieces(p: { x: number; z: number }[]): Curve[] {
     sz = ez;
   }
   return out;
+}
+
+/** A segment at a junction was split or replaced: its banned turns there now name the new piece. */
+function renameBans(node: RNode | undefined, oldId: number, newId: number): void {
+  if (!node?.bans) return;
+  const swap = (part: string): string => part.replace(/^(\d+)([fb])$/, (m, id, f) => (Number(id) === oldId ? `${newId}${f}` : m));
+  node.bans = node.bans.map(k => k.split('>').map(swap).join('>'));
+}
+
+/** A segment at a junction was reversed: what was driven a→b in its banned turns is now driven b→a. */
+function flipBans(node: RNode | undefined, segId: number): void {
+  if (!node?.bans) return;
+  const flip = (part: string): string => part.replace(/^(\d+)([fb])$/, (m, id, f) => (Number(id) === segId ? `${id}${f === 'f' ? 'b' : 'f'}` : m));
+  node.bans = node.bans.map(k => k.split('>').map(flip).join('>'));
 }
 
 /** Two small signed lane counts in one number: (addR + 8) | (addL + 8) << 4. */
@@ -405,6 +423,9 @@ export class Network {
     const atA = this.nodes.get(s.a)?.signal, atB = this.nodes.get(s.b)?.signal;
     if (atA && left) renameSeg(atA, segId, left.id);
     if (atB && right) renameSeg(atB, segId, right.id);
+    // So do its banned turns.
+    if (left) renameBans(this.nodes.get(s.a), segId, left.id);
+    if (right) renameBans(this.nodes.get(s.b), segId, right.id);
     return { node, left, right };
   }
 
@@ -769,6 +790,7 @@ export class Network {
     for (const n of [s.a, s.b]) {
       const plan = this.nodes.get(n)?.signal;
       if (plan && (from.a === n || from.b === n)) renameSeg(plan, from.id, s.id);
+      if (from.a === n || from.b === n) renameBans(this.nodes.get(n), from.id, s.id);
     }
     s.bike = !!from.bike && canAddBikeLane(s, this);
     if (from.bus && canAddBusLane(s, this)) s.bus = true; else delete s.bus;
@@ -806,7 +828,7 @@ export class Network {
     const t = s.a;
     s.a = s.b;
     s.b = t;
-    for (const n of [s.a, s.b]) { const plan = this.nodes.get(n)?.signal; if (plan) flipSeg(plan, id); }
+    for (const n of [s.a, s.b]) { const plan = this.nodes.get(n)?.signal; if (plan) flipSeg(plan, id); flipBans(this.nodes.get(n), id); }
     // What was on the right is now on the left.
     const r = s.addR, l = s.addL;
     if (l) s.addR = l; else delete s.addR;
@@ -926,7 +948,9 @@ export class Network {
     }
     const signals: [number, SignalPlan][] = [];
     for (const n of this.nodes.values()) if (n.signal && n.light) signals.push([n.id, clonePlan(n.signal)]);
-    return { nextId: this.nextId, nodes, segs, ...(signals.length ? { signals } : {}) };
+    const bans: [number, string[]][] = [];
+    for (const n of this.nodes.values()) if (n.bans?.length) bans.push([n.id, [...n.bans]]);
+    return { nextId: this.nextId, nodes, segs, ...(signals.length ? { signals } : {}), ...(bans.length ? { bans } : {}) };
   }
 
   static fromPlain(p: PlainNet): Network {
@@ -954,6 +978,7 @@ export class Network {
     }
     for (const s of net.segs.values()) { if (!canAddBikeLane(s, net)) s.bike = false; if (s.bus && !canAddBusLane(s, net)) delete s.bus; }
     for (const [id, plan] of p.signals ?? []) { const n = net.nodes.get(id); if (n) n.signal = clonePlan(plan); }
+    for (const [id, keys] of p.bans ?? []) { const n = net.nodes.get(id); if (n && Array.isArray(keys) && keys.length) n.bans = keys.filter(k => typeof k === 'string'); }
     net.nextId = p.nextId;
     return net;
   }

@@ -113,7 +113,13 @@ export function encode(d: SaveData): string {
     const k = index.get(id), mapped = remapPlan(plan, sid => segAt.get(sid));
     return k === undefined || !mapped ? [] : [[k, mapped] as [number, SignalPlan]];
   });
-  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segBus.length ? { segBus } : {}), ...(segLanes.length ? { segLanes } : {}), ...(signals.length ? { signals } : {}) }));
+  // Banned turns, by node index, their movement keys by segment index.
+  const bans = (d.net.bans ?? []).flatMap(([id, keys]) => {
+    const k = index.get(id);
+    const mapped = keys.map(key => remapKey(key, sid => segAt.get(sid))).filter((v): v is string => !!v);
+    return k === undefined || !mapped.length ? [] : [[k, mapped] as [number, string[]]];
+  });
+  const extraBytes = new TextEncoder().encode(JSON.stringify({ ...(extrasToJson(d.extras ?? defaultExtras(d.tax)) as object), ...(segHi.length ? { segHi } : {}), ...(segBus.length ? { segBus } : {}), ...(segLanes.length ? { segLanes } : {}), ...(signals.length ? { signals } : {}), ...(bans.length ? { bans } : {}) }));
   bytes.push((extraBytes.length >>> 24) & 255, (extraBytes.length >>> 16) & 255, (extraBytes.length >>> 8) & 255, extraBytes.length & 255);
   for (const byte of extraBytes) bytes.push(byte);
   const all = Uint8Array.from(bytes);
@@ -247,6 +253,17 @@ export function decode(str: string): SaveData | null {
         if (!Array.isArray(json.segLanes) || !json.segLanes.every((e: unknown) => Array.isArray(e) && e.length === 3 && Number.isInteger(e[0]) && e[0] >= 0 && e[0] < net.segs.length && ok(e[1]) && ok(e[2]))) return null;
         for (const [k, r, l] of json.segLanes as number[][]) net.segs[k][6] = packLanes(r, l);
       }
+      // Banned turns that do not read back cleanly are dropped.
+      if (Array.isArray(json.bans)) {
+        const bans: [number, string[]][] = [];
+        for (const entry of json.bans as unknown[]) {
+          if (!Array.isArray(entry) || entry.length !== 2 || !Number.isInteger(entry[0]) || entry[0] < 0 || entry[0] >= net.nodes.length || !Array.isArray(entry[1])) continue;
+          const keys = (entry[1] as unknown[]).filter((k): k is string => typeof k === 'string')
+            .map(k => remapKey(k, i => (Number.isInteger(i) && i >= 0 && i < net.segs.length ? net.segs[i][0] : undefined))).filter((v): v is string => !!v);
+          if (keys.length) bans.push([net.nodes[entry[0]][0], keys]);
+        }
+        if (bans.length) net.bans = bans;
+      }
       // A plan that does not read back cleanly is dropped; the junction runs its default instead.
       if (Array.isArray(json.signals)) {
         const plans: [number, SignalPlan][] = [];
@@ -308,3 +325,11 @@ export function shareUrl(d: SaveData): string {
 }
 
 export { START_MONEY };
+
+/** A movement key with its segment ids mapped (for saves), or null if either has no counterpart. */
+function remapKey(key: string, map: (segId: number) => number | undefined): string | null {
+  const m = /^(\d+)([fb])>(\d+)([fb])$/.exec(key);
+  if (!m) return null;
+  const a = map(Number(m[1])), b = map(Number(m[3]));
+  return a === undefined || b === undefined ? null : `${a}${m[2]}>${b}${m[4]}`;
+}

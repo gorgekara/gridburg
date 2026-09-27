@@ -740,6 +740,41 @@ test('a ramp gets a lane of its own: exiting traffic takes it, traffic going on 
   assert.ok(end.gaveUp - start.gaveUp <= 2);
 });
 
+test('a banned turn is never made: traffic that wanted it goes round the block', () => {
+  Math.random = C.mulberry32(58);
+  const net = new N.Network();
+  // A small grid, so there is a way round.
+  for (const z of [30, 40, 50]) net.insertPath([{ x: 20, z }, { x: 60, z }], N.KIND_ROAD);
+  for (const x of [30, 40, 50]) net.insertPath([{ x, z: 20 }, { x, z: 60 }], N.KIND_ROAD);
+  const centre = net.nearestNode(40, 40, 0.1);
+  const arm = (x, z) => net.segsAt(centre.id).find(q => { const o = net.nodes.get(q.a === centre.id ? q.b : q.a); return Math.abs(o.x - x) < 0.1 && Math.abs(o.z - z) < 0.1; });
+  const west = arm(30, 40), north = arm(40, 30);
+  // Arriving from the west (heading east) and turning left, which is north (towards smaller z).
+  const inFwd = west.b === centre.id, outFwd = north.a === centre.id;
+  centre.bans = [`${west.id}${inFwd ? 'f' : 'b'}>${north.id}${outFwd ? 'f' : 'b'}`];
+  const back = N.Network.fromPlain(net.toPlain());
+  assert.deepEqual(back.nodes.get(centre.id).bans, centre.bans, 'bans survive a round trip');
+  load(net);
+  const end = (x, z) => { const nd = net.nearestNode(x, z, 0.1), sg = net.segsAt(nd.id).find(q => true); return { seg: sg.id, s: sg.a === nd.id ? 0.6 : sg.len - 0.6 }; };
+  const from = end(20, 40), to = end(40, 20);
+  const start = ask([]);
+  let made = 0;
+  const last = new Map();
+  for (let i = 0; i < 90 * C.SIM_HZ; i++) {
+    clock();
+    const r = ask(i % 60 === 0 ? [{ a: from.seg, as: from.s, b: to.seg, bs: to.s }] : [], true);
+    for (const c of r.detail) {
+      const prev = last.get(c.uid);
+      if (prev === west.id && c.seg === north.id) made++;
+      last.set(c.uid, c.seg);
+    }
+  }
+  const got = (ask([]).trips[`${from.seg}>${to.seg}`] ?? 0) - (start.trips[`${from.seg}>${to.seg}`] ?? 0);
+  console.log(`  banned turn: made ${made} times; ${got} trips arrived another way`);
+  assert.equal(made, 0, 'nobody makes the banned turn');
+  assert.ok(got >= 30, `${got} arrived`);
+});
+
 /** An avenue meeting a side street on its right, with or without bus lanes: through traffic, kerbside turners and buses. */
 function busLaneRun(lanes) {
   Math.random = C.mulberry32(54);

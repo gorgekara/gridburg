@@ -1117,12 +1117,16 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.taper(0.03, 0.055, 1.7, 0, 0.05, 0, 0xf2f2ee, 10);
     b.box(0.1, 0.1, 0.24, 0, 1.72, 0.02, 0xe4e4df);
   } else if (kind === T_PUMP) {
-    b.box(0.8, 0.04, 0.8, 0, 0, 0, 0x8f9aa3);
-    b.box(0.5, 0.36, 0.45, -0.1, 0.04, 0, 0xb9c7d1);
-    b.box(0.54, 0.05, 0.49, -0.1, 0.4, 0, 0x4a7fa8);
+    // On a concrete pad down to the bank (its −z side faces the water), with the intake pipe running
+    // out over the bank and dropping into the river.
+    b.box(0.8, 0.42, 0.8, 0, -0.38, 0, 0x9aa2a8);
+    b.box(0.5, 0.36, 0.45, -0.1, 0.04, 0.12, 0xb9c7d1);
+    b.box(0.54, 0.05, 0.49, -0.1, 0.4, 0.12, 0x4a7fa8);
     b.cyl(0.14, 0.3, 0.27, 0.04, 0.12, 0x4a7fa8, 12);
-    b.pipe(0.05, 0.7, 0.27, 0.14, -0.1, 0x3d6a8c);
-    b.box(0.14, 0.22, 0.02, -0.1, 0.04, 0.23, 0x2c3b47);
+    b.box(0.14, 0.22, 0.02, -0.1, 0.04, 0.355, 0x2c3b47);
+    b.pipe(0.055, 0.78, 0.27, 0.1, -0.35, 0x3d6a8c);
+    b.cyl(0.055, 0.6, 0.27, -0.45, -0.72, 0x3d6a8c, 10);
+    b.box(0.2, 0.08, 0.2, 0.27, -0.5, -0.72, 0x2c3b47);
   } else if (kind === T_TOWER) {
     b.box(0.6, 0.03, 0.6, 0, 0, 0, 0x8f9aa3);
     for (const [x, z] of [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]]) b.box(0.05, 1.0, 0.05, x, 0.03, z, 0x7d8790);
@@ -1131,12 +1135,16 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.cyl(0.34, 0.05, 0, 1.18, 0, 0x4a7fa8, 16);
     b.taper(0.02, 0.33, 0.16, 0, 1.4, 0, 0xa9bccb, 16);
   } else if (kind === T_OUTLET) {
-    b.box(0.8, 0.04, 0.8, 0, 0, 0, 0x8a857a);
-    b.box(0.5, 0.3, 0.4, 0.1, 0.04, 0.05, 0xa39d8f);
-    b.box(0.54, 0.05, 0.44, 0.1, 0.34, 0.05, 0x6d5b3c);
-    b.pipe(0.11, 0.75, -0.25, 0.15, -0.05, 0x6d5b3c);
-    b.cyl(0.13, 0.22, 0.2, 0.04, -0.27, 0x7c705a, 12);
-    b.box(0.14, 0.2, 0.02, 0.1, 0.04, 0.255, 0x2f2a22);
+    // On a concrete pad down to the bank (its −z side faces the water): the outfall pipe runs out
+    // over the bank to a concrete headwall and spills into the river.
+    b.box(0.8, 0.42, 0.8, 0, -0.38, 0, 0x9a968c);
+    b.box(0.5, 0.3, 0.4, 0.1, 0.04, 0.15, 0xa39d8f);
+    b.box(0.54, 0.05, 0.44, 0.1, 0.34, 0.15, 0x6d5b3c);
+    b.cyl(0.13, 0.22, -0.22, 0.04, 0.2, 0x7c705a, 12);
+    b.box(0.14, 0.2, 0.02, 0.1, 0.04, 0.355, 0x2f2a22);
+    b.pipe(0.1, 0.8, -0.1, 0.05, -0.3, 0x6d5b3c);
+    b.box(0.42, 0.5, 0.1, -0.1, -0.45, -0.72, 0x9a968c);
+    b.pipe(0.1, 0.16, -0.1, -0.2, -0.8, 0x4a3f2c);
   }
   if (kind === T_PARK) {
     if (b.detail > 0) {

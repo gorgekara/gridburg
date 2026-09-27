@@ -22,6 +22,12 @@ const POLE = 0x5b6266;
 const LAMP = 0xfff0c2;
 const DECK_TOP = 0.015; // just under the curb ribbon (0.03) so the road never z-fights the slab
 const DECK_BOTTOM = -0.24;
+/** Below this the road is on its embankment or the ground: no slab and no parapet there. */
+const RAISED = 0.15;
+/** A parapet's wall and cap across the deck's edge at `W`: a slim concrete wall with a light coping. */
+const PARAPET_TOP = 0.15;
+const parapetWall = (W: number): [number, number][] => [[W - 0.07, 0], [W, 0], [W, PARAPET_TOP - 0.025], [W - 0.07, PARAPET_TOP - 0.025]];
+const parapetCap = (W: number): [number, number][] => [[W - 0.085, PARAPET_TOP - 0.025], [W + 0.012, PARAPET_TOP - 0.025], [W + 0.012, PARAPET_TOP], [W - 0.085, PARAPET_TOP]];
 const BEAM_DEPTH = 0.22;
 const EMBANK_TOP = 0.44; // below this deck height the ramp sits on a filled embankment
 const PIER_SPACING = 4;
@@ -42,27 +48,29 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
   }
   const between = (from: number, to: number): SweepPoint[] => path.filter(p => p.d >= from - 1e-6 && p.d <= to + 1e-6);
 
-  // Deck slab: light top, dark fascia bands, chamfered soffit.
-  sweep.sweep(path, [
+  // Deck slab: light top, dark fascia bands, chamfered soffit. Only where the road is up off the
+  // ground: coming down, the last stretch is on its embankment, and a slab there shows beside it.
+  const raised = path.filter(p => p.y >= RAISED);
+  if (raised.length >= 2) sweep.sweep(raised, [
     [-W + 0.08, DECK_BOTTOM], [W - 0.08, DECK_BOTTOM], [W, DECK_BOTTOM + 0.1], [W, DECK_TOP], [-W, DECK_TOP], [-W, DECK_BOTTOM + 0.1],
   ], [SOFFIT, BAND, BAND, CONCRETE, BAND, BAND], { capColor: BAND });
 
   // Parapet walls with a slightly wider cap, trimmed back where the road comes down to the ground, and
   // cut, side by side, wherever a wall would stand on the deck of another road meeting this one up in
   // the air: an exit peeling off keeps its outer wall, and the wall between the two opens up.
-  const rail = between(trim[0], len - trim[1]);
+  const rail = between(trim[0], len - trim[1]).filter(p => p.y >= RAISED);
   const onOtherDeck = (p: SweepPoint, side: number, extra = 0): boolean => {
     const x = p.x + OFFSET - p.tz * side * (W + extra), z = p.z + OFFSET + p.tx * side * (W + extra);
     // Inside the mouth of a ramp's own lane, which has a parapet of its own round it.
     if (mouths.some(m => inMouth(m, x, z) || nearEdge(m.outer, x, z, 0.4))) return true;
-    // The other deck at the wall's own height, or above it but low enough that the wall (0.205 tall)
+    // The other deck at the wall's own height, or above it but low enough that the wall
     // would poke up into its slab. One well below (an exit already dropping away under this road) is
     // passed over, as is one high enough to clear the wall.
     return arms.some(o => {
       const hit = Network.nearestOn(o, x, z);
       if (hit.dist >= roadHalf(o) + 0.3) return false;
       const rise = roadHeight(o, hit.s) - p.y;
-      return rise > -0.3 && rise < 0.205 - DECK_BOTTOM + 0.05;
+      return rise > -0.3 && rise < PARAPET_TOP - DECK_BOTTOM + 0.05;
     });
   };
   for (const side of [-1, 1]) {
@@ -70,8 +78,8 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     let run: SweepPoint[] = [];
     const flush = (): void => {
       if (run.length >= 2) {
-        sweep.sweep(run, flip([[W - 0.13, 0], [W, 0], [W, 0.17], [W - 0.13, 0.17]]), PARAPET);
-        sweep.sweep(run, flip([[W - 0.155, 0.17], [W + 0.02, 0.17], [W + 0.02, 0.205], [W - 0.155, 0.205]]), CAP);
+        sweep.sweep(run, flip(parapetWall(W)), PARAPET);
+        sweep.sweep(run, flip(parapetCap(W)), CAP);
       }
       run = [];
     };
@@ -92,8 +100,11 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     return out.filter(([a, b]) => b - a > 0.05);
   };
   // Where the ramp is low it rests on an embankment held by battered retaining walls.
-  const embank: ProfileVertex[] = [[-W - 0.07, -0.1, 1], [W + 0.07, -0.1, 1], [W - 0.01, DECK_BOTTOM + 0.04], [-W + 0.01, DECK_BOTTOM + 0.04]];
-  for (const [a, b] of runs(y => y >= 0.15 && y < EMBANK_TOP)) sweep.sweep(between(a, b), embank, [WALL, WALL, CONCRETE, WALL], { capColor: WALL });
+  // Its top runs just under the road, so the last low stretch down to the ground is carried too.
+  // It is only as wide on top as the road and its kerbs, battered out to the ground.
+  const top = hw + 0.08;
+  const embank: ProfileVertex[] = [[-top - 0.2, -0.1, 1], [top + 0.2, -0.1, 1], [top, -0.01], [-top, -0.01]];
+  for (const [a, b] of runs(y => y >= 0.02 && y < EMBANK_TOP)) sweep.sweep(between(a, b), embank, [WALL, WALL, CONCRETE, WALL], { capColor: WALL });
 
   // Piers: twin octagonal columns on footings, topped by a pier cap under the deck.
   const colAcross = hw * 0.62;
@@ -125,12 +136,12 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
   for (let k = 0; k <= lamps; k++) {
     const d = lampFrom + ((lampTo - lampFrom) * k) / lamps, side = k % 2 ? 1 : -1;
     Network.poseAt(seg, d, pose);
-    const h = roadHeight(seg, d), rx = -pose.tz * side, rz = pose.tx * side, off = W - 0.065;
+    const h = roadHeight(seg, d), rx = -pose.tz * side, rz = pose.tx * side, off = W - 0.035;
     // No lamp where its wall is cut for another deck, nor with its arm reaching out over one.
     const at = { x: pose.x - OFFSET, y: h, z: pose.z - OFFSET, tx: pose.tx, tz: pose.tz };
-    if (onOtherDeck(at, side) || onOtherDeck(at, side, -0.35)) continue;
-    const x = pose.x - OFFSET + rx * off, z = pose.z - OFFSET + rz * off, top = h + 0.205 + 0.6;
-    cols.cyl(0.028, 0.6, x, h + 0.205, z, POLE, 6);
+    if (h < RAISED || onOtherDeck(at, side) || onOtherDeck(at, side, -0.35)) continue;
+    const x = pose.x - OFFSET + rx * off, z = pose.z - OFFSET + rz * off, top = h + PARAPET_TOP + 0.6;
+    cols.cyl(0.028, 0.6, x, h + PARAPET_TOP, z, POLE, 6);
     // Arm and lamp head reach in over the road; paths run inward, so `across` is along the road.
     sweep.sweep(straightPath(x, top, z, x - rx * 0.26, top, z - rz * 0.26), [[-0.018, -0.03], [0.018, -0.03], [0.018, 0], [-0.018, 0]], POLE);
     sweep.sweep(straightPath(x - rx * 0.16, top, z - rz * 0.16, x - rx * 0.32, top, z - rz * 0.32), [[-0.045, -0.055], [0.045, -0.055], [0.045, -0.02], [-0.045, -0.02]], [LAMP, POLE, POLE, POLE], { capColor: POLE });
@@ -161,8 +172,8 @@ function buildMouthDeck(road: RSeg, node: number, shape: MouthShape, sweep: Swee
   const s = shape.sgn, a0 = roadHalf(road) + 0.2, a1 = shape.W + 0.28;
   const side = (v: readonly [number, number][]): ProfileVertex[] => v.map(([a, u]) => [a * s, u] as const);
   sweep.sweep(path, side([[a0, DECK_BOTTOM], [a1 - 0.08, DECK_BOTTOM], [a1, DECK_BOTTOM + 0.1], [a1, DECK_TOP], [a0, DECK_TOP]]), [SOFFIT, BAND, BAND, CONCRETE, BAND], { capColor: BAND });
-  sweep.sweep(path, side([[a1 - 0.13, 0], [a1, 0], [a1, 0.17], [a1 - 0.13, 0.17]]), PARAPET);
-  sweep.sweep(path, side([[a1 - 0.155, 0.17], [a1 + 0.02, 0.17], [a1 + 0.02, 0.205], [a1 - 0.155, 0.205]]), CAP);
+  sweep.sweep(path, side(parapetWall(a1)), PARAPET);
+  sweep.sweep(path, side(parapetCap(a1)), CAP);
 }
 
 /**

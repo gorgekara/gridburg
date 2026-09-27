@@ -14,7 +14,7 @@ import { rampJoin, rampMouthShape } from '../roads/rampMouth';
 import type { JunctionMarks, SignSpot } from './junctionMarks';
 import { laneTapers, edgeAt, sideHalf, roadHalf, lanesFor, laneCentre, taperLength, approachLanes, oneWay, ringLaneCount } from '../roads/lanes';
 import type { Tapers } from '../roads/lanes';
-import { planFor, movements, stateIn, fixedClock, moveKey, crossingState, crossingFrom } from '../roads/signals';
+import { planFor, movements, stateIn, fixedClock, moveKey, crossingState, crossingFrom, allTurns, turnName } from '../roads/signals';
 import type { SignalPlan, SignalState } from '../roads/signals';
 
 /** Each side's edge at every sample of a segment, following any taper. */
@@ -72,12 +72,14 @@ export class RoadLayer {
   private builtTerrain: Terrain | null = null;
   readonly signs: THREE.Group[] = [];
   /** What the last rebuild painted and put up at junctions and curves. */
-  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0 };
+  marks: JunctionMarks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0 };
   /** Pedestrian signal heads: a box on a post at each end of a signalled crossing, and its lamp. */
   readonly pedHeads: THREE.InstancedMesh;
   private pedLamps: THREE.InstancedMesh;
   pedInfo: { node: number; plan: SignalPlan; from: string[]; crossTime: number }[] = [];
   readonly yieldSigns: THREE.InstancedMesh;
+  /** Round 'no left turn', 'no right turn' and 'no straight on' signs, for turns a junction bans. */
+  readonly banSigns: Record<'Left' | 'Straight' | 'Right', THREE.InstancedMesh>;
   readonly rails: THREE.Mesh;
   readonly heads: THREE.InstancedMesh;
   readonly arms: THREE.InstancedMesh;
@@ -164,6 +166,30 @@ export class RoadLayer {
     }
     this.chevrons = new THREE.InstancedMesh(chevronBody.build(), new THREE.MeshStandardMaterial({ vertexColors: true }), MAX_LAMPS);
     for (const m of [this.yieldSigns, this.chevrons]) { m.count = 0; m.frustumCulled = false; m.castShadow = true; this.group.add(m); }
+    // A banned turn: a white disc ringed in red on a post, the forbidden arrow in black, slashed in red.
+    const banSign = (turn: 'Left' | 'Straight' | 'Right'): THREE.InstancedMesh => {
+      const body = new Builder(7);
+      body.box(0.03, 0.62, 0.03, 0, 0, 0, 0x8d949a);
+      const disc = (r: number, z: number): THREE.BufferGeometry => { const g = new THREE.CircleGeometry(r, 20); g.translate(0, 0.54, z); return g; };
+      body.add(disc(0.15, 0.018), 0xc0392b);
+      body.add(disc(0.12, 0.021), 0xf6f2ea);
+      const bar = (w: number, h: number, x: number, y: number, rot = 0, color = 0x1d1d1d, z = 0.024): void => {
+        const g = new THREE.BoxGeometry(w, h, 0.004); g.rotateZ(rot); g.translate(x, 0.54 + y, z); body.add(g, color);
+      };
+      // The arrow: a stem up from below the middle, bent the way of the turn, with a head.
+      bar(0.022, 0.1, 0, -0.03);
+      if (turn === 'Straight') { bar(0.022, 0.06, 0, 0.04); bar(0.05, 0.02, -0.015, 0.07, -0.8); bar(0.05, 0.02, 0.015, 0.07, 0.8); }
+      else {
+        const s = turn === 'Left' ? -1 : 1;
+        bar(0.08, 0.022, s * 0.03, 0.02);
+        bar(0.045, 0.018, s * 0.06, 0.035, s * -0.8); bar(0.045, 0.018, s * 0.06, 0.005, s * 0.8);
+      }
+      bar(0.24, 0.024, 0, 0, -0.8, 0xc0392b, 0.028);
+      const mesh = new THREE.InstancedMesh(body.build(), new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }), MAX_LAMPS);
+      mesh.count = 0; mesh.frustumCulled = false; mesh.castShadow = true; this.group.add(mesh);
+      return mesh;
+    };
+    this.banSigns = { Left: banSign('Left'), Straight: banSign('Straight'), Right: banSign('Right') };
     // Pedestrian heads: a small box on a short post, its lamp facing across the road.
     const pedBody = new Builder(6);
     pedBody.box(0.025, 0.42, 0.025, 0, 0, 0, 0x707b7e);
@@ -200,7 +226,7 @@ export class RoadLayer {
     // Zoning and building edits also fire a rebuild, so skip unless the network itself moved.
     if (net === this.builtNet && net.version === this.builtVersion && terrain === this.builtTerrain) return;
     this.builtNet = net; this.builtVersion = net.version; this.builtTerrain = terrain;
-    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0 };
+    this.marks = { stopLines: 0, giveWays: 0, yieldSigns: 0, chevrons: 0, gores: 0, ramps: 0, pedHeads: 0, splitters: 0, medians: 0, barriers: 0, guardrails: 0, medianTrees: 0, rumbles: 0, banSigns: 0 };
     const b = new MeshBuilder();
     const decorations = new Builder(17, 0);
     const crossings = crossingApproaches(net);
@@ -584,6 +610,24 @@ export class RoadLayer {
       mesh.instanceMatrix.needsUpdate = true;
     };
     place(this.yieldSigns, yieldSpots, (tx, tz) => Math.atan2(-tx, -tz));
+    // A sign for each banned turn on the right-hand verge of the road it is banned from, a little way
+    // back from the junction; several on one road stand one behind another.
+    const banSpots: Record<'Left' | 'Straight' | 'Right', SignSpot[]> = { Left: [], Straight: [], Right: [] };
+    for (const node of net.nodes.values()) {
+      if (!node.bans?.length) continue;
+      const bans = new Set(node.bans);
+      const perArm = new Map<string, number>();
+      for (const m of allTurns(net, node.id)) {
+        if (!bans.has(m.key)) continue;
+        const seg = net.segs.get(m.inSeg);
+        if (!seg) continue;
+        const arm = `${m.inSeg}${m.inFwd}`, k = perArm.get(arm) ?? 0;
+        perArm.set(arm, k + 1);
+        const spot = net.vergeSpot(seg, node.id, sideHalf(seg, m.inFwd ? 1 : -1) + 0.2, Math.min(1.4 + k * 0.35, seg.len * 0.6));
+        if (spot) { banSpots[turnName(m)].push({ ...spot, seg, s: m.inFwd ? seg.len - 1.4 : 1.4 }); this.marks.banSigns++; }
+      }
+    }
+    for (const turn of ['Left', 'Straight', 'Right'] as const) place(this.banSigns[turn], banSpots[turn], (tx, tz) => Math.atan2(-tx, -tz));
     place(this.chevrons, chevronAt, (tx, tz) => Math.atan2(tx, tz));
 
     // Traffic signals: a head on a pole on the right-hand side at the stop line, and where two or more

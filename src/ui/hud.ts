@@ -84,6 +84,7 @@ const CATEGORIES: Category[] = [
       { id: 'roundabout', label: 'Roundabout', key: 'O', price: `${money(COST_ROUNDABOUT)}+`, note: 'Never stops', hint: 'Click a junction. Traffic circulates one way and nobody has to wait. Pick the ring beside the cards: matched to the roads, single lane, two lanes, or grand' },
       { id: 'light', label: 'Signal', key: 'T', price: money(COST_LIGHT), note: 'Busy crossings', hint: 'Click a junction to add traffic lights; click a signalised one to edit its plan: phases, green times, and which movements go (click the arrows). Adaptive timing follows the traffic' },
       { id: 'stopsign', label: 'Stop signs', key: 'K', price: money(COST_STOP), note: 'All-way halt', hint: 'Click a junction to make every approach stop before entering. Slower than lights, but it keeps a quiet crossing orderly and needs no signal' },
+      { id: 'turns', label: 'Turns', price: 'Free', note: 'Ban turns', hint: 'Click a junction to ban turns there: no left turn from one road, no straight on from another. Drivers find another way, and the lane arrows and signals follow' },
       { id: 'oneway', label: 'One-way', key: 'Y', price: 'Free', note: 'Click to cycle', hint: 'Click a road to cycle: one-way, reversed, two-way' },
       { id: 'calm', label: 'Calm street', key: 'J', price: `${money(COST_CALM)} / cell`, note: 'Slower, safer', hint: 'Click a street to add traffic calming: drivers run at about half speed and collisions become rare. Click again to remove it. Expressways cannot be calmed' },
     ],

@@ -32,6 +32,8 @@ export interface MenuActions {
   continueCity(): void;
   newCity(seed: number): void;
   demoCity(): void;
+  /** One of the test maps: 'junctions' or 'highways'. */
+  testMap(name: 'junctions' | 'highways'): void;
   resume(): void;
   help(): void;
   apply(settings: Settings): void;
@@ -78,6 +80,7 @@ export class MainMenu {
     host.append(this.root);
     this.buildHome();
     this.buildNew();
+    this.buildTests();
     this.buildSettings();
     this.slotsPage.className = 'menu-page';
     this.pages.set('slots', this.slotsPage);
@@ -119,11 +122,25 @@ export class MainMenu {
       this.continueBtn,
       this.button('New city', 'A fresh river valley to build on', () => { this.seed = randomSeed(); this.seedField.value = String(this.seed); this.show('new'); }, 'plus'),
       this.button('Demo city', 'A finished city to look around', () => this.actions.demoCity(), 'city'),
+      this.button('Test maps', 'Every kind of junction, ramp and level, side by side', () => this.show('tests'), 'road'),
       this.button('Saved cities', 'Cities you saved by name', () => { this.buildSlots(); this.show('slots'); }, 'save'),
       this.button('Settings', 'Graphics, day length and cheats', () => this.show('settings'), 'menu'),
       this.button('How to play', 'The basics, in five steps', () => this.actions.help(), 'help'),
     );
     this.pages.set('home', page);
+    this.panels.append(page);
+  }
+
+  private buildTests(): void {
+    const page = el('div', 'menu-page');
+    page.append(el('h2', 'menu-heading', 'Test maps'));
+    page.append(el('p', 'menu-note', 'Laid out for looking at how roads meet and how traffic uses them, with a town round them to drive it.'));
+    page.append(
+      this.button('Junction lab', 'Twelve kinds of junction: signals, stops, roundabouts, pockets, bus and bike lanes', () => this.actions.testMap('junctions'), 'road'),
+      this.button('Highway lab', 'Exits and entrances, levels 1 to 3, ramps between them, a tunnel', () => this.actions.testMap('highways'), 'road'),
+      this.back(),
+    );
+    this.pages.set('tests', page);
     this.panels.append(page);
   }
 

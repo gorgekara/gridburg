@@ -1,6 +1,6 @@
 import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS, T_AIRPORT } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS, T_AIRPORT, T_PUMP, T_OUTLET } from '../constants';
 import { footprint } from '../sites';
 import { BAY_SETBACK } from '../roads/busLanes';
 import { lotScale } from '../placement';
@@ -195,7 +195,7 @@ export class BuildingLayer {
       let facing = k === T_PATH ? 0 : turn * Math.PI / 2;
       if ((!turn || raster.cell[i] >= 0) && !multi && !isDecoration(k) && raster.accSeg[i] >= 0) facing = raster.face[i];
       // A dock's jetty and a dam's spillway (their -z side) point at the river, whichever side it is.
-      if ((k === T_DOCKS || k === T_HYDRO || k === T_FLOOD_BARRIER) && water) {
+      if ((k === T_DOCKS || k === T_HYDRO || k === T_FLOOD_BARRIER || k === T_PUMP || k === T_OUTLET) && water) {
         const x = i % GRID, z = Math.floor(i / GRID);
         for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
           const nx = x + dx, nz = z + dz;

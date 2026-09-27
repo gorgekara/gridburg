@@ -19,6 +19,8 @@ const SCALE = 0.85;
 export const PARK_INSET = -0.02;
 const SLOT = 0.42; // length of a parking space
 const CLEAR = 0.3; // extra room past the crossing road's kerb at a junction
+/** How many cells from a car park kerbside parking gives way to it. */
+const LOT_REACH = 3;
 const HALF_LENGTH = 0.14, HALF_WIDTH_CAR = 0.075;
 
 interface Parked { x: number; z: number; fx: number; fz: number }
@@ -136,6 +138,16 @@ export class ParkedCarLayer {
     this.drives.count = drives;
     this.drives.instanceMatrix.needsUpdate = true;
     const crossings = crossingApproaches(net);
+    // Near a car park, cars use it: nobody leaves one up on the kerb within a few cells of it.
+    const nearLot = new Uint8Array(N_TILES);
+    for (let i = 0; i < N_TILES; i++) {
+      if (!isParking(kind[i])) continue;
+      const x0 = i % GRID, z0 = Math.floor(i / GRID);
+      for (let dz = -LOT_REACH; dz <= LOT_REACH; dz++) for (let dx = -LOT_REACH; dx <= LOT_REACH; dx++) {
+        const x = x0 + dx, z = z0 + dz;
+        if (x >= 0 && z >= 0 && x < GRID && z < GRID && dx * dx + dz * dz <= LOT_REACH * LOT_REACH) nearLot[z * GRID + x] = 1;
+      }
+    }
     for (const seg of net.segs.values()) {
       // Streets and avenues only: a lane is too narrow, and nobody parks on an expressway, a bridge or in a tunnel.
       if (seg.structure || (seg.kind !== KIND_ROAD && seg.kind !== KIND_AVENUE)) continue;
@@ -167,6 +179,7 @@ export class ParkedCarLayer {
           const type = h > 0.9 ? 2 : 1, m = type - 1;
           if (counts[m] >= CAP) continue;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;
+          if (nearLot[Math.floor(z + half) * GRID + Math.floor(x + half)]) continue;
           if (net.onRoad(x + half, z + half, seg.id, 0.12)) continue;
           if (mouths.some(m => Math.abs(m.x - x) + Math.abs(m.z - z) < 0.3)) continue;
           // Parked facing the way traffic runs on that side, nose slightly out now and then.

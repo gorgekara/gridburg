@@ -544,6 +544,18 @@ body.touch canvas { touch-action: none; }
 .race-results p { margin: 0; color: var(--dim); }
 .race-buttons { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 
+/* ---- turn editor --------------------------------------------------------------------------- */
+.popover.turns { top: 62px; left: 12px; width: 300px; max-height: calc(100vh - 200px); overflow-y: auto; }
+.turn-arms { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.turn-arm { display: flex; align-items: center; gap: 6px; }
+.turn-from { flex: 1; color: var(--dim); font-size: 12px; }
+.turn-btn { width: 34px; height: 30px; border-radius: 7px; border: 1.5px solid var(--line); background: rgba(126, 211, 140, 0.16); color: var(--fg); font-size: 16px; cursor: pointer; }
+.turn-btn.banned { background: rgba(214, 72, 60, 0.22); border-color: rgba(214, 72, 60, 0.7); color: #ffb3a8; text-decoration: line-through; }
+.turn-btn:disabled { opacity: 0.4; cursor: default; }
+.signal-foot { display: flex; justify-content: flex-end; }
+.signal-btn { background: rgba(255,255,255,0.07); border: 1px solid var(--line); border-radius: 7px; color: var(--fg); cursor: pointer; padding: 5px 10px; font: inherit; }
+.signal-btn:disabled { opacity: 0.4; cursor: default; }
+
 /* ---- signal editor ------------------------------------------------------------------------- */
 .popover.signals { top: 62px; left: 12px; width: 300px; max-height: calc(100vh - 200px); overflow-y: auto; }
 .signal-head { display: flex; align-items: center; justify-content: space-between; }

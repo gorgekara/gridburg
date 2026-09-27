@@ -487,6 +487,7 @@ function applyNetwork(p: EditPayload): void {
     if (!s.fixed) { roadUpkeep += s.len * ROAD_UPKEEP * STRUCTURE_COST[s.structure ?? 0] * (ROAD_UPKEEP_FACTOR[s.kind] ?? 1) * Math.max(0.5, lanes / Math.max(1, usual)); roadLength += s.len; }
   });
   lockOwner = new Int32Array(nodeIds.length * 2).fill(-1);
+  nodeBans = nodeIds.map(id => { const b = net.nodes.get(id)?.bans; return b?.length ? new Set(b) : null; });
   ringClaim = new Int32Array(nodeIds.length).fill(-1);
   ringRoomless = new Float32Array(nodeIds.length).fill(-1e9);
   ringArc = new Uint8Array(newSegs.length);
@@ -749,9 +750,10 @@ function roadConnected(i: number): boolean {
 
 // ---- routing -----------------------------------------------------------------------------------
 let gScore = new Float32Array(0);
-let prevEdgeSeg = new Int32Array(0);
-let prevEdgeFwd = new Uint8Array(0);
+/** Per state of the search (a directed road, arrived at its end): the state it was reached from. */
 let prevNode = new Int32Array(0);
+/** Per node: the turns banned there, as movement keys (by segment id), or null for none. */
+let nodeBans: (Set<string> | null)[] = [];
 let stamp = new Uint32Array(0);
 let closedStamp = new Uint32Array(0);
 let gen = 0;
@@ -812,11 +814,12 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0, dir
     if (gS >= sS && dir !== false) return [{ seg: sSeg, fwd: true, p0: sS, p1: gS }];
     if (gS < sS && !S.oneway && dir !== true) return [{ seg: sSeg, fwd: false, p0: S.len - sS, p1: S.len - gS }];
   }
-  const n = nodeIds.length;
+  // The search runs over directed roads, not nodes: each state is having arrived at the end of a
+  // segment travelling one way along it, so a turn the junction bans (from that road into another)
+  // can be refused, and a node can be passed through again from another side.
+  const n = segs.length * 2;
   if (gScore.length < n + 1) {
     gScore = new Float32Array(n + 1);
-    prevEdgeSeg = new Int32Array(n + 1);
-    prevEdgeFwd = new Uint8Array(n + 1);
     prevNode = new Int32Array(n + 1);
     stamp = new Uint32Array(n + 1);
     closedStamp = new Uint32Array(n + 1);
@@ -824,22 +827,28 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0, dir
   gen++;
   heapF.length = 0;
   heapN.length = 0;
-  const GOAL = n; // virtual node
+  const GOAL = n; // virtual state
+  const endOf = (e: number): number => (e & 1 ? segA[e >> 1] : segB[e >> 1]);
   const gx = G.pts[0], gz = G.pts[1];
   const h = (node: number): number => Math.hypot(nodeX[node] - gx, nodeZ[node] - gz) / 4.5 * 0.8;
   const vS = segSpeed(S);
-  const relax = (node: number, g: number, from: number, seg: number, fwd: boolean): void => {
-    if (closedStamp[node] === gen) return;
-    if (stamp[node] === gen && gScore[node] <= g) return;
-    stamp[node] = gen;
-    gScore[node] = g;
-    prevNode[node] = from;
-    prevEdgeSeg[node] = seg;
-    prevEdgeFwd[node] = fwd ? 1 : 0;
-    heapPush(g + (node === GOAL ? 0 : h(node)), node);
+  let goalFwd = true;
+  const relax = (e: number, g: number, from: number): boolean => {
+    if (closedStamp[e] === gen) return false;
+    if (stamp[e] === gen && gScore[e] <= g) return false;
+    stamp[e] = gen;
+    gScore[e] = g;
+    prevNode[e] = from;
+    heapPush(g + (e === GOAL ? 0 : h(endOf(e))), e);
+    return true;
   };
-  if (dir !== false) relax(segB[sSeg], (S.len - sS) / vS, -1, sSeg, true);
-  if (!S.oneway && dir !== true) relax(segA[sSeg], sS / vS, -1, sSeg, false);
+  /** Whether the junction at `node` lets traffic arriving along state `e` go on along (seg, fwd). */
+  const allowed = (node: number, e: number, seg: number, fwd: boolean): boolean => {
+    const bans = nodeBans[node];
+    return !bans || !bans.has(moveKey(segs[e >> 1].id, !(e & 1), segs[seg].id, fwd));
+  };
+  if (dir !== false) relax(sSeg * 2, (S.len - sS) / vS, -1);
+  if (!S.oneway && dir !== true) relax(sSeg * 2 + 1, sS / vS, -1);
   const vG = segSpeed(G);
 
   while (heapN.length) {
@@ -848,31 +857,27 @@ function route(sSeg: number, sS: number, gSeg: number, gS: number, seed = 0, dir
     closedStamp[cur] = gen;
     if (cur === GOAL) {
       const legs: Leg[] = [];
-      let node = GOAL;
-      while (node !== -1) {
-        const seg = prevEdgeSeg[node];
-        const fwd = prevEdgeFwd[node] === 1;
-        const from = prevNode[node];
-        const len = segs[seg].len;
-        if (node === GOAL) legs.push({ seg, fwd, p0: 0, p1: fwd ? gS : len - gS });
-        else if (from === -1) legs.push({ seg, fwd, p0: fwd ? sS : len - sS, p1: len });
-        else legs.push({ seg, fwd, p0: 0, p1: len });
-        node = from;
+      const len = segs[gSeg].len;
+      legs.push({ seg: gSeg, fwd: goalFwd, p0: 0, p1: goalFwd ? gS : len - gS });
+      for (let e = prevNode[GOAL]; e !== -1; e = prevNode[e]) {
+        const seg = e >> 1, fwd = !(e & 1), sl = segs[seg].len;
+        legs.push(prevNode[e] === -1 ? { seg, fwd, p0: fwd ? sS : sl - sS, p1: sl } : { seg, fwd, p0: 0, p1: sl });
       }
       legs.reverse();
       return legs;
     }
-    const g = gScore[cur];
+    const g = gScore[cur], node = endOf(cur), arrived = cur >> 1;
     // (Setting off a given way, it does not come back to the goal by turning round in a junction either.)
-    const uTurnHere = dir !== undefined && prevEdgeSeg[cur] === gSeg && nodeEdges[cur].some(o => o.seg !== gSeg);
-    if (cur === segA[gSeg] && !uTurnHere) relax(GOAL, g + gS / vG, cur, gSeg, true);
-    if (cur === segB[gSeg] && !G.oneway && !uTurnHere) relax(GOAL, g + (G.len - gS) / vG, cur, gSeg, false);
-    for (const e of nodeEdges[cur]) {
-      if (dir !== undefined && e.seg === prevEdgeSeg[cur] && nodeEdges[cur].some(o => o.seg !== e.seg)) continue;
+    const uTurnHere = dir !== undefined && arrived === gSeg && nodeEdges[node].some(o => o.seg !== gSeg);
+    if (node === segA[gSeg] && !uTurnHere && allowed(node, cur, gSeg, true) && relax(GOAL, g + gS / vG, cur)) goalFwd = true;
+    if (node === segB[gSeg] && !G.oneway && !uTurnHere && allowed(node, cur, gSeg, false) && relax(GOAL, g + (G.len - gS) / vG, cur)) goalFwd = false;
+    for (const e of nodeEdges[node]) {
+      if (dir !== undefined && e.seg === arrived && nodeEdges[node].some(o => o.seg !== e.seg)) continue;
+      if (!allowed(node, cur, e.seg, e.fwd)) continue;
       const t = nodeType[e.to];
       const penalty = t === J_LIGHT ? 2.5 : t === J_STOP ? 1.4 : t === J_YIELD ? 0.8 : 0;
       const jitter = seed ? 1 + ROUTE_JITTER * (((Math.sin(e.seg * 12.9898 + seed) * 43758.5453) % 1 + 1) % 1 - 0.5) : 1;
-      relax(e.to, g + segTime(e.seg) * jitter + penalty, cur, e.seg, e.fwd);
+      relax(e.seg * 2 + (e.fwd ? 0 : 1), g + segTime(e.seg) * jitter + penalty, cur);
     }
   }
   return null;

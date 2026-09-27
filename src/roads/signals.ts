@@ -27,6 +27,18 @@ const KEY = /^(\d+)([fb])>(\d+)([fb])$/;
 /** One way through a junction, with how sharply it turns (positive to the right). */
 export interface Movement { key: string; inSeg: number; inFwd: boolean; outSeg: number; outFwd: boolean; angle: number }
 
+/** Every movement through a node, banned turns too: the lane layout leaves those out, so ask it without them. */
+export function allTurns(net: Network, node: number): Movement[] {
+  const n = net.nodes.get(node);
+  if (!n) return [];
+  const bans = n.bans;
+  delete n.bans;
+  try { return movements(net, node); } finally { if (bans) n.bans = bans; }
+}
+
+/** Which way a movement turns, from the angle between the road it arrives on and the one it leaves by. */
+export const turnName = (m: Movement): 'Left' | 'Straight' | 'Right' => (m.angle > 0.35 ? 'Right' : m.angle < -0.35 ? 'Left' : 'Straight');
+
 /** Every movement through a node: from each road arriving there into each road leaving it. */
 export function movements(net: Network, node: number): Movement[] {
   const out: Movement[] = [];

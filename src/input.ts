@@ -39,7 +39,7 @@ import type { Game } from './game';
 
 export type Tool =
   | 'none' | 'inspect'
-  | 'taxi' | 'bikelane' | 'buslane' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
+  | 'taxi' | 'bikelane' | 'buslane' | 'turns' | 'trolley' | 'parkpath' | 'pond' | 'parkshop' | 'tree' | 'flowers' | 'bench' | 'fountain' | 'plaza' | 'lawn'
   | 'road' | 'avenue' | 'lane' | 'highway' | 'motorway' | 'highway2' | 'ramp' | 'upgrade' | 'edit' | 'cut' | 'addlane'
   | 'roundabout' | 'light' | 'oneway' | 'stopsign' | 'calm'
   | 'res' | 'com' | 'ind' | 'office' | 'farm' | 'leisure' | 'entry' | 'bus' | 'station' | 'subway' | 'airport' | 'treatment'
@@ -52,7 +52,7 @@ export type Tool =
 export type RoadMode = 'straight' | 'curve' | 'smooth';
 
 const TOOL_COLOR: Record<Tool, number> = {
-  taxi: 0xe9bb43, bikelane: 0x58b58d, buslane: 0xc0584a, trolley: 0x72b58d, parkpath: 0xd0be98, pond: 0x5199a5, parkshop: 0xd8c49b, tree: 0x4c7b49, flowers: 0xc7667d, bench: 0xa27e53, fountain: 0x73b3be, plaza: 0xb7b3a6, lawn: 0x749858,
+  taxi: 0xe9bb43, bikelane: 0x58b58d, buslane: 0xc0584a, turns: 0xe0a14a, trolley: 0x72b58d, parkpath: 0xd0be98, pond: 0x5199a5, parkshop: 0xd8c49b, tree: 0x4c7b49, flowers: 0xc7667d, bench: 0xa27e53, fountain: 0x73b3be, plaza: 0xb7b3a6, lawn: 0x749858,
   office: 0xb791e0, farm: 0xc9a55a, leisure: 0xe07fb0, entry: 0x76c9ae, bus: 0xeab75c, station: 0x9fbfd5, subway: 0x5b8fd9, airport: 0xd3e8ef, treatment: 0x66caba,
   park: 0x72bb78, playground: 0x8fd08a, sports: 0x5fae67, garden: 0x87c98d, clinic: 0xe8eff4, hospital: 0xf1f4f7, cityhospital: 0xf6f8fa, policehq: 0x4d82c4, school: 0xf2bd63, fire: 0xe97060, police: 0x669fdb, recycling: 0x70bda8, university: 0xbc9be3, solar: 0x628fc1,
   inspect: 0xffd166, none: 0xffffff,
@@ -102,6 +102,8 @@ export class Input {
   /** The signal editor: offered each Signal-tool click first (true if it handled it), and asked to open on a junction. */
   onSignalClick: ((p: { x: number; z: number }) => boolean) | null = null;
   onSignalEdit: ((node: number) => void) | null = null;
+  /** The Turns tool picked a junction: open its turn editor. */
+  onTurnEdit: ((node: number) => void) | null = null;
   /** Which district the district brush paints (1..8). */
   districtBrush = 1;
   onDistrict: (() => void) | null = null;
@@ -1105,6 +1107,11 @@ export class Input {
       g.spend(COST_LIGHT);
       g.flush();
       this.onSignalEdit?.(n.id);
+    } else if (this.tool === 'turns') {
+      const n = this.nodeNear(p, 1.4);
+      if (!n || net.degree(n.id) < 3) { this.onToast?.('Pick a junction of three roads or more'); return; }
+      if (n.ring) { this.onToast?.('Roundabouts take every turn'); return; }
+      this.onTurnEdit?.(n.id);
     } else if (this.tool === 'stopsign') {
       const n = this.nodeNear(p, 1.4);
       if (!n || net.degree(n.id) < 3) { this.onToast?.('Stop signs go on junctions of three or more roads'); return; }
@@ -1300,12 +1307,12 @@ export class Input {
       hx = s.x; hz = s.z; size = 0.6;
       label = this.tool !== 'parkpath' && this.lastSnap?.label ? `${this.lastSnap.label} · Click to start` : 'Click to start';
       if (this.tool !== 'parkpath') { label = `${levelName(s.level ?? 0)} · ${label}`; hy = Math.max(0, levelY(s.level ?? 0)); }
-    } else if (this.tool === 'light' || this.tool === 'stopsign') {
+    } else if (this.tool === 'light' || this.tool === 'stopsign' || this.tool === 'turns') {
       const n = this.nodeNear(p, 1.4);
       const sign = this.tool === 'stopsign';
       if (n && this.game.net.degree(n.id) >= 3 && !n.ring) {
         hx = n.x; hz = n.z; size = 1.4;
-        label = sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Click to edit the signal' : `$${COST_LIGHT}`;
+        label = this.tool === 'turns' ? `${n.bans?.length ? `${n.bans.length} banned · ` : ''}Click to edit turns` : sign ? (n.stop ? 'Remove stop signs' : `$${COST_STOP}`) : n.light ? 'Click to edit the signal' : `$${COST_LIGHT}`;
       } else { size = 0.5; color = BAD; }
     } else if (this.tool === 'edit') {
       const net = this.game.net;

@@ -214,12 +214,15 @@ const RIGHT = 0.35, LEFT = -0.35;
 export function approachLanes(net: Network, node: number, seg: RSeg, fwd: boolean): Approach {
   const n = lanesFor(net, seg, fwd);
   const inDir = heading(seg, !fwd, false);
+  const bans = net.nodes.get(node)?.bans;
   const exits: Exit[] = [];
   for (const o of net.segsAt(node)) {
     for (const outFwd of [true, false]) {
       if ((outFwd ? o.a : o.b) !== node) continue;
       if (!outFwd && oneWay(o)) continue;
       if (o.id === seg.id && outFwd !== fwd) continue; // no U-turns back the way it came
+      // Nor a turn the junction bans.
+      if (bans?.includes(`${seg.id}${fwd ? 'f' : 'b'}>${o.id}${outFwd ? 'f' : 'b'}`)) continue;
       if (o.id === seg.id && o.a !== o.b) continue;
       const d = heading(o, outFwd, true);
       const cross = inDir.x * d.z - inDir.z * d.x, dot = inDir.x * d.x + inDir.z * d.z;

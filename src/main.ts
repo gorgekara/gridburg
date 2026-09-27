@@ -44,15 +44,17 @@ import { CarLayer } from './render/cars';
 import { Input } from './input';
 import { SignalOverlay } from './render/signalOverlay';
 import { SignalPanel, cycleMove } from './ui/signalPanel';
+import { TurnPanel } from './ui/turnPanel';
 import { planFor, planFits, clonePlan } from './roads/signals';
 import type { SignalPlan } from './roads/signals';
 import { Hud } from './ui/hud';
 import { demoCity } from './demo';
+import { junctionLab, highwayLab } from './debugMaps';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone } from './constants';
+import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET } from './constants';
 import { HALF_WIDTH, Network } from './roads/network';
 import { roadHeight } from './roads/structures';
 import { serviceCoverage } from './coverage';
@@ -534,7 +536,9 @@ input.onCost = (text, x, y, ok) => hud.setCost(text, x, y, ok);
 /** Tiles with a lot, a building or a road on them, which the river's bank must not sag under. */
 function solidGround(): Uint8Array {
   const solid = new Uint8Array(N_TILES);
-  for (let i = 0; i < N_TILES; i++) if (game.kind[i] || game.raster.cover[i]) solid[i] = 1;
+  // (Not under a pump or an outfall: they stand at the water's edge on a pad of their own, and the
+  // bank slopes down beneath them to the river.)
+  for (let i = 0; i < N_TILES; i++) if ((game.kind[i] && game.kind[i] !== T_PUMP && game.kind[i] !== T_OUTLET) || game.raster.cover[i]) solid[i] = 1;
   return solid;
 }
 
@@ -689,6 +693,7 @@ const menu: MainMenu = new MainMenu(uiRoot, {
   continueCity: () => { const save = loadLocal(); if (save) startCity(save); },
   newCity: (seed) => { clearLocal(); history.replaceState(null, '', location.pathname); startCity(newCity(seed)); hud.setTax(10); },
   demoCity: () => { history.replaceState(null, '', location.pathname); startCity(demoCity(true), 'Demo city loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
+  testMap: (name) => { history.replaceState(null, '', location.pathname); startCity(name === 'junctions' ? junctionLab() : highwayLab(), name === 'junctions' ? 'Junction lab loaded' : 'Highway lab loaded'); game.warm(110); focusCity(true); input.setTool('none'); hud.setTax(10); },
   resume: () => { menu.setOpen(false); game.setSpeed(resumeSpeed); },
   help: () => { menu.setOpen(false); hud.showWelcome(); },
   apply: (s) => applySettings(s),
@@ -780,6 +785,31 @@ input.onSignalClick = (p) => {
   game.load = (...args: Parameters<typeof load>) => { closeSignal(); load(...args); };
   const onTool = input.onToolChange;
   input.onToolChange = (t) => { onTool?.(t); if (t !== 'light') closeSignal(); };
+}
+
+// The Turns tool opens a junction's turn editor: ban or allow each way on from each road.
+const turnPanel = new TurnPanel({
+  toggle: (key) => {
+    const n = game.net.nodes.get(turnPanel.openNode);
+    if (!n) return;
+    const bans = new Set(n.bans ?? []);
+    if (bans.has(key)) bans.delete(key); else bans.add(key);
+    if (bans.size) n.bans = [...bans]; else delete n.bans;
+    game.net.version++; game.flush(); audio.play('click');
+    turnPanel.render();
+  },
+  reset: () => { const n = game.net.nodes.get(turnPanel.openNode); if (!n) return; delete n.bans; game.net.version++; game.flush(); turnPanel.render(); },
+  close: () => turnPanel.close(),
+});
+uiRoot.append(turnPanel.root);
+input.onTurnEdit = (node) => turnPanel.open(game.net, node);
+{
+  const onEdit = game.onEdit;
+  game.onEdit = () => { onEdit?.(); if (turnPanel.isOpen) { if (game.net.nodes.get(turnPanel.openNode)) turnPanel.open(game.net, turnPanel.openNode); else turnPanel.close(); } };
+  const load = game.load.bind(game);
+  game.load = (...args: Parameters<typeof load>) => { turnPanel.close(); load(...args); };
+  const onTool = input.onToolChange;
+  input.onToolChange = (t) => { onTool?.(t); if (t !== 'turns') turnPanel.close(); };
 }
 
 const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
