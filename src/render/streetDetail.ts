@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { lotVariant } from './variants';
 import { isPromenadeTile } from './landmarks';
-import { sideHalf, roadHalf } from '../roads/lanes';
+import { sideHalf, roadHalf, carriageHalf, laneCentre, lanesFor, PARK_W } from '../roads/lanes';
 import {
   GRID, idx, inBounds, tileHash, isService, isZone, SERVICES,
   T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE, T_PARK, T_BUS,
@@ -527,9 +527,29 @@ class ChunkBuilder {
       }
     }
 
+    // How worn the road is: freshly laid now and then, more patched and holed on the poorer and rougher
+    // streets and on the busy avenues.
+    const fresh = tileHash(seg.id * 53 + 17) < 1 / 8;
+    const mid = at(seg.len / 2), band = this.src.bands, mt = inBounds(Math.floor(mid.x), Math.floor(mid.z)) ? idx(Math.floor(mid.x), Math.floor(mid.z)) : -1;
+    const wear = fresh ? 0 : (seg.kind === KIND_AVENUE ? 1.3 : 1) * (band && mt >= 0 ? [1.7, 1, 0.8, 0.6][band.wealth[mt]] + band.rough[mt] * 0.3 : 1);
+    // Wheel tracks: two darker bands along every lane, where the tyres polish the surface.
+    if (fine && !fresh) {
+      const lanes: number[] = [];
+      for (const fwd of [true, false]) for (let k = 0; k < lanesFor(this.src.net, seg, fwd); k++) lanes.push((fwd ? 1 : -1) * laneCentre(this.src.net, seg, fwd, k));
+      for (let s = 0.25; s < seg.len - 0.25; s += 0.5) {
+        const p = at(s + 0.25);
+        if (!this.inside(p.x, p.z)) continue;
+        const yaw = Math.atan2(p.tx, p.tz);
+        kit.jitter = 0;
+        for (const c of lanes) for (const o of [-0.05, 0.05]) {
+          const lat = c + o, x = p.x - p.tz * lat - HALF, z = p.z + p.tx * lat - HALF;
+          kit.at(x, ASPHALT_TOP + 0.0003, z, yaw).quad(0, 0, 0, 0.028, 0.5, 0x303138);
+        }
+      }
+    }
     // Asphalt wear: patches, cracks, oil stains, all flush with the surface.
-    if (fine) {
-      for (let s = 0.2; s < seg.len - 0.2; s += 0.6) {
+    if (fine && !fresh) {
+      for (let s = 0.2; s < seg.len - 0.2; s += 0.6 / Math.max(0.6, wear)) {
         const p = at(s + rnd() * 0.4);
         if (!this.inside(p.x, p.z) || rnd() < 0.35) continue;
         const across = (rnd() * 2 - 1) * hw * 0.85, yaw = Math.atan2(p.tx, p.tz) + (rnd() - 0.5) * 0.3;
@@ -547,6 +567,13 @@ class ChunkBuilder {
             kit.quad((cx + nx) / 2, 0, (cz + nz) / 2, 0.003, l, 0x2e2f35, Math.atan2(nx - cx, nz - cz));
             cx = nx; cz = nz; a += (rnd() - 0.5) * 1.6;
           }
+        } else if (!motor && wear > 1.4 && rnd() < 0.5) {
+          // A pothole: a ragged dark hole with broken edges.
+          const r = 0.018 + rnd() * 0.02;
+          kit.at(x, ASPHALT_TOP + 0.0009, z, rnd() * 3);
+          kit.disc(0, 0, 0, r * 1.3, 0x4a4b52, 7);
+          kit.disc(0, 0.0003, 0, r, 0x1c1d21, 7);
+          for (let k = 0; k < 3; k++) kit.box((rnd() - 0.5) * r * 2, 0, (rnd() - 0.5) * r * 2, 0.006, 0.002, 0.005, 0x55565e, rnd() * 3);
         } else if (!motor) {
           kit.at(x, ASPHALT_TOP + 0.0007, z, 0).disc(0, 0, 0, 0.012 + rnd() * 0.02, 0x383940, 7);
         }
@@ -693,23 +720,16 @@ class ChunkBuilder {
       });
     }
 
-    // Now and then, road works: cones round a hole and a barrier.
-    if (this.fine && segHash > 0.93 && seg.len > 2) {
-      const p = at(seg.len / 2);
+    // Road works on one street in fourteen, moving on every few days: a trench along one kerb, fenced
+    // with barriers and coned off, signed at each end, a mini digger, the crew's van and, by day, the
+    // crew. In the parking lane where the street has one, otherwise on the footway: never in a lane
+    // the traffic is using, since the traffic does not know it is there.
+    const works = roadWorksOn(seg, this.src.day ?? 0);
+    if (works) {
+      const { side, s: sm, off, width: wz, inLane } = works, p = at(sm), epoch = Math.floor((this.src.day ?? 0) / 3);
       if (this.inside(p.x, p.z)) {
-        const lane = hw * 0.45, x = p.x - p.tz * lane - HALF, z = p.z + p.tx * lane - HALF, yaw = Math.atan2(p.tx, p.tz);
-        kit.jitter = 0;
-        kit.at(x, ASPHALT_TOP, z, yaw);
-        kit.quad(0, 0.001, 0, 0.12, 0.2, 0x5b4a3a);
-        for (const [cx, cz] of [[-0.08, -0.13], [0.08, -0.13], [-0.08, 0.13], [0.08, 0.13], [0, -0.16], [0, 0.16]]) {
-          kit.box(cx, 0, cz, 0.018, 0.003, 0.018, DARK);
-          kit.prism(cx, 0.003, cz, 0.007, 0.03, 0xf07a1a, 6, 0.0015);
-          kit.prism(cx, 0.013, cz, 0.0052, 0.006, 0xf2f2ee, 6, 0.004);
-        }
-        kit.box(0, 0, -0.11, 0.14, 0.004, 0.01, 0xd8453b);
-        kit.box(0, 0.028, -0.11, 0.14, 0.012, 0.004, 0xf2f2ee);
-        for (const bx of [-0.06, 0.06]) kit.box(bx, 0, -0.11, 0.004, 0.04, 0.004, DARK);
-        kit.box(0.05, 0, 0.05, 0.03, 0.02, 0.03, 0x6b6560);
+        const y = inLane ? ASPHALT_TOP : PAVE, L = 0.42;
+        this.roadWorks(p.x - p.tz * off * side - HALF, y, p.z + p.tx * off * side - HALF, Math.atan2(p.tx, p.tz), wz, L, inLane, side, seg.id * 7 + epoch);
       }
     }
   }
@@ -748,6 +768,77 @@ class ChunkBuilder {
     if (!b || !inBounds(tx, tz)) return 1;
     const i = idx(tx, tz), w = b.wealth[i];
     return (w === 0 ? 2 : w === 3 ? 0.25 : 1) * [1, 1.6, 3][b.litter[i]];
+  }
+
+  /**
+   * A works zone centred at (x, z), running along the road (`yaw`), `w` across and `2L` long; `out` is
+   * which way across (+1 or -1 on local x) the traffic lies.
+   */
+  private roadWorks(x: number, y: number, z: number, yaw: number, w: number, L: number, inLane: boolean, out: number, seed: number): void {
+    const kit = this.kit, rnd = stream(seed * 7919 + 3), day = this.time === TIME.MORNING || this.time === TIME.MIDDAY || this.time === TIME.AFTERNOON;
+    kit.jitter = 0;
+    kit.at(x, y, z, yaw);
+    // The trench and its spoil heap.
+    kit.quad(0, 0.0012, 0, w * 0.55, L * 1.3, 0x4a3a2a);
+    kit.quad(0, 0.0015, 0, w * 0.4, L * 1.2, 0x2a2018);
+    for (let k = 0; k < 6; k++) { kit.jitter = (rnd() - 0.5) * 0.2; kit.lump(-out * w * 0.32, 0, -L * 0.5 + k * L * 0.2, 0.02, 0x7a6448, 0.5, rnd); }
+    kit.jitter = 0;
+    // Barriers along both sides, red and white, on little feet.
+    for (const bx of [-w / 2, w / 2]) for (let bz = -L; bz < L; bz += 0.12) {
+      kit.box(bx, 0, bz + 0.06, 0.006, 0.003, 0.012, 0x2a2c30);
+      kit.box(bx, 0.022, bz + 0.06, 0.004, 0.012, 0.11, Math.round(bz * 10) & 1 ? 0xd8453b : 0xf2f2ee);
+      kit.box(bx, 0, bz + 0.005, 0.004, 0.034, 0.004, 0x2a2c30);
+    }
+    // Cones tapering the traffic past, at the end the traffic on this side comes from.
+    for (let k = 0; k < 4; k++) {
+      const cz = -L - 0.08 - k * 0.08, cx = out * (w / 2 - k * w * 0.18);
+      kit.box(cx, 0, cz, 0.018, 0.003, 0.018, 0x2a2c30);
+      kit.prism(cx, 0.003, cz, 0.007, 0.03, 0xf07a1a, 6, 0.0015);
+      kit.prism(cx, 0.013, cz, 0.0052, 0.006, 0xf2f2ee, 6, 0.004);
+    }
+    // "Road works" at each end: a red-rimmed triangle on a stand.
+    for (const end of [-1, 1]) {
+      const sz = end * (L + 0.35), sx = -out * (w / 2 + 0.02);
+      kit.box(sx, 0, sz, 0.004, 0.09, 0.004, 0x2a2c30);
+      kit.at(x, y, z, yaw);
+      kit.prism(sx, 0.07, sz, 0.024, 0.004, 0xd8453b, 3, 0.024);
+      kit.box(sx, 0.07, sz + end * 0.002, 0.03, 0.028, 0.001, 0xf2f2ee, 0);
+      kit.box(sx, 0.078, sz + end * 0.0025, 0.012, 0.01, 0.001, 0x2a2c30);
+    }
+    // A portable traffic light at each end where the works take a lane's width, lit red and green.
+    if (inLane) for (const end of [-1, 1]) {
+      const tz = end * (L + 0.2), tx = out * (w / 2);
+      kit.box(tx, 0, tz, 0.024, 0.006, 0.024, 0xe0a021);
+      kit.box(tx, 0.006, tz, 0.005, 0.12, 0.005, 0x5a5e62);
+      kit.box(tx, 0.11, tz, 0.016, 0.04, 0.012, 0x1f2226);
+      this.glow.at(x, y, z, yaw);
+      this.glow.box(tx, 0.132 - (end > 0 ? 0 : 0.018), tz - end * 0.007, 0.008, 0.008, 0.002, end > 0 ? 0xff3a2a : 0x3aff6a);
+    }
+    // A mini digger, its arm down in the trench.
+    const dz = L * 0.35;
+    kit.box(out * w * 0.05, 0, dz, 0.05, 0.012, 0.07, 0x2a2c30);
+    kit.box(out * w * 0.05, 0.012, dz, 0.045, 0.03, 0.05, 0xe0a021);
+    kit.box(out * w * 0.05 - 0.01, 0.042, dz + 0.008, 0.028, 0.035, 0.03, 0xe0a021);
+    kit.box(out * w * 0.05 - 0.01, 0.05, dz + 0.024, 0.024, 0.022, 0.001, 0x7fa8c0);
+    kit.beam(out * w * 0.05, 0.035, dz - 0.03, 0, 0.08, dz - 0.09, 0.008, 0xe0a021);
+    kit.beam(0, 0.08, dz - 0.09, 0, 0.01, dz - 0.14, 0.007, 0xe0a021);
+    kit.box(0, 0, dz - 0.15, 0.03, 0.018, 0.02, 0x3a3c40);
+    // The crew's van at the far end, and by day the crew, in hi-vis and hard hats.
+    if (inLane) {
+      kit.box(0, 0.012, -L * 0.7, 0.09, 0.08, 0.2, 0xf2f2ee);
+      kit.box(0, 0.05, -L * 0.7 + 0.1, 0.08, 0.03, 0.002, 0x2a3440);
+      kit.box(0, 0.06, -L * 0.7, 0.092, 0.01, 0.1, 0xf07a1a);
+      for (const [ox, oz] of [[-0.04, -0.07], [0.04, -0.07], [-0.04, 0.07], [0.04, 0.07]]) kit.log(ox, 0, -L * 0.7 + oz, 0.012, 0.01, 0x1f2124, 0, 8);
+    }
+    if (day) for (let k = 0; k < 2 + Math.floor(rnd() * 2); k++) {
+      const wx = (rnd() - 0.5) * w * 0.6, wzz = (rnd() - 0.5) * L;
+      kit.at(x, y, z, yaw);
+      kit.box(wx, 0, wzz, 0.014, 0.036, 0.01, 0x2a3140);
+      kit.box(wx, 0.036, wzz, 0.019, 0.032, 0.013, rnd() < 0.5 ? 0xf2d21f : 0xf07a1a);
+      kit.box(wx, 0.042, wzz, 0.0195, 0.004, 0.0135, 0xd8e0e6);
+      kit.box(wx, 0.068, wzz, 0.011, 0.012, 0.011, pick(rnd, [0xe8c4a0, 0xc68a5a, 0x8a5a3a]));
+      kit.box(wx, 0.08, wzz, 0.015, 0.006, 0.015, 0xf2f2ee);
+    }
   }
 
   private kiosk(x: number, z: number, face: number, rnd: () => number): void {
@@ -1927,6 +2018,19 @@ class ChunkBuilder {
     }
     kit.prism(-0.35, 0, -0.02, 0.012, 0.045, 0x3f6b4a, 8);
   }
+}
+
+/**
+ * Whether a street has road works on it these days, and where: one street in fourteen, moving on every
+ * three days, along one kerb. In the parking lane where there is one, otherwise on the footway; `off`
+ * is the middle of the works from the centre line, `width` across. Never in a traffic lane.
+ */
+export function roadWorksOn(seg: RSeg, day: number): { side: number; s: number; off: number; width: number; inLane: boolean } | null {
+  const epoch = Math.floor(day / 3);
+  if (seg.structure || isMotorway(seg.kind) || seg.len <= 2.4 || tileHash(seg.id * 37 + epoch * 101 + 5) >= 1 / 14) return null;
+  const side = tileHash(seg.id * 41 + epoch) < 0.5 ? -1 : 1, s = seg.len * (0.35 + tileHash(seg.id * 43 + epoch) * 0.3);
+  const inLane = !!seg.parking;
+  return { side, s, inLane, off: inLane ? carriageHalf(seg, side) + PARK_W / 2 : sideHalf(seg, side) + KERB / 2 + 0.01, width: inLane ? PARK_W * 0.9 : 0.1 };
 }
 
 /** A point `s` along a segment, with its unit direction. */

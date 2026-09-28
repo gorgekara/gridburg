@@ -19,7 +19,9 @@ const WALL = 0xa29e94;
 const PIER = 0xb0ab9f;
 const FOOTING = 0x86837b;
 const POLE = 0x5b6266;
-const LAMP = 0xfff0c2;
+/** Lamp glass: the structure material lights this colour up after dark. */
+const LAMP = 0xffe1a0;
+const STEEL = 0x8a9096, SPOUT = 0x3a3e42;
 const DECK_TOP = 0.015; // just under the curb ribbon (0.03) so the road never z-fights the slab
 const DECK_BOTTOM = -0.24;
 /** Below this the road is on its embankment or the ground: no slab and no parapet there. */
@@ -124,9 +126,24 @@ function buildBridge(seg: RSeg, others: RSeg[], sweep: SweepBuilder, cols: Build
     const x = pose.x - OFFSET, z = pose.z - OFFSET, reach = W - 0.12;
     sweep.sweep(straightPath(x - rx * reach, h, z - rz * reach, x + rx * reach, h, z + rz * reach),
       [[-0.13, DECK_BOTTOM - BEAM_DEPTH], [0.13, DECK_BOTTOM - BEAM_DEPTH], [0.17, DECK_BOTTOM], [-0.17, DECK_BOTTOM]], PIER, { capColor: BAND });
+    // An expansion joint across the deck over each pier: a steel strip flush with the road.
+    sweep.sweep(straightPath(x - rx * (W - 0.1), h, z - rz * (W - 0.1), x + rx * (W - 0.1), h, z + rz * (W - 0.1)),
+      [[-0.014, DECK_TOP - 0.002], [0.014, DECK_TOP - 0.002], [0.014, DECK_TOP + 0.003], [-0.014, DECK_TOP + 0.003]], STEEL);
     for (const f of feet) {
       cols.cyl(0.13, beamBottom + 0.32, f.x - OFFSET, -0.3, f.z - OFFSET, PIER, 8);
       cols.cyl(0.21, 0.16, f.x - OFFSET, -0.1, f.z - OFFSET, FOOTING, 8);
+    }
+  }
+
+  // Drainage spouts poking out under the parapet on both sides, every so often.
+  for (let d = Math.max(1, dHigh - 1); d < len - Math.max(1, dHigh - 1); d += 1.6) {
+    Network.poseAt(seg, d, pose);
+    const h = roadHeight(seg, d);
+    if (h < RAISED) continue;
+    for (const side of [-1, 1]) {
+      const rx = -pose.tz * side, rz = pose.tx * side, x = pose.x - OFFSET, z = pose.z - OFFSET, y = h + DECK_BOTTOM + 0.12;
+      sweep.sweep(straightPath(x + rx * (W - 0.02), y, z + rz * (W - 0.02), x + rx * (W + 0.07), y - 0.02, z + rz * (W + 0.07)),
+        [[-0.012, -0.012], [0.012, -0.012], [0.012, 0.012], [-0.012, 0.012]], SPOUT);
     }
   }
 
@@ -207,7 +224,7 @@ function buildPortals(seg: RSeg, material: THREE.Material): THREE.Mesh[] {
     // A roof slab over the first stretch of bore, flush with the ground behind the headwall.
     b.box(span * 2 + wall * 2, 0.12, 0.8, 0, clear - 0.02, -0.75, 0x7c827e);
     // Lamps either side of the mouth.
-    for (const side of [-1, 1]) b.box(0.06, 0.12, 0.04, side * (span - 0.08), clear - 0.2, 0.09, 0xffd688);
+    for (const side of [-1, 1]) b.box(0.06, 0.12, 0.04, side * (span - 0.08), clear - 0.2, 0.09, LAMP);
     const mesh = new THREE.Mesh(b.build(), material);
     mesh.position.set(pose.x - OFFSET, 0, pose.z - OFFSET);
     mesh.rotation.y = Math.atan2(pose.tx * out_, pose.tz * out_);
@@ -225,7 +242,19 @@ export class StructureLayer {
   private guides = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false, depthTest: false }));
   /** A dark strip on the ground over every bore, so a tunnel reads from above even when closed up. */
   private traces = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false }));
-  private material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+  private material = (() => {
+    const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+    // The lamp glass on the bridges and at the tunnel mouths shines after dark.
+    m.onBeforeCompile = shader => {
+      shader.uniforms.cityNight = this.night;
+      shader.fragmentShader = 'uniform float cityNight;\n' + shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        float lampMask = step(0.95, vColor.r) * step(0.68, vColor.g) * (1.0 - step(0.5, vColor.b));
+        totalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * lampMask * cityNight * 2.2;`);
+    };
+    return m;
+  })();
+  private night = { value: 0 };
+  setNight(night: number): void { this.night.value = night; }
   private builtNet: Network | null = null;
   private builtVersion = -1;
   /** Finished geometry per span, so an edit elsewhere in the city rebuilds nothing. */

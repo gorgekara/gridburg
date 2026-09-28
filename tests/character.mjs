@@ -118,7 +118,8 @@ test('building tints stay close to the paint, and a run is painted alike', () =>
 });
 
 const { Kit } = await import('../src/render/streetDetail.ts');
-const { dressLot } = await import('../src/render/dressing.ts');
+const Dressing = await import('../src/render/dressing.ts');
+const { dressLot } = Dressing;
 const K = await import('../src/constants.ts');
 
 test('street life: each piece is drawn when, and only when, its moment comes', () => {
@@ -126,7 +127,7 @@ test('street life: each piece is drawn when, and only when, its moment comes', (
   const draw = (over) => {
     const kit = new Kit(), glow = new Kit();
     let n = 0; const stream = () => { n = (n * 1103515245 + 12345) % 2147483648; return n / 2147483648; };
-    dressLot(kit, { glow, time: C.TIME.MIDDAY, grown: false, avenue: false, market: false, i: 7, kind: K.T_COM, level: 1, body, fine: true, pave: 0, nearShops: false,
+    dressLot(kit, { glow, time: C.TIME.MIDDAY, grown: false, avenue: false, market: false, drive: false, i: 7, kind: K.T_COM, level: 1, body, fine: true, pave: 0, nearShops: false,
       wealth: 1, rough: 0, litter: 0, loud: 0, rnd: stream, hash: () => 0.1, ...over });
     return { tris: kit.triangles, glow: glow.triangles };
   };
@@ -134,7 +135,10 @@ test('street life: each piece is drawn when, and only when, its moment comes', (
   assert.ok(draw({ market: true }).tris > plain.tris, 'a market stall on a market street');
   assert.ok(draw({ grown: true }).tris > plain.tris, 'scaffolding on a lot that grew');
   assert.ok(draw({ time: C.TIME.MORNING }).tris > draw({ time: C.TIME.AFTERNOON }).tris, 'a delivery van in the morning, not the afternoon');
-  assert.ok(draw({ time: C.TIME.NIGHT, hash: () => 0.5 }).tris > draw({ time: C.TIME.MIDDAY, hash: () => 0.5 }).tris, 'shutters down at night');
+  // At night a shop closes (hash 0.5) unless it is one of the late ones (hash under 0.2).
+  const { tradeOf } = Dressing;
+  const quiet = [...Array(200).keys()].find(i => tradeOf(i) === 'books');
+  assert.ok(draw({ i: quiet, time: C.TIME.NIGHT, hash: () => 0.5 }).tris > draw({ i: quiet, time: C.TIME.NIGHT, hash: () => 0.1 }).tris, 'shutters down at night');
   assert.ok(draw({ level: 2 }).glow > 0, 'neon over a bigger shop');
   const office = { kind: K.T_OFFICE, level: 2, body: { ...body, z1: 0.42 } };
   assert.ok(draw({ ...office }).tris > draw({ ...office, time: C.TIME.EVENING }).tris, 'a lunch cart at midday');

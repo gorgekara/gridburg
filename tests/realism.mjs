@@ -102,5 +102,26 @@ test('shops: each has a trade, every trade turns up, and the trade shows on the 
   assert.ok(draw(books, C.TIME.EVENING) > draw(books, C.TIME.MIDDAY), 'windows glow once it is dark');
 });
 
+const SD = await import('../src/render/streetDetail.ts');
+const N = await import('../src/roads/network.ts');
+const L = await import('../src/roads/lanes.ts');
+
+test('road works: now and then on a street, never in a lane the traffic uses', () => {
+  let found = 0, lane = 0;
+  for (const parking of [false, true]) for (let id = 0; id < 60; id++) {
+    const net = new N.Network(); net.insertPath([{ x: 10, z: 20 }, { x: 16, z: 20 }], N.KIND_ROAD);
+    const seg = [...net.segs.values()][0]; seg.id = id; seg.parking = parking;
+    for (let day = 0; day < 60; day += 3) {
+      const w = SD.roadWorksOn(seg, day);
+      if (!w) continue;
+      found++; if (w.inLane) lane++;
+      assert.ok(w.off - w.width / 2 >= L.carriageHalf(seg, w.side) - 1e-9, `works at ${w.off} reach into the traffic`);
+      assert.ok(w.s > 0.3 && w.s < seg.len - 0.3);
+    }
+  }
+  assert.ok(found > 20 && found < 240, `${found} works`);
+  assert.ok(lane > 0, 'in the parking lane where there is one');
+});
+
 console.log(`\n${checks} passed, ${failures} failed`);
 if (failures) process.exit(1);

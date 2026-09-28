@@ -1137,6 +1137,7 @@ renderer.setAnimationLoop((now: number) => {
   streetDetail.setNight(light.night);
   verges.setNight(light.night);
   landmarks.setNight(light.night);
+  structures.setNight(light.night);
   landmarks.update(light.hour);
   streetlights.update(light.night);
   cars.setNight(light.night);
