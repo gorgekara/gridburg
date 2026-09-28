@@ -76,6 +76,8 @@ export interface DetailSource {
   hour?: number;
   /** Whether a lot grew a level lately and still has its scaffolding up. */
   grown?(tile: number): boolean;
+  /** How wet the streets are, 0 to 1: puddles lie in the gutters above 0.3. */
+  wet?: number;
   /** Whether a landmark (a plaza, a clock tower) stands on a tile: nothing else is put there. */
   landmark?(tile: number): boolean;
 }
@@ -381,7 +383,7 @@ export class StreetDetailLayer {
   /** A fingerprint of everything a chunk is built from, so it is rebuilt only when that changes. */
   private signature(kx: number, kz: number, src: DetailSource): number {
     // The time of day: street life changes with it, so a chunk is rebuilt when it moves on.
-    let h = (src.net.version | 0) * 8 + timeBand(src.hour ?? 12);
+    let h = ((src.net.version | 0) * 8 + timeBand(src.hour ?? 12)) * 2 + ((src.wet ?? 0) > 0.3 ? 1 : 0);
     for (let z = kz * CHUNK - 1; z <= kz * CHUNK + CHUNK; z++) for (let x = kx * CHUNK - 1; x <= kx * CHUNK + CHUNK; x++) {
       if (!inBounds(x, z)) continue;
       const i = idx(x, z);
@@ -568,6 +570,24 @@ class ChunkBuilder {
       kit.jitter = 0;
       kit.at(x, ASPHALT_TOP + 0.0009, z, Math.atan2(p.tx, p.tz)).quad(0, 0, 0, 0.024, 0.05, 0x26282c);
       if (fine) for (let k = -2; k <= 2; k++) kit.quad(0, 0.0004, k * 0.009, 0.02, 0.003, 0x55575c);
+    }
+
+    // Puddles after rain: along the gutters, where the camber runs the water, and more of them on the
+    // worn streets of the poorer parts of town.
+    if (fine && (this.src.wet ?? 0) > 0.3) {
+      for (let s = 0.3 + segHash * 0.4; s < seg.len - 0.3; s += 0.32) {
+        const p = at(s);
+        if (!this.inside(p.x, p.z)) continue;
+        const side = rnd() < 0.5 ? -1 : 1, off = (motor ? hw * 0.9 : sideHalf(seg, side) - 0.035) + (rnd() - 0.5) * 0.02;
+        if (rnd() > (this.poorAt(p.x - p.tz * (off + 0.4) * side, p.z + p.tx * (off + 0.4) * side) ? 0.55 : 0.3)) continue;
+        const x = p.x - p.tz * off * side - HALF, z = p.z + p.tx * off * side - HALF, r = 0.02 + rnd() * 0.03;
+        kit.jitter = 0;
+        kit.at(x, ASPHALT_TOP + 0.0011, z, 0);
+        kit.disc(0, 0, 0, r, 0x2a2e35, 10);
+        kit.disc(r * 0.6, 0, r * 0.3, r * 0.75, 0x2a2e35, 10);
+        // The sky in the water.
+        kit.disc(r * 0.2, 0.0002, 0, r * 0.55, 0x7d8a98, 10);
+      }
     }
 
     if (motor) return;

@@ -89,8 +89,19 @@ export class RoadLayer {
   readonly arms: THREE.InstancedMesh;
   readonly chevrons: THREE.InstancedMesh;
 
+  private wet = { value: 0 };
+  /** How wet the roads are, 0 to 1. */
+  setWet(wet: number): void { this.wet.value = wet; }
+
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
+    // Wet roads: darker, and glossy enough to catch the sky and the lamps.
+    mat.onBeforeCompile = shader => {
+      shader.uniforms.cityWet = this.wet;
+      shader.fragmentShader = 'uniform float cityWet;\n' + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= 1.0 - 0.28 * cityWet;');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.32, cityWet);');
+    };
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
     this.mesh.receiveShadow = true;
     this.mesh.frustumCulled = false;

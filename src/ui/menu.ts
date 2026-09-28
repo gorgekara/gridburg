@@ -10,9 +10,11 @@ export interface Settings {
   autosave: boolean;
   infiniteMoney: boolean;
   disasters: boolean;
+  /** Clear, cloudy, rainy and foggy days; off keeps every day clear. */
+  weather: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { shadows: true, visualDetail: 1, dayLength: 480, autosave: true, infiniteMoney: false, disasters: true };
+export const DEFAULT_SETTINGS: Settings = { shadows: true, visualDetail: 1, dayLength: 480, autosave: true, infiniteMoney: false, disasters: true, weather: true };
 
 const KEY = 'gridburg.settings.v1';
 
@@ -242,6 +244,7 @@ export class MainMenu {
     page.append(detailRow);
     page.append(this.toggle('Shadows', 'Turn off for more speed on weak hardware', () => this.settings.shadows, v => { this.settings.shadows = v; }));
     page.append(this.toggle('Save automatically', 'Keeps your city in this browser', () => this.settings.autosave, v => { this.settings.autosave = v; }));
+    page.append(this.toggle('Weather', 'Cloud, rain and fog come and go with the days', () => this.settings.weather, v => { this.settings.weather = v; }));
     page.append(this.toggle('Disasters', 'Floods and tornadoes, from Small town on', () => this.settings.disasters, v => { this.settings.disasters = v; }));
     page.append(this.toggle('Infinite money', 'Building is free and the treasury stays full', () => this.settings.infiniteMoney, v => { this.settings.infiniteMoney = v; }));
 

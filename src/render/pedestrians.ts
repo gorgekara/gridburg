@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { sideHalf } from '../roads/lanes';
 import { GRID } from '../constants';
 import { isMotorway } from '../roads/network';
@@ -22,6 +23,7 @@ const CURB_TOP = 0.031;
 
 const HAIR = [0x2a1d14, 0x4a3222, 0x7a5230, 0xc9a45c, 0x1a1a1a, 0x8a8a8a, 0xb5562f, 0xe0d6c4];
 const BAGS = [0x2a2f36, 0x8a5a3c, 0xd8453b, 0x2f5f9f, 0x3f6b4a, 0xe0a021];
+const UMBRELLAS = [0x1f2226, 0x1f2226, 0x2f3f6f, 0xc8382f, 0x3a6a4a, 0xe0a021, 0x6a3a6a, 0x1f2226];
 const SHIRTS = [0xd8453b, 0x2f6fb7, 0xe0a021, 0x3f9a5f, 0xf1ece0, 0x6a5acd, 0x2a2f36, 0xe07fb0, 0x5fb3b3, 0x8a5a3c];
 const SKIN = [0xf1c9a5, 0xd9a47c, 0xa8744f, 0x7a4e32, 0xe8b894];
 const TROUSERS = [0x2b3440, 0x3b4a66, 0x5a4a3a, 0x24272b, 0x6b6f76, 0x8a7a5a];
@@ -72,6 +74,9 @@ export class PedestrianLayer {
   private hands: THREE.InstancedMesh;
   private hair: THREE.InstancedMesh;
   private bag: THREE.InstancedMesh;
+  /** Umbrellas, up over the pavement crowd while it rains. */
+  private umbrellas: THREE.InstancedMesh;
+  private rain = 0;
   /** Per person: height, whether they have hair (and how much), and whether they carry a bag. */
   private looks: { height: number; hair: number; bag: number }[] = [];
   private net: Network | null = null;
@@ -125,6 +130,16 @@ export class PedestrianLayer {
     this.legs = new THREE.InstancedMesh(leg, mat(), (MAX_ALL + MAX_DOWN) * 2);
     this.arms = new THREE.InstancedMesh(arm, mat(), (MAX_ALL + MAX_DOWN) * 2);
     this.hands = new THREE.InstancedMesh(hand, mat(), (MAX_ALL + MAX_DOWN) * 2);
+    // An umbrella: a shallow eight-sided canopy on a stick, held up over the head.
+    const canopy = new THREE.ConeGeometry(0.05, 0.022, 8);
+    canopy.translate(0, HIP + 0.112, 0);
+    const stick = new THREE.BoxGeometry(0.003, 0.07, 0.003);
+    stick.translate(0.004, HIP + 0.07, 0.006);
+    this.umbrellas = new THREE.InstancedMesh(mergeGeometries([canopy.toNonIndexed(), stick.toNonIndexed()])!, new THREE.MeshStandardMaterial({ roughness: 0.5 }), MAX_PEOPLE);
+    this.umbrellas.count = 0; this.umbrellas.frustumCulled = false; this.umbrellas.castShadow = true;
+    const colour = new THREE.Color();
+    for (let i = 0; i < MAX_PEOPLE; i++) this.umbrellas.setColorAt(i, colour.setHex(UMBRELLAS[i % UMBRELLAS.length]));
+    this.group.add(this.umbrellas);
     for (const m of this.meshes) {
       m.count = 0; m.frustumCulled = false; m.castShadow = true;
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.instanceMatrix.count * 3), 3);
@@ -140,6 +155,9 @@ export class PedestrianLayer {
     this.rnd = (this.rnd * 16807) % 2147483647;
     return (this.rnd - 1) / 2147483646;
   }
+
+  /** How hard it is raining: most people walk under an umbrella in the rain. */
+  setRain(rain: number): void { this.rain = rain; }
 
   /** How many people the city puts on the street: grows with population, fewer late at night. */
   setCrowd(population: number, night: number): void {
@@ -327,6 +345,8 @@ export class PedestrianLayer {
       this.head.setMatrixAt(i, obj.matrix);
       this.hair.setMatrixAt(i, look.hair ? obj.matrix : hidden);
       this.bag.setMatrixAt(i, look.bag ? obj.matrix : hidden);
+      // Seven in ten put an umbrella up once it is properly raining; the rest put up with it.
+      this.umbrellas.setMatrixAt(i, this.rain > 0.15 && ((i * 2654435761) >>> 0) % 10 < 7 ? obj.matrix : hidden);
       for (const k of [0, 1]) {
         leg.position.set(k ? 0.009 : -0.009, HIP, 0);
         leg.rotation.set((k ? 1 : -1) * stride * 0.45, 0, 0);
@@ -372,6 +392,8 @@ export class PedestrianLayer {
     this.torso.count = this.head.count = this.hair.count = this.bag.count = n;
     this.legs.count = this.arms.count = this.hands.count = n * 2;
     for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
+    this.umbrellas.count = Math.min(MAX_PEOPLE, this.people.length);
+    this.umbrellas.instanceMatrix.needsUpdate = true;
   }
 }
 

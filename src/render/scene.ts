@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GRID } from '../constants';
 import { daylight } from './daylight';
+import { CLEAR, type Weather } from './weather';
 
 export interface SceneBundle {
   renderer: THREE.WebGLRenderer;
@@ -10,8 +11,8 @@ export interface SceneBundle {
   controls: OrbitControls;
   /** Construction grid, shown only while a build tool is active. */
   grid: THREE.GridHelper;
-  /** Call once per frame with seconds elapsed. */
-  update(dt: number, seconds: number): void;
+  /** Call once per frame with seconds elapsed, and the weather now. */
+  update(dt: number, seconds: number, weather?: Weather): void;
   /** While walking, the orbit camera and its keys stand down and the sun follows the walker. */
   setWalking(on: boolean): void;
 }
@@ -120,11 +121,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
     sun.shadow.normalBias = on ? 0.004 : 0.02;
     sun.shadow.autoUpdate = on;
     sun.shadow.needsUpdate = true;
-    const fog = scene.fog as THREE.Fog;
-    fog.near = on ? 28 : 120; fog.far = on ? 150 : 280;
     if (!on) controls.update();
   }
-  function update(dt: number, seconds: number): void {
+  let weather: Weather = CLEAR;
+  function update(dt: number, seconds: number, now?: Weather): void {
+    weather = now ?? CLEAR;
     if (++frame % 3 === 0) sun.shadow.needsUpdate = true;
     if (walking) {
       // The walker owns the camera; keep the sun's shadow box centred a little ahead of it, snapped to
@@ -183,19 +184,31 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
     light(seconds, t);
   }
 
+  const grey = new THREE.Color(), tint = new THREE.Color();
   function light(seconds: number, t: THREE.Vector3): void {
     const light = daylight(seconds);
     const angle = (light.hour - 6) / 24 * Math.PI * 2;
     sun.position.set(t.x + Math.cos(angle) * 65, 15 + Math.abs(light.sun) * 70, t.z + 25);
-    sun.intensity = 0.45 + light.day * (1.5 + Math.max(0, light.sun) * 0.7);
+    // Cloud takes the edge off the sun: under full overcast only a third of it gets through.
+    const cloud = Math.max(0, weather.cloud - 0.1) / 0.9;
+    sun.intensity = (0.45 + light.day * (1.5 + Math.max(0, light.sun) * 0.7)) * (1 - 0.65 * cloud);
     sun.color.set(0x9bbdff).lerp(new THREE.Color(0xffd6ac), light.day).lerp(new THREE.Color(0xfff1dc), Math.max(0, light.sun));
     hemi.intensity = 0.6 + light.day * 0.25;
     hemi.color.set(0xa1b4de).lerp(new THREE.Color(0xdcefff), light.day);
     const sky = scene.background as THREE.Color;
     sky.set(0x101c38).lerp(new THREE.Color(0xc6e4f5), light.day);
-    sky.lerp(new THREE.Color(0xe6aa89), (1 - Math.abs(light.day * 2 - 1)) * 0.35);
-    (scene.fog as THREE.Fog).color.copy(sky);
-    renderer.toneMappingExposure = 1.12 - light.day * 0.07;
+    sky.lerp(new THREE.Color(0xe6aa89), (1 - Math.abs(light.day * 2 - 1)) * 0.35 * (1 - cloud));
+    // A grey sky under cloud, a paler one in fog.
+    sky.lerp(grey.set(0x2a2f36).lerp(tint.set(0x9aa4ad), light.day), cloud * 0.8);
+    sky.lerp(tint.set(0x3a4048).lerp(grey.set(0xc4c9cc), light.day), weather.fog * 0.7);
+    hemi.intensity *= 1 - 0.15 * cloud;
+    const fog = scene.fog as THREE.Fog;
+    fog.color.copy(sky);
+    // Fog draws the haze in: on the map to a few blocks, in the street to the end of the road.
+    const near = walking ? 28 : 120, far = walking ? 150 : 280;
+    fog.near = near + ((walking ? 4 : 30) - near) * weather.fog;
+    fog.far = far + ((walking ? 38 : 110) - far) * weather.fog;
+    renderer.toneMappingExposure = 1.12 - light.day * 0.07 - 0.08 * cloud;
   }
 
   return { renderer, scene, camera, controls, grid, update, setWalking };

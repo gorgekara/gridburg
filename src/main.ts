@@ -35,6 +35,8 @@ import type { DetailSource } from './render/streetDetail';
 import { bandsOf, ordinaryBands, occupancy, type Bands } from './render/character';
 import { assignVariants } from './render/variants';
 import { LandmarkLayer } from './render/landmarks';
+import { weatherAt, CLEAR, type Weather } from './render/weather';
+import { RainLayer } from './render/rain';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
@@ -120,6 +122,9 @@ const furniture = new StreetFurnitureLayer();
 const streetDetail = new StreetDetailLayer();
 const verges = new VergeLayer();
 const landmarks = new LandmarkLayer();
+const rain = new RainLayer();
+/** The weather now, for the sky, the rain, the wet streets and the umbrellas. */
+let weather: Weather = CLEAR;
 const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
@@ -133,7 +138,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(landmarks.group, hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(landmarks.group, rain.lines, hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -381,6 +386,7 @@ function detailSource(): DetailSource {
     // Scaffolding stays up for two days after a lot grows.
     grown: (tile) => game.grownAt[tile] > 0 && game.cityTime - game.grownAt[tile] < DAY_SECONDS * 2,
     landmark: (tile) => landmarks.taken.has(tile),
+    get wet() { return weather.wet; },
   };
 }
 /** Set while stepping out of the car or back into it, so the street stays set up between the two. */
@@ -1077,7 +1083,11 @@ renderer.setAnimationLoop((now: number) => {
     camera.position.copy(controls.target).add(offset);
     if (flight.time >= 1 && controls.target.distanceTo(new THREE.Vector3(flight.x, 0, flight.z)) < 0.4) flight = null;
   }
-  updateScene(dt, game.cityTime);
+  weather = settings.weather && playing ? weatherAt(game.cityTime) : CLEAR;
+  updateScene(dt, game.cityTime, weather);
+  rain.update(dt, camera, weather.rain, weather.windAngle, weather.wind, walker.active || driver.active);
+  roads.setWet(weather.wet);
+  pedestrians.setRain(weather.rain);
   landscape.update(camera.position);
   if (walker.active || driver.active) streetDetail.update(camera.position);
   else {
