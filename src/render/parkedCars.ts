@@ -23,7 +23,8 @@ const CLEAR = 0.3; // extra room past the crossing road's kerb at a junction
 const LOT_REACH = 3;
 const HALF_LENGTH = 0.14, HALF_WIDTH_CAR = 0.075;
 
-interface Parked { x: number; z: number; fx: number; fz: number }
+/** A parked car: where it stands and which way it faces, and which instance of which mesh draws it. */
+interface Parked { x: number; z: number; fx: number; fz: number; type: number; slot: number; color: number }
 
 /** House designs narrow enough to leave room for a drive down their right-hand side, inside the fence. */
 const DRIVE_VARIANTS = [0, 2, 5];
@@ -84,7 +85,7 @@ export class ParkedCarLayer {
       this.meshes[m].setMatrixAt(counts[m], obj.matrix);
       this.meshes[m].setColorAt(counts[m]++, color.setHex(vehicleColor(type, id)));
       const tile = Math.floor(z + half) * GRID + Math.floor(x + half), list = this.byTile.get(tile) ?? [];
-      list.push({ x, z, fx: Math.sin(angle), fz: Math.cos(angle) });
+      list.push({ x, z, fx: Math.sin(angle), fz: Math.cos(angle), type, slot: counts[m] - 1, color: vehicleColor(type, id) });
       this.byTile.set(tile, list);
     };
     // Mouths of the drives, so nobody parks across them.
@@ -194,7 +195,7 @@ export class ParkedCarLayer {
           this.meshes[m].setColorAt(counts[m]++, color.setHex(vehicleColor(type, id)));
           const tile = Math.floor(z + half) * GRID + Math.floor(x + half);
           const list = this.byTile.get(tile) ?? [];
-          list.push({ x, z, fx, fz });
+          list.push({ x, z, fx, fz, type, slot: counts[m] - 1, color: vehicleColor(type, id) });
           this.byTile.set(tile, list);
         }
       }
@@ -204,6 +205,29 @@ export class ParkedCarLayer {
       m.instanceMatrix.needsUpdate = true;
       if (m.instanceColor) m.instanceColor.needsUpdate = true;
     });
+  }
+
+  /**
+   * The parked car nearest (x, z) within `reach`, taken away: it stops being drawn or bumped into until
+   * the street is rebuilt. Returns where it stood (scene space), which way it faced, its type and paint.
+   */
+  take(x: number, z: number, reach: number): { x: number; z: number; heading: number; type: number; color: number } | null {
+    const tx = Math.floor(x + GRID / 2), tz = Math.floor(z + GRID / 2);
+    let best: { p: Parked; list: Parked[] } | null = null, bd = reach;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const list = this.byTile.get((tz + dz) * GRID + tx + dx);
+      for (const p of list ?? []) {
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d < bd) { bd = d; best = { p, list: list! }; }
+      }
+    }
+    if (!best) return null;
+    const { p, list } = best;
+    list.splice(list.indexOf(p), 1);
+    const mesh = this.meshes[p.type - 1];
+    mesh.setMatrixAt(p.slot, new THREE.Matrix4().makeScale(0, 0, 0));
+    mesh.instanceMatrix.needsUpdate = true;
+    return { x: p.x, z: p.z, heading: Math.atan2(p.fx, p.fz), type: p.type, color: p.color };
   }
 
   /** True if (x, z) in scene space is inside a parked car. */

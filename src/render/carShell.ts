@@ -134,10 +134,10 @@ export function carShell(b: Builder, s: CarSpec, c: CarColors): void {
 /** The shapes of the city's cars and of the player's, in the vehicle's own unscaled units. */
 export const SEDAN: CarSpec = { length: 0.46, width: 0.25, sill: 0.07, belt: 0.158, nose: 0.14, deck: 0.155, cabin: { front: 0.06, back: -0.13, roof: 0.245, rake: 0.075, rearRake: 0.055, width: 0.215 }, wheel: 0.05, axle: 0.31 };
 export const HATCH: CarSpec = { length: 0.42, width: 0.245, sill: 0.07, belt: 0.16, nose: 0.14, deck: 0.18, cabin: { front: 0.07, back: -0.19, roof: 0.25, rake: 0.075, rearRake: 0.02, width: 0.215 }, wheel: 0.05, axle: 0.31 };
-export const COUPE: CarSpec = { length: 0.48, width: 0.26, sill: 0.06, belt: 0.14, nose: 0.12, deck: 0.14, cabin: { front: 0.04, back: -0.12, roof: 0.21, rake: 0.085, rearRake: 0.075, width: 0.205 }, wheel: 0.052, axle: 0.31 };
+export const COUPE: CarSpec = { length: 0.48, width: 0.26, sill: 0.06, belt: 0.14, nose: 0.12, deck: 0.14, cabin: { front: 0.05, back: -0.15, roof: 0.21, rake: 0.075, rearRake: 0.065, width: 0.205 }, wheel: 0.052, axle: 0.31 };
 export const WAGON: CarSpec = { length: 0.47, width: 0.255, sill: 0.075, belt: 0.165, nose: 0.145, deck: 0.19, cabin: { front: 0.07, back: -0.21, roof: 0.255, rake: 0.075, rearRake: 0.012, width: 0.22 }, wheel: 0.055, axle: 0.31 };
-export const MUSCLE: CarSpec = { length: 0.54, width: 0.27, sill: 0.065, belt: 0.15, nose: 0.14, deck: 0.15, cabin: { front: 0.0, back: -0.15, roof: 0.22, rake: 0.075, rearRake: 0.07, width: 0.22 }, wheel: 0.058, axle: 0.3 };
-export const SUPER: CarSpec = { length: 0.52, width: 0.29, sill: 0.05, belt: 0.12, nose: 0.1, deck: 0.13, cabin: { front: 0.06, back: -0.1, roof: 0.185, rake: 0.1, rearRake: 0.08, width: 0.2 }, wheel: 0.055, axle: 0.3 };
+export const MUSCLE: CarSpec = { length: 0.54, width: 0.27, sill: 0.065, belt: 0.15, nose: 0.14, deck: 0.15, cabin: { front: 0.02, back: -0.17, roof: 0.22, rake: 0.065, rearRake: 0.06, width: 0.22 }, wheel: 0.058, axle: 0.3 };
+export const SUPER: CarSpec = { length: 0.52, width: 0.29, sill: 0.05, belt: 0.12, nose: 0.1, deck: 0.13, cabin: { front: 0.07, back: -0.13, roof: 0.185, rake: 0.085, rearRake: 0.065, width: 0.2 }, wheel: 0.055, axle: 0.3 };
 export const VAN: CarSpec = { length: 0.54, width: 0.26, sill: 0.075, belt: 0.17, nose: 0.15, deck: 0.33, cabin: { front: 0.17, back: -0.27, roof: 0.33, rake: 0.07, rearRake: 0, width: 0.25 }, wheel: 0.052, axle: 0.32, van: true };
 
 /** Where the head lamps sit on a bus and on a lorry cab, for the lamps that light up after dark. */

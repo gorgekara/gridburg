@@ -398,7 +398,43 @@ input[type=range] { width: 90px; accent-color: var(--accent); }
 .walk-hint.open { display: flex; }
 .walk-hint strong { color: var(--accent); font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase; }
 .walk-hint span { color: var(--dim); }
-.walk-hint .speedo { font-size: 20px; font-variant-numeric: tabular-nums; color: var(--fg); }
+/* The speedometer, bottom right while driving, with the nitrous bottle under the reading. */
+.drive-gauge {
+  display: none; position: absolute; right: 18px; bottom: 18px; width: 150px; height: 150px; border-radius: 50%;
+  background: var(--bg); color: var(--fg); backdrop-filter: blur(8px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); pointer-events: none;
+}
+.drive-gauge.open { display: block; }
+.drive-gauge svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.drive-gauge .dial { fill: none; stroke: rgba(255,255,255,0.12); stroke-width: 3; }
+.drive-gauge .tick { stroke: var(--dim); stroke-width: 1.2; }
+.drive-gauge .tick.major { stroke: var(--fg); stroke-width: 2; }
+.drive-gauge .needle { stroke: #ff5a4a; stroke-width: 2.5; stroke-linecap: round; transition: transform 0.08s linear; }
+.drive-gauge .hub { fill: var(--fg); }
+.drive-gauge .reading { position: absolute; left: 0; right: 0; top: 82px; display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.drive-gauge .speedo { font-size: 22px; font-variant-numeric: tabular-nums; }
+.drive-gauge .reading span { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.drive-gauge .nitro { position: absolute; left: 34px; right: 34px; bottom: 16px; display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--dim); }
+.drive-gauge .bar, .wanted .bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.14); overflow: hidden; }
+.drive-gauge .bar i { display: block; height: 100%; background: #4fc3ff; border-radius: 3px; }
+.drive-gauge.boost .bar i { background: #9fe4ff; box-shadow: 0 0 8px #4fc3ff; }
+.drive-gauge.dry .bar i { background: #6b7684; }
+/* The wanted level: five stars top left under the bar (the city's chips are hidden on the street), flashing while you get away. */
+.wanted { display: none; position: absolute; top: 64px; left: 16px; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: none; }
+.wanted.open { display: flex; }
+.wanted .stars { display: flex; gap: 2px; padding: 4px 9px; border-radius: 10px; background: var(--bg); backdrop-filter: blur(8px); }
+.wanted .star { font-size: 22px; line-height: 1; color: rgba(255,255,255,0.18); }
+.wanted .star.on { color: var(--accent); text-shadow: 0 0 6px rgba(255, 209, 102, 0.6); }
+.wanted.evading .star.on { animation: wanted-flash 0.5s steps(1) infinite; }
+@keyframes wanted-flash { 50% { color: rgba(255,255,255,0.18); text-shadow: none; } }
+.wanted .bust { display: none; width: 130px; align-items: center; gap: 6px; font-size: 9px; font-weight: 700; color: #ff6a5a; }
+.wanted .bust.shown { display: flex; }
+.wanted .bar i { display: block; height: 100%; background: #ff5a4a; }
+/* Narrow screens: the driving hint moves aside for the speedometer. */
+@media (max-width: 760px) { body.driving .walk-hint { left: 12px; right: 182px; transform: none; } }
+body.touch .drive-gauge { bottom: auto; top: 64px; left: 12px; right: auto; width: 110px; height: 110px; }
+body.touch .drive-gauge .reading { top: 58px; }
+body.touch .drive-gauge .speedo { font-size: 17px; }
+body.touch .drive-gauge .nitro { left: 24px; right: 24px; bottom: 10px; }
 /* At street level the build bar, tool panels and city card only get in the way. */
 body.walking .bottombar, body.walking .dock, body.walking .city-overview, body.walking .chips { display: none; }
 

@@ -9,9 +9,15 @@ import { roadHeight } from '../roads/structures';
 const MAX_PEOPLE = 700;
 /** Room for the people at and on crossings too, which the simulation moves. */
 const MAX_CROSSING = 400;
+/** People knocked down by the player's car, lying in the road until they pick themselves up. */
+const MAX_DOWN = 24;
+const DOWN_TIME = 12;
 const MAX_ALL = MAX_PEOPLE + MAX_CROSSING;
-/** A person is about 0.13 tall against a car 0.31 long. */
+/** How close to a car's nose someone has to be for it to knock them down. */
+const HIT_RADIUS = 0.1;
+/** A person is modelled about 0.14 tall and drawn PERSON times that, standing over the roof of a car and well inside a 0.38 shop door. */
 const HIP = 0.058;
+const PERSON = 1.6;
 const CURB_TOP = 0.031;
 
 const HAIR = [0x2a1d14, 0x4a3222, 0x7a5230, 0xc9a45c, 0x1a1a1a, 0x8a8a8a, 0xb5562f, 0xe0d6c4];
@@ -19,6 +25,13 @@ const BAGS = [0x2a2f36, 0x8a5a3c, 0xd8453b, 0x2f5f9f, 0x3f6b4a, 0xe0a021];
 const SHIRTS = [0xd8453b, 0x2f6fb7, 0xe0a021, 0x3f9a5f, 0xf1ece0, 0x6a5acd, 0x2a2f36, 0xe07fb0, 0x5fb3b3, 0x8a5a3c];
 const SKIN = [0xf1c9a5, 0xd9a47c, 0xa8744f, 0x7a4e32, 0xe8b894];
 const TROUSERS = [0x2b3440, 0x3b4a66, 0x5a4a3a, 0x24272b, 0x6b6f76, 0x8a7a5a];
+
+/** Someone knocked down: thrown along the way the car was going, then lying still. */
+interface Downed {
+  x: number; y: number; z: number; vx: number; vz: number; angle: number; time: number;
+  scale: number; hair: boolean; bag: boolean;
+  colors: { shirt: THREE.Color; skin: THREE.Color; hair: THREE.Color; bag: THREE.Color; trousers: THREE.Color };
+}
 
 interface Person {
   seg: RSeg;
@@ -66,6 +79,13 @@ export class PedestrianLayer {
   private wanted = 0;
   private night = 0;
   private rnd = 1;
+  /** Where each pavement person stood last frame (x, y, z), and the crossing people, for the car to hit. */
+  private spots = new Float32Array(MAX_PEOPLE * 3).fill(1e6);
+  private crossing: Float32Array | undefined;
+  private downed: Downed[] = [];
+  /** Crossing people (by the simulation's id) knocked down, hidden until this time. */
+  private gone = new Map<number, number>();
+  private now = 0;
 
   constructor() {
     const mat = (): THREE.MeshStandardMaterial => new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, vertexColors: true });
@@ -98,13 +118,13 @@ export class PedestrianLayer {
     // A leg with its shoe at the foot.
     const leg = mergeBoxes([box(0.013, HIP - 0.006, 0.014, -HIP + 0.006), box(0.014, 0.007, 0.022, -HIP, 0.18, 0, 0.004)]);
     const bag = mergeBoxes([box(0.03, 0.03, 0.012, HIP + 0.006, 1, 0, -0.017), box(0.028, 0.003, 0.02, HIP + 0.041, 0.7, 0, -0.006)]);
-    this.torso = new THREE.InstancedMesh(torso, mat(), MAX_ALL);
-    this.head = new THREE.InstancedMesh(head, mat(), MAX_ALL);
-    this.hair = new THREE.InstancedMesh(hair, mat(), MAX_ALL);
-    this.bag = new THREE.InstancedMesh(bag, mat(), MAX_ALL);
-    this.legs = new THREE.InstancedMesh(leg, mat(), MAX_ALL * 2);
-    this.arms = new THREE.InstancedMesh(arm, mat(), MAX_ALL * 2);
-    this.hands = new THREE.InstancedMesh(hand, mat(), MAX_ALL * 2);
+    this.torso = new THREE.InstancedMesh(torso, mat(), MAX_ALL + MAX_DOWN);
+    this.head = new THREE.InstancedMesh(head, mat(), MAX_ALL + MAX_DOWN);
+    this.hair = new THREE.InstancedMesh(hair, mat(), MAX_ALL + MAX_DOWN);
+    this.bag = new THREE.InstancedMesh(bag, mat(), MAX_ALL + MAX_DOWN);
+    this.legs = new THREE.InstancedMesh(leg, mat(), (MAX_ALL + MAX_DOWN) * 2);
+    this.arms = new THREE.InstancedMesh(arm, mat(), (MAX_ALL + MAX_DOWN) * 2);
+    this.hands = new THREE.InstancedMesh(hand, mat(), (MAX_ALL + MAX_DOWN) * 2);
     for (const m of this.meshes) {
       m.count = 0; m.frustumCulled = false; m.castShadow = true;
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.instanceMatrix.count * 3), 3);
@@ -137,7 +157,7 @@ export class PedestrianLayer {
     return seg.structure !== 2 && !isMotorway(seg.kind);
   }
 
-  private spawn(): Person | null {
+  private spawn(i = this.people.length): Person | null {
     const net = this.net;
     if (!net) return null;
     // Pick a street weighted by length, so long avenues carry more people than short stubs.
@@ -152,7 +172,6 @@ export class PedestrianLayer {
       speed: 0.09 + this.random() * 0.07, phase: this.random() * 6.28, pause: 0,
     };
     const pick = (palette: number[]): THREE.Color => new THREE.Color(palette[Math.floor(this.random() * palette.length)]);
-    const i = this.people.length;
     const shirt = pick(SHIRTS), skin = pick(SKIN), trousers = new THREE.Color(TROUSERS[n % TROUSERS.length]);
     this.torso.setColorAt(i, shirt); this.head.setColorAt(i, skin);
     this.hair.setColorAt(i, pick(HAIR)); this.bag.setColorAt(i, pick(BAGS));
@@ -187,8 +206,90 @@ export class PedestrianLayer {
     if (this.random() < 0.15) p.pause = 0.4 + this.random() * 1.2; // a glance down the road
   }
 
+  /**
+   * The player's car at (x, z), moving at (vx, vz): knock down anyone in its way. A pavement person
+   * goes down where they stood and someone new steps out elsewhere; one on a crossing is hidden from
+   * the simulation's crowd while they lie there. Returns how many went down.
+   */
+  hit(x: number, z: number, y: number, vx: number, vz: number): number {
+    let n = 0;
+    const r2 = HIT_RADIUS * HIT_RADIUS, s = this.spots;
+    for (let i = 0; i < this.people.length; i++) {
+      const dx = s[i * 3] - x, dz = s[i * 3 + 2] - z;
+      if (dx * dx + dz * dz > r2 || Math.abs(s[i * 3 + 1] - y) > 0.12) continue;
+      const look = this.looks[i] ?? { height: 1, hair: 1, bag: 0 };
+      const col = (m: THREE.InstancedMesh, k: number): THREE.Color => { const c = new THREE.Color(); m.getColorAt(k, c); return c; };
+      this.knock(s[i * 3], s[i * 3 + 1], s[i * 3 + 2], vx, vz, look.height, !!look.hair, !!look.bag, {
+        shirt: col(this.torso, i), skin: col(this.head, i), hair: col(this.hair, i), bag: col(this.bag, i), trousers: col(this.legs, i * 2),
+      });
+      const q = this.spawn(i);
+      if (q) this.people[i] = q;
+      for (const m of this.meshes) if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      // Moved out of reach until next frame places them.
+      s[i * 3] = s[i * 3 + 2] = 1e6;
+      n++;
+    }
+    const w = this.crossing;
+    for (let k = 0; w && k + 4 < w.length; k += 5) {
+      const id = w[k + 4] >>> 0;
+      if (this.gone.has(id)) continue;
+      const dx = w[k] - x, dz = w[k + 1] - z;
+      if (dx * dx + dz * dz > r2 || y > 0.12) continue;
+      const h = Math.imul(id ^ (id >>> 13), 0x5bd1e995) >>> 0, c = (hex: number): THREE.Color => new THREE.Color(hex);
+      this.knock(w[k], 0, w[k + 1], vx, vz, 0.9 + (h % 20) / 100, h % 10 !== 0, h % 3 === 0, {
+        shirt: c(SHIRTS[h % SHIRTS.length]), skin: c(SKIN[(h >>> 4) % SKIN.length]), hair: c(HAIR[(h >>> 8) % HAIR.length]),
+        bag: c(BAGS[(h >>> 12) % BAGS.length]), trousers: c(TROUSERS[(h >>> 16) % TROUSERS.length]),
+      });
+      this.gone.set(id, this.now + DOWN_TIME + 20);
+      n++;
+    }
+    return n;
+  }
+
+  private knock(x: number, y: number, z: number, vx: number, vz: number, scale: number, hair: boolean, bag: boolean, colors: Downed['colors']): void {
+    const speed = Math.hypot(vx, vz) || 1;
+    // Thrown ahead of the car and a little aside, landing across the way it was going.
+    const side = this.random() < 0.5 ? -1 : 1, throwSpeed = Math.min(1.6, speed * 0.55);
+    const dvx = vx / speed * throwSpeed + -vz / speed * side * 0.25, dvz = vz / speed * throwSpeed + vx / speed * side * 0.25;
+    this.downed.push({ x, y, z, vx: dvx, vz: dvz, angle: Math.atan2(vx, vz) + side * (0.6 + this.random() * 0.8), time: 0, scale, hair, bag, colors });
+    if (this.downed.length > MAX_DOWN) this.downed.shift();
+  }
+
+  /** Draw the people lying where they fell, from instance `n` on. Returns the next free instance. */
+  private drawDowned(n: number, dt: number, obj: THREE.Object3D, limb: THREE.Object3D, hidden: THREE.Matrix4): number {
+    this.downed = this.downed.filter(d => (d.time += dt) < DOWN_TIME);
+    obj.rotation.order = 'YXZ';
+    for (const d of this.downed) {
+      // A short flight, then flat on their back.
+      const fly = Math.min(d.time, 0.4), t = fly / 0.4;
+      d.x += d.vx * dt * (d.time < 0.4 ? 1 : 0); d.z += d.vz * dt * (d.time < 0.4 ? 1 : 0);
+      obj.position.set(d.x, d.y + Math.sin(t * Math.PI) * 0.05 + 0.017 * t, d.z);
+      obj.rotation.set(-Math.PI / 2 * Math.min(1, t * 1.2), d.angle, 0);
+      obj.scale.setScalar(d.scale * PERSON);
+      obj.updateMatrix();
+      this.torso.setMatrixAt(n, obj.matrix); this.head.setMatrixAt(n, obj.matrix);
+      this.hair.setMatrixAt(n, d.hair ? obj.matrix : hidden); this.bag.setMatrixAt(n, d.bag ? obj.matrix : hidden);
+      this.torso.setColorAt(n, d.colors.shirt); this.head.setColorAt(n, d.colors.skin);
+      this.hair.setColorAt(n, d.colors.hair); this.bag.setColorAt(n, d.colors.bag);
+      for (const j of [0, 1]) {
+        // Limbs splayed.
+        limb.position.set(j ? 0.009 : -0.009, HIP, 0); limb.rotation.set(0, 0, (j ? 1 : -1) * 0.25 * t); limb.updateMatrix(); limb.matrix.premultiply(obj.matrix);
+        this.legs.setMatrixAt(n * 2 + j, limb.matrix); this.legs.setColorAt(n * 2 + j, d.colors.trousers);
+        limb.position.set(j ? 0.0225 : -0.0225, HIP + 0.042, 0); limb.rotation.set(0, 0, (j ? 1 : -1) * 1.2 * t); limb.updateMatrix(); limb.matrix.premultiply(obj.matrix);
+        this.arms.setMatrixAt(n * 2 + j, limb.matrix); this.hands.setMatrixAt(n * 2 + j, limb.matrix);
+        this.arms.setColorAt(n * 2 + j, d.colors.shirt); this.hands.setColorAt(n * 2 + j, d.colors.skin);
+      }
+      n++;
+    }
+    obj.rotation.order = 'XYZ';
+    return n;
+  }
+
   update(dt: number, time: number, walkers?: Float32Array): void {
     if (!this.net) return;
+    this.now = time;
+    this.crossing = walkers;
+    for (const [id, until] of this.gone) if (until < time) this.gone.delete(id);
     // Late at night only a third of the crowd is out.
     const target = Math.round(this.wanted * (1 - this.night * 0.65));
     while (this.people.length < target) {
@@ -200,7 +301,7 @@ export class PedestrianLayer {
     if (this.people.length > target) this.people.length = target;
     const half = GRID / 2, obj = new THREE.Object3D(), leg = new THREE.Object3D(), hidden = new THREE.Matrix4().makeScale(0, 0, 0);
     this.people.forEach((p, i) => {
-      if (!this.net!.segs.has(p.seg.id)) { const q = this.spawn(); if (q) this.people[i] = p = q; }
+      if (!this.net!.segs.has(p.seg.id)) { const q = this.spawn(i); if (q) this.people[i] = p = q; }
       let moving = false;
       if (p.pause > 0) p.pause -= dt;
       else {
@@ -218,8 +319,9 @@ export class PedestrianLayer {
       const stride = moving ? Math.sin(time * p.speed * 70 + p.phase) : 0;
       const look = this.looks[i] ?? { height: 1, hair: 1, bag: 0 };
       obj.position.set(x, y + Math.abs(stride) * 0.004, z);
+      this.spots[i * 3] = x; this.spots[i * 3 + 1] = y; this.spots[i * 3 + 2] = z;
       obj.rotation.set(0, Math.atan2(at.tx * p.dir, at.tz * p.dir), 0);
-      obj.scale.setScalar(look.height);
+      obj.scale.setScalar(look.height * PERSON);
       obj.updateMatrix();
       this.torso.setMatrixAt(i, obj.matrix);
       this.head.setMatrixAt(i, obj.matrix);
@@ -243,13 +345,14 @@ export class PedestrianLayer {
     // The people at and on the crossings, after the pavement crowd: standing at the kerb or striding across.
     let n = this.people.length;
     const col = new THREE.Color();
-    for (let k = 0; walkers && k + 4 < walkers.length && n < MAX_ALL; k += 5, n++) {
+    for (let k = 0; walkers && k + 4 < walkers.length && n < MAX_ALL; k += 5) {
       const id = walkers[k + 4] >>> 0, moving = walkers[k + 3] === 2;
+      if (this.gone.has(id)) continue;
       const h = Math.imul(id ^ (id >>> 13), 0x5bd1e995) >>> 0;
       const stride = moving ? Math.sin(time * 9 + (h % 7)) : 0;
       obj.position.set(walkers[k], CURB_TOP * (moving ? 0.2 : 1) + Math.abs(stride) * 0.004, walkers[k + 1]);
       obj.rotation.set(0, walkers[k + 2], 0);
-      obj.scale.setScalar(0.9 + (h % 20) / 100);
+      obj.scale.setScalar((0.9 + (h % 20) / 100) * PERSON);
       obj.updateMatrix();
       this.torso.setMatrixAt(n, obj.matrix); this.head.setMatrixAt(n, obj.matrix);
       this.hair.setMatrixAt(n, h % 10 ? obj.matrix : hidden); this.bag.setMatrixAt(n, h % 3 ? hidden : obj.matrix);
@@ -262,7 +365,9 @@ export class PedestrianLayer {
         this.arms.setMatrixAt(n * 2 + j, leg.matrix); this.hands.setMatrixAt(n * 2 + j, leg.matrix);
         this.arms.setColorAt(n * 2 + j, col.setHex(SHIRTS[h % SHIRTS.length])); this.hands.setColorAt(n * 2 + j, col.setHex(SKIN[(h >>> 4) % SKIN.length]));
       }
+      n++;
     }
+    n = this.drawDowned(n, dt, obj, leg, hidden);
     if (n > this.people.length) for (const m of this.meshes) if (m.instanceColor) m.instanceColor.needsUpdate = true;
     this.torso.count = this.head.count = this.hair.count = this.bag.count = n;
     this.legs.count = this.arms.count = this.hands.count = n * 2;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
-/** Eye height of a pedestrian: a car is about 0.3 long, so a person stands a little over 0.1 tall. */
-const EYE = 0.13;
+/** Eye height of a pedestrian: a storey is about 0.31, a shop door 0.38, and it looks just over the roof of a car (about 0.21 up). */
+const EYE = 0.22;
 const WALK = 0.75; // units per second
 const RUN = 2.1;
 const RADIUS = 0.06; // how close a walker gets to a wall
@@ -82,8 +82,8 @@ export class Walker {
   /** Height of the ground under the walker's feet: 0, or a bridge deck. */
   private feet = 0;
 
-  /** Step down onto the street at (x, z), looking along `heading` (radians, 0 = towards -z). */
-  enter(x: number, z: number, heading: number): void {
+  /** Step down onto the street at (x, z), looking along `heading` (radians, 0 = towards -z), on the deck nearest `y`. */
+  enter(x: number, z: number, heading: number, y = 0): void {
     if (this.active) return;
     this.saved = { position: this.camera.position.clone(), quaternion: this.camera.quaternion.clone(), near: this.camera.near, fov: this.camera.fov };
     this.active = true;
@@ -94,7 +94,7 @@ export class Walker {
     this.camera.near = 0.02;
     this.camera.fov = 70;
     this.camera.updateProjectionMatrix();
-    this.feet = this.hooks.ground(x, z, 0);
+    this.feet = this.hooks.ground(x, z, y);
     this.camera.position.set(x, this.feet + EYE, z);
     this.apply();
   }

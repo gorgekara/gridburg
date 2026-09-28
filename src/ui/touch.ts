@@ -32,7 +32,7 @@ export class TouchControls {
   private walker: Walker;
   private driver: Driver;
 
-  constructor(root: HTMLElement, canvas: HTMLCanvasElement, controls: OrbitControls, walker: Walker, driver: Driver, exit: () => void) {
+  constructor(root: HTMLElement, canvas: HTMLCanvasElement, controls: OrbitControls, walker: Walker, driver: Driver, exit: () => void, door: () => void) {
     this.controls = controls; this.walker = walker; this.driver = driver;
     if (!this.enabled) return;
     document.body.classList.add('touch');
@@ -42,7 +42,10 @@ export class TouchControls {
     const view = el('button', 'touch-btn', 'View');
     view.addEventListener('click', () => driver.toggleView());
     view.dataset.drive = '1';
-    this.buttons.append(view, leave);
+    // Out of the car, or back into it standing beside it.
+    const doorBtn = el('button', 'touch-btn', 'Door');
+    doorBtn.addEventListener('click', door);
+    this.buttons.append(doorBtn, view, leave);
     this.pad.hidden = true; this.buttons.hidden = true;
     root.append(this.pad, this.buttons);
 

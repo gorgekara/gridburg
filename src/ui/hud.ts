@@ -32,7 +32,6 @@ export interface HudActions {
   loan(action: 'take' | 'repay'): void;
   rotatePlacement(): void;
   /** Step down into the streets, or back up to the map. */
-  toggleWalk(): void;
   toggleDrive(): void;
   setElevation(level: number): void;
   setBrush(size: number): void;
@@ -275,11 +274,19 @@ export class Hud {
   /** The top-right button bar and the menu popover, for panels that live outside the HUD. */
   rightBar!: HTMLElement;
   menuPopover!: HTMLElement;
-  private walkBtn: HTMLButtonElement = el('button');
   private driveBtn: HTMLButtonElement = el('button');
   private walkTitle = el('strong', undefined, 'Walking');
   private walkKeys = el('span');
+  /** The speedometer and nitrous gauge, bottom right while driving. */
+  private gauge = el('div', 'drive-gauge');
+  private needle = document.createElementNS('http://www.w3.org/2000/svg', 'line');
   private speedo = el('b', 'speedo');
+  private nitroFill = el('i');
+  /** The wanted stars and the arrest meter under them. */
+  private wanted = el('div', 'wanted');
+  private wantedStars: HTMLElement[] = [];
+  private bustFill = el('i');
+  private shown = { kmh: -1, nitro: -1, stars: -1, evading: false, bust: -1 };
   /** Which height the road tool is drawing at: a tunnel, the surface, or a bridge. */
   setElevation(level: number): void {
     this.elevation = level;
@@ -306,21 +313,43 @@ export class Hud {
   /** Walking hides the building tools and shows how to move; the map comes back on the way out. */
   setWalking(on: boolean, mode: 'walk' | 'drive' = 'walk'): void {
     this.walkHint.classList.toggle('open', on);
-    this.walkBtn.classList.toggle('active', on && mode === 'walk');
     this.driveBtn.classList.toggle('active', on && mode === 'drive');
     document.body.classList.toggle('walking', on);
     const driving = on && mode === 'drive';
+    document.body.classList.toggle('driving', driving);
     this.walkTitle.textContent = driving ? 'Driving' : 'Walking';
     this.walkKeys.textContent = driving
-      ? 'W / S drive and brake · A D steer · Shift nitrous · Space handbrake (drift) · V driver’s seat · Enter at a race ring · R back on the route · Esc or M to park'
-      : 'W A S D to walk · Shift to run · click, then move the mouse to look · Esc or F to leave';
-    this.speedo.hidden = !driving;
+      ? 'W / S drive and brake · A D steer · Shift nitrous · Space handbrake (drift) · V driver’s seat · F get out · Enter at a race ring · R back on the route · Esc or M to park'
+      : 'W A S D to walk · Shift to run · click, then move the mouse to look · F by a car to get in · Esc to leave';
+    this.gauge.classList.toggle('open', driving);
+    if (!on) this.setWanted(0, false, 0);
   }
 
-  /** The speedometer while driving. */
-  setDriveSpeed(kmh: number): void {
-    const text = `${kmh} km/h`;
-    if (this.speedo.textContent !== text) this.speedo.textContent = text;
+  /** The speedometer and what is left of the nitrous, while driving. */
+  setDrive(kmh: number, nitro: number, boosting: boolean): void {
+    if (kmh !== this.shown.kmh) {
+      this.shown.kmh = kmh;
+      this.speedo.textContent = String(kmh);
+      // The dial runs from 0 at bottom left round to 240 at bottom right.
+      const angle = -135 + Math.min(1, kmh / 240) * 270;
+      this.needle.setAttribute('transform', `rotate(${angle} 60 60)`);
+    }
+    const n = Math.round(nitro * 100);
+    if (n !== this.shown.nitro) { this.shown.nitro = n; this.nitroFill.style.width = `${n}%`; }
+    this.gauge.classList.toggle('boost', boosting);
+    this.gauge.classList.toggle('dry', nitro < 0.3 && !boosting);
+  }
+
+  /** The wanted level: stars filled, flashing while getting away, and how close an arrest is. */
+  setWanted(stars: number, evading: boolean, bust: number): void {
+    const b = Math.round(bust * 50) / 50;
+    if (stars === this.shown.stars && evading === this.shown.evading && b === this.shown.bust) return;
+    this.shown.stars = stars; this.shown.evading = evading; this.shown.bust = b;
+    this.wanted.classList.toggle('open', stars > 0);
+    this.wanted.classList.toggle('evading', evading);
+    this.wantedStars.forEach((star, i) => star.classList.toggle('on', i < stars));
+    this.bustFill.style.width = `${b * 100}%`;
+    this.bustFill.parentElement!.classList.toggle('shown', b > 0);
   }
 
   /** The city clock, written by the render loop. */
@@ -537,14 +566,51 @@ export class Hud {
     messageBtn.append(this.messageDot);
     this.messageBtn = messageBtn;
     const policyBtn = iconBtn('policy', 'City policies', () => { budget.classList.remove('open'); menu.classList.remove('open'); policyPanel.classList.toggle('open'); });
-    const walkBtn = iconBtn('walk', 'Walk the streets (F)', () => actions.toggleWalk());
-    this.walkBtn = walkBtn;
     const driveBtn = iconBtn('drive', 'Garage and street racing (M)', () => actions.toggleDrive());
     this.driveBtn = driveBtn;
-    this.speedo.hidden = true;
-    this.walkHint.append(this.walkTitle, this.speedo, this.walkKeys);
+    this.walkHint.append(this.walkTitle, this.walkKeys);
+    {
+      // A dial of ticks every 20 km/h, a needle, the reading, and the nitrous bottle under it.
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 120 120');
+      const ns = 'http://www.w3.org/2000/svg';
+      const arc = document.createElementNS(ns, 'path');
+      arc.setAttribute('d', 'M 24.6 95.4 A 50 50 0 1 1 95.4 95.4');
+      arc.setAttribute('class', 'dial');
+      svg.append(arc);
+      for (let v = 0; v <= 240; v += 20) {
+        const a = (-135 + v / 240 * 270 - 90) * Math.PI / 180, major = v % 40 === 0;
+        const tick = document.createElementNS(ns, 'line');
+        const r0 = major ? 40 : 44;
+        tick.setAttribute('x1', String(60 + Math.cos(a) * r0)); tick.setAttribute('y1', String(60 + Math.sin(a) * r0));
+        tick.setAttribute('x2', String(60 + Math.cos(a) * 48)); tick.setAttribute('y2', String(60 + Math.sin(a) * 48));
+        tick.setAttribute('class', major ? 'tick major' : 'tick');
+        svg.append(tick);
+      }
+      this.needle.setAttribute('x1', '60'); this.needle.setAttribute('y1', '60');
+      this.needle.setAttribute('x2', '60'); this.needle.setAttribute('y2', '18');
+      this.needle.setAttribute('class', 'needle');
+      this.needle.setAttribute('transform', 'rotate(-135 60 60)');
+      const hub = document.createElementNS(ns, 'circle');
+      hub.setAttribute('cx', '60'); hub.setAttribute('cy', '60'); hub.setAttribute('r', '4');
+      hub.setAttribute('class', 'hub');
+      svg.append(this.needle, hub);
+      const read = el('div', 'reading');
+      read.append(this.speedo, el('span', undefined, 'km/h'));
+      const nitro = el('div', 'nitro');
+      nitro.append(el('span', undefined, 'N₂O'), el('div', 'bar'));
+      nitro.lastElementChild!.append(this.nitroFill);
+      this.gauge.append(svg, read, nitro);
+      for (let i = 0; i < 5; i++) { const star = el('span', 'star', '★'); this.wantedStars.push(star); }
+      const stars = el('div', 'stars');
+      stars.append(...this.wantedStars);
+      const bust = el('div', 'bust');
+      bust.append(el('span', undefined, 'BUSTED'), el('div', 'bar'));
+      bust.lastElementChild!.append(this.bustFill);
+      this.wanted.append(stars, bust);
+    }
     right.append(
-      walkBtn, driveBtn, messageBtn, trafficBtn, polBtn, policyBtn,
+      driveBtn, messageBtn, trafficBtn, polBtn, policyBtn,
       iconBtn('link', 'Copy a link to this city', actions.share),
       iconBtn('help', 'Help (H)', () => this.help.classList.toggle('open')),
       menuBtn,
@@ -594,7 +660,7 @@ export class Hud {
     }
 
     this.polBtn = polBtn;
-    root.append(chips, budget, policyPanel, this.messagePanel, right, menu, this.messagePop, this.about, this.walkHint);
+    root.append(chips, budget, policyPanel, this.messagePanel, right, menu, this.messagePop, this.about, this.walkHint, this.gauge, this.wanted);
 
     // Build menu: a panel of tool cards above a row of category buttons.
     const dock = el('div', 'dock');
@@ -780,8 +846,8 @@ export class Hud {
           <li><b>City levels</b> — grow population to earn grants and unlock civic buildings. The chip in the top-left corner shows your level and how happy the city is; click it for your next milestone and service coverage</li>
           <li><b>Messages</b> — anything going wrong collects behind the bell in the top-right corner. New trouble pops out for a few seconds, and clicking a message takes you to it</li>
           <li><b>Placing</b> — right-click, press <b>G</b> or use Rotate in the panel to turn a building before you put it down</li>
-          <li><b>Walking</b> — press <b>F</b> or the walker button to step down into the streets. <b>WASD</b> walks, <b>Shift</b> runs, click then move the mouse to look, and <b>Esc</b> takes you back up</li>
-          <li><b>Driving</b> — press <b>M</b> or the car button to take a car out. <b>W/S</b> drive and brake, <b>A/D</b> steer, <b>Shift</b> for speed, <b>Space</b> handbrake, <b>V</b> driver’s seat, <b>Esc</b> to park</li>
+          <li><b>Walking</b> — press <b>F</b> to step down into the streets. <b>WASD</b> walks, <b>Shift</b> runs, click then move the mouse to look, and <b>Esc</b> takes you back up</li>
+          <li><b>Driving</b> — press <b>M</b> or the car button to take a car out. <b>W/S</b> drive and brake, <b>A/D</b> steer, <b>Shift</b> for nitrous (a tank that refills), <b>Space</b> handbrake, <b>V</b> driver’s seat, <b>F</b> to get out, and <b>F</b> by any car on the street (parked or in traffic) to take it, <b>Esc</b> to park. Run people down, or crash with the police watching, and you get wanted stars: lose the squad cars and stay out of sight until the stars fade, or get boxed in and busted</li>
           <li><b>Neighborhood services</b> — parks improve happiness. From Growing village, homes need a clinic and school nearby to become apartments. High-rises unlock at Thriving town and need all six civic services. Each provider has limited capacity and range; all need highway-connected roads</li>
           <li><b>Coverage</b> — picking a service paints where that service already reaches, so the next one lands in a gap. A transport tool shows that mode's routes instead</li>
           <li><b>Railways</b> — two stations connect themselves by elevated track along the streets, and a station near a city entrance also runs a service out of town, bringing people in and out by train</li>

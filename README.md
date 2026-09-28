@@ -175,7 +175,7 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   and a marker running each route, the way the metro tool shows its tunnels.
 - **Service coverage at a glance.** Selecting a service paints the area existing buildings of that sort
   already reach, so the next clinic, station or bus stop goes where the gap is.
-- **Walk the streets.** Press F, or the walker button in the top-right corner, to step down to street
+- **Walk the streets.** Press F to step down to street
   level wherever you are looking. W A S D walks, Shift runs, and the mouse looks around (click once to
   capture it). Buildings, gardens and the river stop you, but streets, alleys and parks are open.
   Esc or F takes you back up to the map where you left it. People walk the pavements (more as the
@@ -241,9 +241,23 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   in a turn, or floor it through a fast corner, and the back steps out into a drift, laying skid
   marks and tyre smoke while the tyres squeal. Other cars are solid: you bump off them with a crunch,
   and the traffic behind you stops rather than driving through you (it stops for you on foot, too).
+  A knock takes off the speed going into the other car but keeps the speed along it, so you glance off
+  and drive on. Shift fires the nitrous from a tank that empties in a few seconds and refills slowly;
+  the speedometer in the bottom-right corner shows what is left.
   Taking the wheel thins the traffic to about a third so the streets are drivable. The car leans in
   corners, pitches up and down the bridge ramps, and the camera follows close behind, widening its
-  view with speed. Buildings and the river stop you. Esc or M parks it and returns to the map.
+  view with speed. Buildings and the river stop you. F gets out by the driver's door and leaves the car
+  standing; F beside it gets back in. F beside any other car takes that one instead: a car parked at
+  the kerb, an ordinary car or van in the traffic (the driver gives it up), or one you left earlier,
+  each driving its own way (vans slower and softer). Your last few cars stay where you left them.
+  Taking a car with the police close by is theft and earns a star. Esc or M parks it and returns to
+  the map.
+- **Wanted level.** Run people down, hit a police car, or crash into traffic with the police close by,
+  and stars appear in the top-left corner. Squad cars come up the road behind you, more and faster the
+  more stars you have: a little slower than you flat out at one star, a little quicker at five, never
+  as fast as the nitrous. Get out of their sight (round a corner, or simply far away) and the stars
+  flash while they slow to a search; stay unseen a few seconds and they fade. Let a squad car box you
+  in while you are stopped, or catch you on foot, and you are busted and fined from your race winnings.
 - **Garage and street racing.** The car button (or M) opens the garage: your cars (a hatchback to
   start with), the showroom (a sports coupé, a rally car, a muscle car and a supercar), a turntable
   with the selected car, its ratings, ten paints, and five upgrades of three levels each (engine,
@@ -391,7 +405,7 @@ it takes. Larger sites keep to the grid, and back lanes only run behind rows squ
 | + / − | The level of the next road point: tunnel, ground, or 1–3 up (ramps between) |
 | K, J | Stop signs, traffic calming |
 | G, right click | Turn the building in hand before placing it |
-| F | Walk the streets at eye level; Esc or F again to return |
+| F | Walk the streets at eye level; Esc or F again to return. Driving, F gets out; on foot, F by any car gets in |
 | M | Drive a car around town; V switches to the driver's seat; Esc or M to park |
 | U | Upgrade a road one step wider (drag for just a stretch) |
 | N, Z | Edit roads (drag points and bends), Cut roads |

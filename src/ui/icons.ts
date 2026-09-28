@@ -101,7 +101,6 @@ const I: Record<string, string> = {
   gas: '<path d="M3 21V11h8v10M11 21V7h4v14M15 21v-8h6v8"/><path d="M13 4c1 1 1 2 0 3"/>',
   hydro: '<path d="M3 20h18"/><path d="M5 20V6h14v14"/><path d="M8 10h8M8 14h8"/><path d="M9 20c0-2 2-2 2-4M15 20c0-2-2-2-2-4"/>',
   nuclear: '<circle cx="12" cy="12" r="2"/><path d="M12 10c-1-3-4-4-6-3 0 3 2 5 4 5M14 12c3 0 5-2 5-5-2-1-5 0-6 3M11 14c-2 2-2 5 0 7 2-1 3-4 2-7"/>',
-  walk: '<circle cx="13" cy="4" r="2"/><path d="M10 21l2-6 3 2v4M8 12l2-4 4 1 2 4 3 1"/><path d="M12 15l-1-6"/>',
   docks: '<path d="M2 20c1.5 0 1.5-1 3-1s1.5 1 3 1 1.5-1 3-1 1.5 1 3 1 1.5-1 3-1 1.5 1 3 1"/><path d="M4 16l2-5h12l2 5z"/><path d="M12 11V4l5 4h-5"/>',
   hospital: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M12 8v8M8 12h8"/><path d="M8 4V2h8v2"/>',
   cityhospital: '<path d="M2 21V9h6V4h8v5h6v12z"/><path d="M12 7v5M9.5 9.5h5"/><path d="M10 21v-4h4v4"/>',

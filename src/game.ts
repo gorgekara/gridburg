@@ -417,6 +417,11 @@ export class Game {
     this.send({ type: 'player', at });
   }
 
+  /** Take a car out of the traffic: the player has got into it. */
+  takeCar(slot: number, uid: number): void {
+    this.send({ type: 'takeCar', slot, uid });
+  }
+
   setStreetView(active: boolean, driving = false, racing = false): void {
     this.send({ type: 'streetView', active, driving, racing });
   }

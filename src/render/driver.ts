@@ -22,9 +22,11 @@ export const STOCK: DriverStats = { top: 2.6, boost: 4.4, accel: 1.25, brake: 4,
 /** The car's own footprint as two circles, front and back, for bumping into traffic. */
 const BODY_R = 0.088, BODY_OFFSET = 0.075;
 const MAX_MARKS = 900, MAX_SMOKE = 70;
+/** Seconds of nitrous in a full tank, seconds to fill an empty one, and how full it must be to fire again once run dry. */
+const NITRO_BURN = 3.5, NITRO_REFILL = 14, NITRO_RELIGHT = 0.3;
 
 /** Another vehicle on the road, in scene space: where it is, which way it points, and how long it is. */
-export interface TrafficCar { x: number; z: number; angle: number; length: number; y: number }
+export interface TrafficCar { x: number; z: number; angle: number; length: number; y: number; police?: boolean }
 
 export interface DriverHooks {
   /** True where a car cannot go: buildings, the river, off the map. `y` is the car's height now. */
@@ -35,13 +37,18 @@ export interface DriverHooks {
   traffic(x: number, z: number, radius: number): TrafficCar[];
   /** A knock against a wall or another car, 0..1 by how hard. */
   impact?(strength: number): void;
+  /** Ran into another vehicle, 0..1 by how hard. */
+  struck?(car: TrafficCar, strength: number): void;
+  /** Anyone on foot the car is running into at (x, z), moving at (vx, vz): how many it knocked down. */
+  runOver?(x: number, z: number, y: number, vx: number, vz: number): number;
   onExit(): void;
 }
 
 /**
  * Driving a car around town. The orbit camera is parked and a chase camera follows a car of your own:
  * W or ↑ to accelerate, S or ↓ to brake and reverse, A/D to steer, Shift for a burst of speed, Space
- * for the handbrake, V to switch between the chase view and the driver's seat, Esc or M to get out.
+ * for the handbrake, V to switch between the chase view and the driver's seat, Esc or M to put it away.
+ * The nitrous comes from a tank that empties in a few seconds and fills again slowly.
  *
  * The car has momentum of its own, separate from where it points: the tyres pull the two together,
  * hard normally and hardly at all under the handbrake or when the back steps out under power, so it
@@ -80,6 +87,12 @@ export class Driver {
   slip = 0;
   /** Joystick input from the touch controls: throttle (-1 brake/reverse .. 1) and steer (-1 right .. 1 left). */
   analog = { throttle: 0, steer: 0 };
+  /** Nitrous left, 0..1, and whether it is firing now. Run dry, it will not fire again until it has refilled a little. */
+  nitro = 1;
+  boosting = false;
+  private nitroDry = false;
+  /** Got out and left standing in the street, where the player can get back in. */
+  parked = false;
 
   /** Switch between the chase camera and the driver's seat. */
   toggleView(): void { this.cockpit = !this.cockpit; }
@@ -127,6 +140,9 @@ export class Driver {
   /** Whether the throttle is down, for a race's launch. */
   get throttle(): boolean { return this.keys.has('KeyW') || this.keys.has('ArrowUp') || this.analog.throttle > 0.2; }
 
+  /** The body of the car the player has now, to leave a copy of it standing when they take another. */
+  get carGeometry(): THREE.BufferGeometry { return this.body.geometry; }
+
   /** Put a different car under the player: its body and how it drives. */
   setCar(geometry: THREE.BufferGeometry, stats: DriverStats): void {
     this.body.geometry.dispose();
@@ -138,6 +154,7 @@ export class Driver {
   teleport(x: number, z: number, heading: number): void {
     this.x = x; this.z = z; this.heading = heading; this.vx = 0; this.vz = 0; this.yawRate = 0;
     this.y = this.hooks.ground(x, z, this.y);
+    this.nitro = 1; this.nitroDry = false;
     this.camYaw = heading;
     this.marks.count = 0; this.lastMark = null;
     this.place();
@@ -149,15 +166,16 @@ export class Driver {
     this.vx += Math.sin(this.heading) * speed; this.vz += Math.cos(this.heading) * speed;
   }
 
-  /** Start at (x, z) on a road, pointing along `heading` (0 = towards +z). */
-  enter(x: number, z: number, heading: number): void {
+  /** Start at (x, z) on a road, pointing along `heading` (0 = towards +z), on the deck nearest `y`. */
+  enter(x: number, z: number, heading: number, y = 0): void {
     if (this.active) return;
+    this.parked = false;
     this.saved = { position: this.camera.position.clone(), quaternion: this.camera.quaternion.clone(), near: this.camera.near, fov: this.camera.fov };
     this.active = true;
     this.keys.clear();
     this.x = x; this.z = z; this.heading = heading; this.vx = 0; this.vz = 0; this.yawRate = 0;
     this.camYaw = heading;
-    this.y = this.hooks.ground(x, z, 0);
+    this.y = this.hooks.ground(x, z, y);
     this.camera.near = 0.015;
     this.camera.fov = 66;
     this.camera.updateProjectionMatrix();
@@ -169,11 +187,12 @@ export class Driver {
   exit(): void {
     if (!this.active) return;
     this.active = false;
+    this.parked = false;
     this.keys.clear();
     this.car.visible = false;
     this.marks.count = 0; this.markNext = 0; this.lastMark = null;
     this.puffs = []; this.smoke.count = 0;
-    this.slip = 0;
+    this.slip = 0; this.boosting = false;
     if (this.saved) {
       this.camera.position.copy(this.saved.position);
       this.camera.quaternion.copy(this.saved.quaternion);
@@ -182,6 +201,29 @@ export class Driver {
       this.camera.updateProjectionMatrix();
     }
     this.hooks.onExit();
+  }
+
+  /** Get out and leave the car standing where it is, at a standstill, to come back to. */
+  park(): { x: number; z: number; y: number; heading: number } {
+    const at = { x: this.x, z: this.z, y: this.y, heading: this.heading };
+    this.vx = 0; this.vz = 0; this.yawRate = 0; this.roll = 0; this.squat = 0;
+    this.exit();
+    this.parked = true;
+    this.place();
+    this.car.visible = true;
+    return at;
+  }
+
+  /** Get back into the parked car. */
+  resume(): void {
+    if (this.parked) this.enter(this.x, this.z, this.heading, this.y);
+  }
+
+  /** Take the parked car away. */
+  unpark(): void {
+    if (!this.parked) return;
+    this.parked = false;
+    this.car.visible = false;
   }
 
   /** Speed in the units the HUD shows, scaled so a street's limit reads about 60 km/h. */
@@ -207,7 +249,7 @@ export class Driver {
   private bump(): void {
     const others = this.hooks.traffic(this.x, this.z, 0.8);
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
-    let worst = 0;
+    let worst = 0, hit: TrafficCar | null = null;
     for (const o of others) {
       if (Math.abs(o.y - this.y) > 0.12) continue; // on a bridge above or below
       const ox = Math.sin(o.angle), oz = Math.cos(o.angle), reach = Math.max(0, o.length / 2 - BODY_R);
@@ -221,17 +263,29 @@ export class Driver {
         if (overlap <= 0) continue;
         if (d < 1e-4) { nx = -fx; nz = -fz; } else { nx /= d; nz /= d; }
         this.x += nx * overlap; this.z += nz * overlap;
-        // Lose the speed going into the other car, and bounce a little off it.
+        // Lose the speed going into the other car and bounce a little off it, but keep most of the
+        // speed along it: a glancing knock slows the car and turns it, it does not stop it dead.
         const into = this.vx * nx + this.vz * nz;
         if (into < 0) {
-          this.vx -= nx * into * 1.35; this.vz -= nz * into * 1.35;
-          this.vx *= 0.8; this.vz *= 0.8;
-          this.yawRate += (nx * fz - nz * fx) * into * 2;
-          worst = Math.max(worst, -into);
+          this.vx -= nx * into * 1.2; this.vz -= nz * into * 1.2;
+          // Nearly head on, it glances off to one side rather than stopping dead against the other car.
+          const tx = -nz, tz = nx, along = this.vx * tx + this.vz * tz;
+          if (Math.abs(along) < -into * 0.4) {
+            const side = Math.sign(along || tx * fx + tz * fz || 1);
+            this.vx += tx * side * -into * 0.4; this.vz += tz * side * -into * 0.4;
+          }
+          const keep = Math.max(0.9, 1 + into * 0.04);
+          this.vx *= keep; this.vz *= keep;
+          this.yawRate += (nx * fz - nz * fx) * into * 1.5;
+          if (-into > worst) { worst = -into; hit = o; }
         }
       }
     }
-    if (worst > 0.15) { this.shake = Math.min(1, worst / 2.5); this.hooks.impact?.(Math.min(1, worst / 3)); }
+    if (worst > 0.15) {
+      this.shake = Math.min(1, worst / 2.5);
+      this.hooks.impact?.(Math.min(1, worst / 3));
+      if (hit) this.hooks.struck?.(hit, Math.min(1, worst / 3));
+    }
   }
 
   update(dt: number): void {
@@ -241,7 +295,16 @@ export class Driver {
     if (this.frozen) { this.vx *= 0.8; this.vz *= 0.8; }
     const gas = !this.frozen && k.has('KeyW') || k.has('ArrowUp') || this.analog.throttle > 0.2, brake = k.has('KeyS') || k.has('ArrowDown') || this.analog.throttle < -0.2;
     const steer = Math.max(-1, Math.min(1, (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0) - (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) + this.analog.steer));
-    const boost = k.has('ShiftLeft') || k.has('ShiftRight'), handbrake = k.has('Space');
+    // Nitrous burns from the tank while Shift is held with the throttle down, and refills off it.
+    const boost = (k.has('ShiftLeft') || k.has('ShiftRight')) && gas && !this.nitroDry && this.nitro > 0, handbrake = k.has('Space');
+    this.boosting = boost;
+    if (boost) {
+      this.nitro = Math.max(0, this.nitro - dt / NITRO_BURN);
+      if (this.nitro <= 0) this.nitroDry = true;
+    } else {
+      this.nitro = Math.min(1, this.nitro + dt / NITRO_REFILL);
+      if (this.nitro >= NITRO_RELIGHT) this.nitroDry = false;
+    }
     const top = boost ? S.boost : S.top;
     let fx = Math.sin(this.heading), fz = Math.cos(this.heading);
     const speed = Math.abs(this.vx * fx + this.vz * fz);
@@ -265,7 +328,8 @@ export class Driver {
     else accel = -Math.sign(forward) * Math.min(Math.abs(forward) / dt, DRAG);
     if (handbrake) accel -= Math.sign(forward) * Math.min(Math.abs(forward) / dt, S.brake * 0.22);
     forward += accel * dt;
-    if (forward > top) forward -= Math.min(forward - top, S.brake * dt);
+    // Over the top speed (the nitrous just ran out) the car eases back down rather than braking.
+    if (forward > top) forward -= Math.min(forward - top, 1.4 * dt);
     forward = Math.max(-REVERSE, forward);
     // The tyres pull the sideways slide back into line, hard when gripping, gently when loose; the
     // slide scrubs off a little speed as it goes.
@@ -285,6 +349,11 @@ export class Driver {
     else if (!this.hits(this.x, nz, this.heading)) { this.z = nz; this.vx *= -0.2; this.vz *= 0.85; this.knock(Math.abs(this.vx) * 5); }
     else { this.knock(Math.hypot(this.vx, this.vz)); this.vx *= -0.25; this.vz *= -0.25; } // a bump off the wall
     this.bump();
+    // Anyone on foot in the way goes down, and the car shrugs off a little speed.
+    if (speed > 0.25 && this.hooks.runOver) {
+      const n = this.hooks.runOver(this.x + fx * 0.06, this.z + fz * 0.06, this.y, this.vx, this.vz);
+      if (n > 0) { this.vx *= 0.92; this.vz *= 0.92; this.shake = Math.max(this.shake, 0.3); }
+    }
 
     // Sit on the road through both axles, so a ramp pitches the car rather than burying its nose.
     const ax = 0.13;

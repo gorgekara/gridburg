@@ -1,9 +1,12 @@
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import { Builder } from '../render/buildingGeo';
 import { carShell, HATCH, COUPE, WAGON, MUSCLE, SUPER } from '../render/carShell';
 import type { CarSpec } from '../render/carShell';
 import { VEHICLE_SCALE } from '../sim/trafficSpace';
 import type { CarModel } from './garage';
+import { vehicleGeometry } from '../render/cars';
+import { STOCK } from '../render/driver';
+import type { DriverStats } from '../render/driver';
 
 const SPECS: Record<CarModel, CarSpec> = { hatch: HATCH, coupe: COUPE, rally: WAGON, muscle: MUSCLE, super: SUPER };
 const TRIM = 0x23282d;
@@ -35,4 +38,31 @@ export function playerCarGeometry(model: CarModel, paint: number): THREE.BufferG
   // Tyres sit on the asphalt, which stands a little proud of the ground.
   g.translate(0, 0.045, 0);
   return g;
+}
+
+/** Street vehicles the player can get into: cars, vans and the odd racer. */
+export const TAKEABLE = new Set([1, 2, 7]);
+
+/**
+ * A car off the street, as the player drives it: the city's own shape for that type, with the white
+ * the traffic tints per vehicle painted in `paint`.
+ */
+export function streetCarGeometry(type: number, paint: number): THREE.BufferGeometry {
+  const g = vehicleGeometry(type, 2);
+  const col = g.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (col) {
+    const tint = new THREE.Color(paint);
+    for (let i = 0; i < col.count; i++) {
+      if (col.getX(i) > 0.999 && col.getY(i) > 0.999 && col.getZ(i) > 0.999) col.setXYZ(i, tint.r, tint.g, tint.b);
+    }
+    col.needsUpdate = true;
+  }
+  return g;
+}
+
+/** How a street vehicle drives: an ordinary car a little under the stock hatchback, a van slower and softer. */
+export function streetCarStats(type: number): DriverStats {
+  if (type === 2) return { ...STOCK, top: 2.1, boost: 3.3, accel: 0.9, brake: 3.3, grip: 7.5, steer: 1.95, roll: 1.5 };
+  if (type === 7) return { ...STOCK, top: 3, boost: 4.8, accel: 1.6, grip: 10, steer: 2.5, roll: 0.8 };
+  return { ...STOCK, top: 2.4, boost: 3.9, accel: 1.1, roll: 1.15 };
 }

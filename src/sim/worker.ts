@@ -3399,6 +3399,12 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       }
       if (!m.active) { player = null; playerLanes.clear(); }
       break;
+    case 'takeCar': {
+      // Only an ordinary car going about its trip: nothing on a call, on a route, at work or in a wreck.
+      const c = slots[m.slot];
+      if (c && c.uid === m.uid && !c.mission && !c.working && !c.crash && c.line === undefined && c.taxiStop === undefined) freeCar(m.slot);
+      break;
+    }
     case 'player':
       player = m.at;
       locatePlayer();

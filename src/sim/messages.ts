@@ -96,6 +96,8 @@ export type MainToWorker =
   | { type: 'speed'; value: number }
   | { type: 'streetView'; active: boolean; driving?: boolean; racing?: boolean }
   | { type: 'player'; at: { x: number; z: number } | null }
+  /** The player has taken this car off the street: it leaves the simulation. */
+  | { type: 'takeCar'; slot: number; uid: number }
   | { type: 'tax'; value: number }
   | { type: 'taxes'; taxes: Taxes }
   | { type: 'districtPolicy'; district: number; mask: number }

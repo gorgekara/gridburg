@@ -19,14 +19,16 @@ import { BalloonLayer } from './render/balloons';
 import { BoatLayer } from './render/boats';
 import { Walker } from './render/walker';
 import { Driver } from './render/driver';
-import type { TrafficCar } from './render/driver';
+import type { TrafficCar, DriverStats } from './render/driver';
 import { vehicleLength } from './sim/trafficSpace';
 import { StreetDetailLayer } from './render/streetDetail';
 import { VergeLayer } from './render/verges';
 import { RaceWorld } from './racing/race';
+import { Wanted } from './racing/wanted';
 import type { RaceRoute } from './racing/routes';
+import { approachPath } from './racing/routes';
 import { loadGarage, saveGarage, driveStats } from './racing/garage';
-import { playerCarGeometry } from './racing/carModels';
+import { playerCarGeometry, streetCarGeometry, streetCarStats, TAKEABLE } from './racing/carModels';
 import { GaragePanel } from './ui/garage';
 import { RaceHudView } from './ui/raceHud';
 import type { DetailSource } from './render/streetDetail';
@@ -40,7 +42,7 @@ import { RoadLayer } from './render/roads';
 import { RiverLayer } from './render/river';
 import { BuildingLayer } from './render/buildings';
 import { OverlayLayer } from './render/overlay';
-import { CarLayer } from './render/cars';
+import { CarLayer, vehicleColor } from './render/cars';
 import { Input } from './input';
 import { SignalOverlay } from './render/signalOverlay';
 import { SignalPanel, cycleMove } from './ui/signalPanel';
@@ -144,7 +146,6 @@ const hud = new Hud(uiRoot, {
   setPolicy: (id, on) => game.setPolicy(id, on),
   loan: (action) => game.loan(action),
   rotatePlacement: () => input.rotatePlacement(),
-  toggleWalk: () => { if (walker.active) walker.exit(); else startWalking(); },
   toggleDrive: () => driveButton(),
   setElevation: (level) => input.setElevation(level),
   setBrush: (size) => { input.brushSize = size; },
@@ -369,11 +370,90 @@ function detailSource(): DetailSource {
     body: (k, l, v) => buildings.body(k, l, v),
   };
 }
+/** Set while stepping out of the car or back into it, so the street stays set up between the two. */
+let handoff = false;
+/** Back up to the map from the street. */
+function leaveStreet(): void {
+  game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); streetDetail.setActive(false); touch.setMode('map');
+  driver.unpark();
+  clearLeftCars();
+  wanted.reset();
+}
+/** Cars the player got out of and then left for another: they stay where they were left until the map. */
+const leftCars: { mesh: THREE.Mesh; x: number; z: number; y: number; heading: number; stats: DriverStats }[] = [];
+const leftMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.3 });
+function clearLeftCars(): void {
+  for (const c of leftCars) { scene.remove(c.mesh); c.mesh.geometry.dispose(); }
+  leftCars.length = 0;
+}
+/** Leave the parked car standing as it is, to take another. */
+function leaveCar(): void {
+  if (!driver.parked) return;
+  const at = driver.position, mesh = new THREE.Mesh(driver.carGeometry.clone(), leftMaterial);
+  mesh.castShadow = true;
+  mesh.position.set(at.x, at.y, at.z);
+  mesh.rotation.y = driver.heading;
+  scene.add(mesh);
+  leftCars.push({ mesh, ...at, heading: driver.heading, stats: { ...driver.stats } });
+  // Only the last few stay; the oldest goes.
+  if (leftCars.length > 4) { const old = leftCars.shift()!; scene.remove(old.mesh); old.mesh.geometry.dispose(); }
+  driver.unpark();
+}
+/** Traffic the player has just taken, by id: still in the last frame or two from the simulation, but gone. */
+const takenCars = new Map<number, number>();
+/**
+ * The nearest car within reach of someone standing at (x, z): one the player left, one parked at the
+ * kerb, or an ordinary car in the traffic. Taking it removes it from wherever it was.
+ */
+function takeCarNear(x: number, z: number): { x: number; z: number; y: number; heading: number; geometry: THREE.BufferGeometry; stats: DriverStats; street: boolean } | null {
+  const reach = 0.42;
+  let best = -1, bd = reach;
+  leftCars.forEach((c, i) => { const d = Math.hypot(c.x - x, c.z - z); if (d < bd) { bd = d; best = i; } });
+  // Traffic: an ordinary car, van or racer, on the same level.
+  let traffic = -1;
+  const cars = game.carsNext, ids = game.carIdsNext;
+  for (let i = 0; i < MAX_CARS; i++) {
+    const o = i * 4, type = Math.round(cars[o + 3]);
+    if (!TAKEABLE.has(type) || takenCars.has(ids[i]) || (game.carHeights[i] ?? 0) > 0.12) continue;
+    const d = Math.hypot(cars[o] - x, cars[o + 1] - z);
+    if (d < bd) { bd = d; traffic = i; best = -1; }
+  }
+  if (best >= 0 && traffic < 0) {
+    const c = leftCars.splice(best, 1)[0];
+    scene.remove(c.mesh);
+    return { x: c.x, z: c.z, y: c.y, heading: c.heading, geometry: c.mesh.geometry, stats: c.stats, street: false };
+  }
+  if (traffic >= 0) {
+    const o = traffic * 4, type = Math.round(cars[o + 3]), uid = ids[traffic];
+    game.takeCar(traffic, uid);
+    takenCars.set(uid, performance.now() + 3000);
+    return { x: cars[o], z: cars[o + 1], y: game.carHeights[traffic] ?? 0, heading: cars[o + 2], geometry: streetCarGeometry(type, vehicleColor(type, uid)), stats: streetCarStats(type), street: true };
+  }
+  const p = raceWorld.racing ? null : parked.take(x, z, bd);
+  if (p) return { x: p.x, z: p.z, y: 0, heading: p.heading, geometry: streetCarGeometry(p.type, p.color), stats: streetCarStats(p.type), street: true };
+  return null;
+}
 const walker = new Walker(camera, canvas, {
   blocked: blockedAt,
   ground: groundAt,
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); streetDetail.setActive(false); touch.setMode('map'); },
+  onExit: () => { if (!handoff) leaveStreet(); },
 });
+/** The city's own police cars, in scene space: they notice trouble too. */
+function patrols(): { x: number; z: number }[] {
+  const out: { x: number; z: number }[] = [], cars = game.carsNext;
+  for (let i = 0; i < MAX_CARS; i++) if (Math.round(cars[i * 4 + 3]) === 5) out.push({ x: cars[i * 4], z: cars[i * 4 + 1] });
+  return out;
+}
+const wanted = new Wanted({ ground: groundAt, blocked: (x, z, y) => blockedAt(x, z, y), patrols, approach: (x, z) => approachPath(game.net, x, z, 3, 6) });
+scene.add(wanted.group);
+wanted.onBusted = (stars) => {
+  const fine = Math.min(garageState.cash, stars * 250);
+  garageState.cash -= fine;
+  saveGarage(garageState);
+  audio.play('error');
+  hud.toast(fine > 0 ? `Busted! Fined $${fine} from your racing winnings.` : 'Busted! Let off with a warning.');
+};
+wanted.onEscaped = () => hud.toast('You lost the police.');
 const driver = new Driver(camera, scene, {
   // Parked cars are in the way of a car, though a pedestrian squeezes past them.
   // Parked cars are cleared off the streets for a race.
@@ -384,14 +464,29 @@ const driver = new Driver(camera, scene, {
     for (let i = 0; i < MAX_CARS; i++) {
       const o = i * 4, type = Math.round(cars[o + 3]);
       if (type < 1 || type > 10 || Math.abs(cars[o] - x) > radius || Math.abs(cars[o + 1] - z) > radius) continue;
-      out.push({ x: cars[o], z: cars[o + 1], angle: cars[o + 2], length: vehicleLength(type), y: heights[i] ?? 0 });
+      if (takenCars.has(game.carIdsNext[i])) continue;
+      out.push({ x: cars[o], z: cars[o + 1], angle: cars[o + 2], length: vehicleLength(type), y: heights[i] ?? 0, police: type === 5 });
     }
-    return raceWorld.racing ? raceWorld.cars() : out.concat(raceWorld.cars());
+    return raceWorld.racing ? raceWorld.cars() : out.concat(raceWorld.cars(), wanted.cars());
   },
   impact: (strength) => { audio.crash(strength); raceWorld.impact(strength); },
-  onExit: () => { game.setStreetView(false); setWalking(false); input.suspended = false; hud.setWalking(false); furniture.setVisible(false); streetDetail.setActive(false); touch.setMode('map'); raceWorld.abort(); raceWorld.setVisible(false); raceHud.hideResult(); },
+  // Hitting a police car, or any car with the police close by, earns a star.
+  struck: (car, strength) => {
+    if (raceWorld.racing || strength < 0.12) return;
+    const at = driver.position;
+    // A real knock, not the squad car nudging up behind a stopped car.
+    if (car.police) { if (strength > 0.25) wanted.offence('police'); }
+    else if (wanted.policeNear(at.x, at.z, 2.6)) wanted.offence('crash');
+  },
+  runOver: (x, z, y, vx, vz) => {
+    if (raceWorld.racing) return 0;
+    const n = pedestrians.hit(x, z, y, vx, vz);
+    if (n > 0) { audio.crash(0.3); for (let i = 0; i < n; i++) wanted.offence('pedestrian'); }
+    return n;
+  },
+  onExit: () => { if (!handoff) leaveStreet(); raceWorld.abort(); raceWorld.setVisible(false); raceHud.hideResult(); },
 });
-const touch = new TouchControls(uiRoot, canvas, controls, walker, driver, () => { walker.exit(); driver.exit(); });
+const touch = new TouchControls(uiRoot, canvas, controls, walker, driver, () => { walker.exit(); driver.exit(); }, () => { if (driver.active) getOut(); else if (walker.active) getIn(); });
 // ---- the garage and street racing ------------------------------------------------------------------
 const garageState = loadGarage();
 const raceWorld = new RaceWorld();
@@ -475,6 +570,46 @@ function startDriving(): void {
   hud.setWalking(true, 'drive');
   touch.setMode('drive');
 }
+/** Out of the car and onto the street by the driver's door, the car left standing. */
+function getOut(): void {
+  handoff = true;
+  const at = driver.park();
+  handoff = false;
+  const fx = Math.sin(at.heading), fz = Math.cos(at.heading);
+  // The driver's door is on the left, driving on the right; if that is against a wall, the other door,
+  // or failing both, behind the car.
+  const spots = [[fz * 0.17, -fx * 0.17], [-fz * 0.17, fx * 0.17], [-fx * 0.3, -fz * 0.3]];
+  const [dx, dz] = spots.find(([ox, oz]) => !blockedAt(at.x + ox, at.z + oz, at.y)) ?? spots[0];
+  game.setStreetView(true);
+  walker.enter(at.x + dx, at.z + dz, at.heading + Math.PI, at.y);
+  hud.setWalking(true, 'walk');
+  touch.setMode('walk');
+}
+/**
+ * Into a car within reach: back into the one you got out of, or any other on the street (parked at
+ * the kerb, in the traffic, or one you left earlier), leaving yours standing. Taking one with the
+ * police looking on is theft.
+ */
+function getIn(): boolean {
+  const me = camera.position, own = driver.position;
+  const ownDist = driver.parked ? Math.hypot(own.x - me.x, own.z - me.z) : Infinity;
+  // A street car only when it is nearer than your own.
+  const other = ownDist > 0.25 ? takeCarNear(me.x, me.z) : null;
+  if (!other && ownDist > 0.45) return false;
+  handoff = true;
+  walker.exit();
+  handoff = false;
+  game.setStreetView(true, true);
+  if (other) {
+    leaveCar();
+    driver.setCar(other.geometry, other.stats);
+    driver.enter(other.x, other.z, other.heading, other.y);
+    if (other.street && wanted.policeNear(other.x, other.z, 3)) wanted.offence('theft');
+  } else driver.resume();
+  hud.setWalking(true, 'drive');
+  touch.setMode('drive');
+  return true;
+}
 /** Step down onto the nearest street to the middle of the view, facing the way the camera faced. */
 function startWalking(): void {
   if (walker.active || !playing) return;
@@ -500,7 +635,12 @@ function startWalking(): void {
 }
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
-  if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') { if (walker.active) walker.exit(); else startWalking(); }
+  // F gets out of the car, back into it when standing by it, and otherwise walks or stops walking.
+  if (e.code === 'KeyF' || e.key === 'f' || e.key === 'F') {
+    if (driver.active) getOut();
+    else if (walker.active) { if (!getIn()) walker.exit(); }
+    else startWalking();
+  }
   if (e.code === 'KeyM' || e.key === 'm' || e.key === 'M') driveButton();
   // At a race ring, Enter starts the race; in a race, R puts the car back on the route.
   if (driver.active && e.key === 'Enter' && raceWorld.nearby && !raceWorld.racing) startRace(raceWorld.nearby);
@@ -844,7 +984,7 @@ function checkTutorial(): void {
   game.load = (...args: Parameters<typeof load>) => { tutorialPanel.close(); load(...args); };
 }
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, wanted, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 /** How far the nearest fire engine or police car is from the camera: what the siren fades with. */
@@ -856,6 +996,7 @@ function nearestSiren(): number {
     if (type !== 5 && type !== 6) continue;
     best = Math.min(best, Math.hypot(cars[i * 4] - cx, cars[i * 4 + 1] - cz, camera.position.y));
   }
+  for (const c of wanted.positions()) best = Math.min(best, Math.hypot(c.x - cx, c.z - cz) * 0.5);
   return best;
 }
 
@@ -878,7 +1019,14 @@ renderer.setAnimationLoop((now: number) => {
     const at = driver.active ? driver.position : { x: camera.position.x, z: camera.position.z };
     game.setPlayer({ x: at.x + GRID / 2, z: at.z + GRID / 2 });
   }
-  if (driver.active) hud.setDriveSpeed(driver.kmh);
+  if (driver.active) hud.setDrive(driver.kmh, driver.nitro, driver.boosting);
+  for (const [id, until] of takenCars) if (until < performance.now()) takenCars.delete(id);
+  // The wanted level follows you in the car and on foot; a race or going back to the map clears it.
+  if ((driver.active || walker.active) && !raceWorld.racing) {
+    const at = driver.active ? driver.position : { x: camera.position.x, z: camera.position.z, y: camera.position.y - 0.22 };
+    wanted.update(dt, { ...at, speed: driver.active ? Math.hypot(driver.vx, driver.vz) : walker.moving ? 1 : 0, top: driver.stats.top, onFoot: !driver.active });
+    hud.setWanted(wanted.stars, wanted.evading, wanted.bust);
+  } else if (wanted.stars || wanted.cars().length) { wanted.reset(); hud.setWanted(0, false, 0); }
   if (flight) {
     // Ease the camera across rather than cutting, so it stays obvious where the map moved to.
     flight.time = Math.min(1, flight.time + dt * 1.6);

@@ -117,6 +117,26 @@ function trace(steps: Step[]): { xs: number[]; zs: number[]; ys: number[]; joint
   return { xs, zs, ys, joints };
 }
 
+/**
+ * A way in along the roads to the junction nearest (x, z), from one about `min`..`max` away by road,
+ * in scene space and ending at that junction: where squad cars come from when the player has not
+ * driven far enough to leave a trail for them to follow.
+ */
+export function approachPath(net: Network, x: number, z: number, min: number, max: number): { x: number; z: number; y: number }[] | null {
+  const node = net.nearestNode(x + GRID / 2, z + GRID / 2, 3);
+  if (!node) return null;
+  const { dist, via } = dijkstra(net, node.id, s => s.len);
+  let far = -1, best = Infinity;
+  for (const [id, d] of dist) {
+    const off = d < min ? min - d + 10 : d > max ? d - max + 10 : Math.abs(d - (min + max) / 2);
+    if (off < best) { best = off; far = id; }
+  }
+  const steps = far < 0 || far === node.id ? [] : pathTo(via, node.id, far);
+  if (!steps.length) return null;
+  const { xs, zs, ys } = trace(steps);
+  return xs.map((px, i) => ({ x: px, z: zs[i], y: ys[i] })).reverse();
+}
+
 const LINE_STEP = 0.1;
 
 /** Cut a polyline between two distances along it, interpolating the ends. */

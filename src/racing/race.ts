@@ -511,8 +511,14 @@ export class RaceWorld {
   private chase(dt: number, driver: Driver, speed: number): void {
     const police = this.police!, hud = this.hud!, at = driver.position;
     // Leave a trail for the police to follow: they drive where you drove.
-    const last = this.trail[this.trail.length - 1];
-    if (!last || Math.hypot(at.x - last.x, at.z - last.z) > 0.05) this.trail.push({ x: at.x, z: at.z, y: at.y, h: driver.heading });
+    // A point every 0.05 however far the car went this frame, since the police count their way along it.
+    let last = this.trail[this.trail.length - 1];
+    if (!last) this.trail.push({ x: at.x, z: at.z, y: at.y, h: driver.heading });
+    else for (let d = Math.hypot(at.x - last.x, at.z - last.z); d >= 0.05; d -= 0.05) {
+      const u = 0.05 / d;
+      last = { x: last.x + (at.x - last.x) * u, z: last.z + (at.z - last.z) * u, y: last.y + (at.y - last.y) * u, h: driver.heading };
+      this.trail.push(last);
+    }
     const idx = Math.floor(police.along), end = this.trail.length - 1;
     const behind = (end - police.along) * 0.05;
     const top = driver.stats.top * (behind > 4 ? 1.12 : behind > 1.5 ? 0.99 : 0.9) * this.difficulty;
