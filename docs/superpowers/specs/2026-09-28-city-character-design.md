@@ -49,7 +49,7 @@ Not in scope:
 `bandsOf(maps, neglect, kind, level) → Bands`. `Bands` holds four `Uint8Array`s of `N_TILES`.
 
 - **`wealth`** 0 (poor), 1 (ordinary), 2 (well-off), 3 (rich), from land value.
-  - Cut points: < 70 poor, < 140 ordinary, < 200 well-off, else rich. They are tuned so the demo city
+  - Cut points: < 60 poor, < 115 ordinary, < 150 well-off, else rich. They are tuned so the demo city
     shows all four.
 - **`rough`** 0, 1 or 2.
   - 2 when crime ≥ 60 or neglect > 0.
@@ -84,14 +84,15 @@ All of it goes into the street-detail chunk, so it is seen at street level and i
 Placement uses the chunk's seeded random stream, so the same street always looks the same.
 
 **Wealth 3 (rich):**
-- Street trees in iron grilles every ~0.9 along the pavement of built frontages.
+- Street trees in iron grilles, two per lot. They go in the forecourt where there is one, otherwise on
+  the pavement along the building line where it is at least 0.2 wide.
 - Stone planters with clipped box balls beside doors of shops, offices and flats.
 - Flats get a doorman canopy: a dark awning out to the kerb on two brass posts, and a mat.
 - Houses get a clipped hedge along the front and gate piers at the path.
 - Pavement litter drops to a quarter of today's.
 
 **Wealth 2 (well-off):**
-- Trees in grilles every ~1.4.
+- One tree in a grille on half the lots.
 - Planters at half the rate.
 - House hedges at half the rate.
 
@@ -120,7 +121,6 @@ Placement uses the chunk's seeded random stream, so the same street always looks
 
 **Litter 1:**
 - Two or three black bin bags at the kerb in front of about 40% of lots.
-- The litter bins overflow: a lump of rubbish on top.
 
 **Litter 2:**
 - Piles of 4–7 bags in front of most lots.
@@ -129,7 +129,6 @@ Placement uses the chunk's seeded random stream, so the same street always looks
 
 **Loud 1:**
 - Lots whose back faces a motorway get a tall timber acoustic fence along it.
-- Flats there get closed balconies: a glazed panel across each balcony front.
 
 ## Stage 2: buildings that read as a street
 

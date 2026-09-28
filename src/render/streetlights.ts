@@ -2,6 +2,8 @@ import { roadHeight } from '../roads/structures';
 import { sideHalf, roadHalf } from '../roads/lanes';
 import * as THREE from 'three';
 import { KIND_RAMP, Network } from '../roads/network';
+import { GRID, tileHash } from '../constants';
+import type { Bands } from './character';
 
 /** Instanced lamps and soft pools avoid hundreds of real-time point lights. */
 export class StreetlightLayer {
@@ -12,6 +14,15 @@ export class StreetlightLayer {
   private pools: THREE.InstancedMesh;
   private builtNet: Network | null = null;
   private builtVersion = -1;
+  private bands: Bands | null = null;
+  private roughSig = 0;
+  /** On the roughest streets some lamps are broken: the pole stands, but it gives no light. */
+  setBands(bands: Bands): void {
+    let h = 0;
+    for (let i = 0; i < bands.rough.length; i++) if (bands.rough[i] === 2) h = (Math.imul(h, 31) + i) | 0;
+    this.bands = bands;
+    if (h !== this.roughSig) { this.roughSig = h; this.builtVersion = -1; }
+  }
   constructor() {
     const size = 64, data = new Uint8Array(size * size * 4);
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
@@ -47,8 +58,12 @@ export class StreetlightLayer {
         next = seg.cum[i] + 5;
         obj.position.set(px - 40, roadHeight(seg, seg.cum[i]) + 0.65, pz - 40);
         obj.updateMatrix(); this.poles.setMatrixAt(count, obj.matrix);
+        const tx = Math.floor(px), tz = Math.floor(pz), tile = tz * GRID + tx;
+        const broken = this.bands !== null && tx >= 0 && tz >= 0 && tx < GRID && tz < GRID && this.bands.rough[tile] === 2 && tileHash(tile * 613 + i) < 0.3;
+        if (broken) obj.scale.setScalar(0);
         obj.position.y = roadHeight(seg, seg.cum[i]) + 1.3; obj.updateMatrix(); this.bulbs.setMatrixAt(count, obj.matrix);
         obj.position.y = roadHeight(seg, seg.cum[i]) + 0.061; obj.updateMatrix(); this.pools.setMatrixAt(count++, obj.matrix);
+        obj.scale.setScalar(1);
       }
     }
     for (const m of [this.poles, this.bulbs, this.pools]) { m.count = count; m.instanceMatrix.needsUpdate = true; }

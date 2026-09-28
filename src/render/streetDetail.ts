@@ -15,6 +15,8 @@ import type { VisualDetail } from './detail';
 import { isGardenTile } from './verges';
 import { hasDriveway } from './parkedCars';
 import { siteOwners } from '../sites';
+import { bandCode, type Bands } from './character';
+import { dressLot, chainLink } from './dressing';
 
 /**
  * Street-level detail, streamed in around the camera while walking or driving: the things nobody sees
@@ -67,6 +69,8 @@ export interface DetailSource {
   surface(tile: number): number;
   /** A building's walls, in its own frame (+z towards its street), or null where it has none. */
   body(kind: number, level: number, variant: number): Body | null;
+  /** Each tile's neighbourhood character; without it every street is ordinary. */
+  bands?: Bands;
 }
 export interface Body {
   x0: number; x1: number; z0: number; z1: number; h: number;
@@ -370,6 +374,7 @@ export class StreetDetailLayer {
       if (!inBounds(x, z)) continue;
       const i = idx(x, z);
       h = (Math.imul(h, 31) + src.kind[i] * 7 + src.level[i] * 3 + src.terraform[i] * 11 + src.raster.cover[i]) | 0;
+      if (src.bands) h = (Math.imul(h, 17) + bandCode(src.bands, i)) | 0;
     }
     return h;
   }
@@ -476,11 +481,21 @@ class ChunkBuilder {
           kit.jitter = 0;
           kit.at(p.x + nx * (hw - 0.012) - HALF, ASPHALT_TOP + 0.0004, p.z + nz * (hw - 0.012) - HALF, yaw).quad(0, 0, 0, 0.022, 0.07, 0x40424a);
           // A fallen leaf, a bottle cap, a scrap of paper: the odd bit of litter in the gutter and on the paving.
-          if (rnd() < 0.12) {
+          if (rnd() < 0.12 * this.litterRate(p.x + nx * (hw + 0.4), p.z + nz * (hw + 0.4))) {
             const off = rnd() < 0.5 ? hw - 0.01 : hw + 0.02 + rnd() * 0.06;
             kit.jitter = (rnd() - 0.5) * 0.2;
             kit.at(p.x + nx * off - HALF, (off < hw ? ASPHALT_TOP : PAVE) + 0.0012, p.z + nz * off - HALF, rnd() * 6);
             kit.quad(0, 0, 0, 0.006 + rnd() * 0.006, 0.004 + rnd() * 0.006, pick(rnd, [0xb5864f, 0xd98a2b, 0x8a6a3a, 0xe8e2d0, 0xc8382f, 0x9ac27f]));
+          }
+          // On poor streets, weeds in the kerb joints and a cracked slab here and there.
+          if (this.poorAt(p.x + nx * (hw + 0.4), p.z + nz * (hw + 0.4))) {
+            if (rnd() < 0.1) this.tuft(p.x + nx * (hw + 0.012) - HALF, PAVE, p.z + nz * (hw + 0.012) - HALF);
+            if (rnd() < 0.05) {
+              const off = hw + KERB + 0.03 + rnd() * 0.06;
+              kit.jitter = 0;
+              kit.at(p.x + nx * off - HALF, PAVE + 0.0009, p.z + nz * off - HALF, yaw + (rnd() - 0.5) * 0.4);
+              kit.quad(0, 0, 0, 0.002, 0.05, 0x6f6c64); kit.quad(0.01, 0, 0.012, 0.02, 0.002, 0x6f6c64);
+            }
           }
         }
       }
@@ -653,6 +668,19 @@ class ChunkBuilder {
         kit.box(0.05, 0, 0.05, 0.03, 0.02, 0.03, 0x6b6560);
       }
     }
+  }
+
+  private poorAt(x: number, z: number): boolean {
+    const b = this.src.bands, tx = Math.floor(x), tz = Math.floor(z);
+    return !!b && inBounds(tx, tz) && b.wealth[idx(tx, tz)] === 0;
+  }
+
+  /** How much litter lies about at a point (map coordinates), against an ordinary street's. */
+  private litterRate(x: number, z: number): number {
+    const b = this.src.bands, tx = Math.floor(x), tz = Math.floor(z);
+    if (!b || !inBounds(tx, tz)) return 1;
+    const i = idx(tx, tz), w = b.wealth[i];
+    return (w === 0 ? 2 : w === 3 ? 0.25 : 1) * [1, 1.6, 3][b.litter[i]];
   }
 
   private kiosk(x: number, z: number, face: number, rnd: () => number): void {
@@ -912,8 +940,14 @@ class ChunkBuilder {
     // Half the zoned lots nobody has built on are building sites; the rest are long grass and a sign.
     if (tileHash(i * 53 + 9) < 0.5 && this.src.raster.accSeg[i] >= 0) { this.site(i, x, z); return; }
     this.wild(i, x, z, 0.7);
-    if (!this.fine || tileHash(i * 17 + 1) < 0.6) return;
     const { raster } = this.src;
+    if (this.src.bands?.rough[i] === 2 && raster.accSeg[i] >= 0) {
+      // A rough street's empty lot is fenced off with chain-link along its front.
+      const cx = x + 0.5, cz = z + 0.5;
+      this.kit.at(cx - HALF, 0, cz - HALF, Math.atan2(raster.accX[i] - cx, raster.accZ[i] - cz));
+      chainLink(this.kit, 0.46, -0.46, 0.46);
+    }
+    if (!this.fine || tileHash(i * 17 + 1) < 0.6) return;
     if (raster.accSeg[i] < 0) return;
     const cx = x + 0.5, cz = z + 0.5, dx = raster.accX[i] - cx, dz = raster.accZ[i] - cz, d = Math.hypot(dx, dz) || 1;
     const px = cx + dx / d * 0.38, pz = cz + dz / d * 0.38, face = Math.atan2(dx, dz);
@@ -1215,6 +1249,17 @@ class ChunkBuilder {
       case T_IND: this.yard(body, l, rnd); break;
       case T_FARM: this.farm(i, rnd); break;
       case T_LEISURE: this.leisure(i, body, rnd); break;
+    }
+    const bands = this.src.bands;
+    if (bands && k !== T_FARM) {
+      this.kit.at(...this.saved);
+      // How much pavement lies between the lot's front edge and the kerb, in the lot's own units.
+      const { raster, net } = this.src, seg = raster.accSeg[i] >= 0 ? net.segs.get(raster.accSeg[i]) : undefined;
+      const pave = seg ? (Math.hypot(raster.lotX[i] - raster.accX[i], raster.lotZ[i] - raster.accZ[i]) - 0.5 * f.scale - roadHalf(seg) - KERB) / f.scale : 0;
+      dressLot(this.kit, {
+        i, kind: k, level: l, body, fine: this.fine, pave, rnd: stream(i * 48271 + (this.fine ? 5 : 1)), hash: salt => tileHash(i * 97 + salt),
+        wealth: bands.wealth[i], rough: bands.rough[i], litter: bands.litter[i], loud: bands.loud[i],
+      });
     }
   }
 

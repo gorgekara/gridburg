@@ -32,6 +32,7 @@ import { playerCarGeometry, streetCarGeometry, streetCarStats, TAKEABLE } from '
 import { GaragePanel } from './ui/garage';
 import { RaceHudView } from './ui/raceHud';
 import type { DetailSource } from './render/streetDetail';
+import { bandsOf, ordinaryBands, type Bands } from './render/character';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
@@ -355,6 +356,10 @@ function blockedAt(x: number, z: number, y = 0): boolean {
   }
   return false;
 }
+/** Each tile's neighbourhood character, from the city's maps: what the street detail dresses by. */
+let bands: Bands = ordinaryBands();
+/** From the console: a change made to the bands after each state, to see a look the city has not earned. */
+let bandsTweak: ((b: Bands) => void) | null = null;
 /** What the street detail is built from: the game as it stands when each chunk is built. */
 function detailSource(): DetailSource {
   return {
@@ -368,6 +373,7 @@ function detailSource(): DetailSource {
     relief: (x, z) => hills.heightAt(x, z),
     surface: (tile) => game.waterSurface ? game.waterSurface[tile] : NaN,
     body: (k, l, v) => buildings.body(k, l, v),
+    get bands() { return bands; },
   };
 }
 /** Set while stepping out of the car or back into it, so the street stays set up between the two. */
@@ -723,6 +729,9 @@ game.onEdit = () => {
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
 };
 game.onState = () => {
+  bands = bandsOf(game.maps, game.neglect, game.maps ? bands : undefined);
+  bandsTweak?.(bands);
+  streetlights.setBands(bands); streetlights.rebuild(game.net);
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles);
@@ -984,7 +993,28 @@ function checkTutorial(): void {
   game.load = (...args: Parameters<typeof load>) => { tutorialPanel.close(); load(...args); };
 }
 
-const dbg = { game, camera, controls, input, renderer, scene, walker, driver, raceWorld, wanted, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, get bands() { return bands; }, tweakBands(fn: ((b: Bands) => void) | null) { bandsTweak = fn; bands = bandsOf(game.maps, game.neglect); fn?.(bands); streetlights.setBands(bands); streetlights.rebuild(game.net); }, camera, controls, input, renderer, scene, walker, driver, raceWorld, wanted, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+/**
+ * For looking at the street detail from the console: stand across the road from a lot's front, raised
+ * by `lift` and looking down by `pitch`. Returns the lot, or -1 when nothing matches.
+ */
+function lookAtLot(match: (i: number) => boolean, back = 0.45, lift = 0.25, pitch = -0.25, skip = 0): number {
+  const R = game.raster;
+  for (let i = 0, n = 0; i < N_TILES; i++) {
+    if (!game.level[i] || R.accSeg[i] < 0 || !match(i) || n++ < skip) continue;
+    const vx = R.lotX[i] - R.accX[i], vz = R.lotZ[i] - R.accZ[i], len = Math.hypot(vx, vz) || 1;
+    if (!walker.active) startWalking();
+    // Step straight to the new spot, without leaving the street in between.
+    (walker as unknown as { active: boolean }).active = false;
+    walker.enter(R.accX[i] - vx / len * back - GRID / 2, R.accZ[i] - vz / len * back - GRID / 2, Math.atan2(-vx, -vz));
+    const w = walker as unknown as { feet: number; pitch: number };
+    w.feet += lift; w.pitch = pitch; camera.position.y += lift;
+    streetDetail.update(camera.position, true);
+    return i;
+  }
+  return -1;
+}
+Object.assign(dbg, { lookAtLot, demo: () => { history.replaceState(null, '', location.pathname); startCity(demoCity(true), 'Demo city loaded'); game.warm(110); focusCity(true); input.setTool('none'); } });
 (window as unknown as { __gridburg: unknown }).__gridburg = dbg;
 
 /** How far the nearest fire engine or police car is from the camera: what the siren fades with. */
