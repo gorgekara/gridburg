@@ -55,6 +55,26 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   palettes each, from two-storey brick parades to glass towers, so a commercial street is a mix of
   heights and colours rather than a wall of the same block. Offices and towers carry a company logo,
   and after dark their floors light up in cool white alongside the warm windows of homes.
+- **Streets that show what the city is.** The street detail reads the land value, crime, rubbish,
+  noise and neglect maps:
+  - **Rich streets:** trees in grilles, clipped hedges and doorman canopies.
+  - **Poor streets:** bare front gardens, weeds in the kerb and more litter.
+  - **Trouble:** graffiti, roller shutters, boarded windows, chain-link fences and broken lamps.
+  - **Uncollected rubbish:** bin bags and skips at the kerb.
+- **Buildings that read as a street.** Houses come in terrace runs painted alike, and every building
+  has its own tint. Flats beside shops keep a shop downstairs.
+- **Windows lit by the hour.** Every pane is lit by the hour, differently on every building: they
+  come on through dusk and thin out after midnight.
+- **Street life through the day.**
+  - Cafés fill at lunch and stack their chairs at night, when the shops roll their shutters down.
+  - Neon glows over the bigger shops.
+  - Market stalls go up on busy shopping streets, and lunch carts draw queues outside offices.
+  - Delivery vans call in the morning.
+  - Scaffolding goes up on buildings that have just grown.
+- **Landmarks the city grows by itself.**
+  - Civic plazas with fountains or statues where land is dear.
+  - A clock tower in each district's old heart, keeping the city's time.
+  - Promenades with railings, benches and lamps wherever the town meets the water.
 - **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
   can type a seed in when starting a city.
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,
