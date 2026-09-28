@@ -4,7 +4,7 @@ import { isPromenadeTile } from './landmarks';
 import { sideHalf, roadHalf } from '../roads/lanes';
 import {
   GRID, idx, inBounds, tileHash, isService, isZone, SERVICES,
-  T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE, T_PARK,
+  T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE, T_PARK, T_BUS,
 } from '../constants';
 import { KIND_LANE, KIND_ROAD, KIND_AVENUE, SPEED, isMotorway } from '../roads/network';
 import type { Network } from '../roads/network';
@@ -725,6 +725,19 @@ class ChunkBuilder {
   private poorAt(x: number, z: number): boolean {
     const b = this.src.bands, tx = Math.floor(x), tz = Math.floor(z);
     return !!b && inBounds(tx, tz) && b.wealth[idx(tx, tz)] === 0;
+  }
+
+  /** People waiting at a bus stop: a queue at rush hour, one or two by day, hardly anyone at night. */
+  private busQueue(i: number): void {
+    const { raster } = this.src;
+    if (raster.accSeg[i] < 0) return;
+    const hour = this.src.hour ?? 12, rush = (hour >= 7 && hour < 9.5) || (hour >= 16.5 && hour < 19);
+    const h = tileHash(i * 131 + Math.floor(hour)), n = this.time === TIME.NIGHT ? (h < 0.5 ? 0 : 1) : rush ? 3 + Math.floor(h * 3) : 1 + Math.floor(h * 2.5);
+    if (!n) return;
+    const cx = i % GRID + 0.5, cz = Math.floor(i / GRID) + 0.5, dx = raster.accX[i] - cx, dz = raster.accZ[i] - cz, d = Math.hypot(dx, dz) || 1;
+    const face = Math.atan2(dx, dz), rnd = stream(i * 977 + Math.floor(hour));
+    this.kit.at(cx + dx / d * 0.42 - HALF, PAVE, cz + dz / d * 0.42 - HALF, face);
+    for (let k = 0; k < n; k++) figure(this.kit, -0.2 + k * 0.05 + (rnd() - 0.5) * 0.015, (rnd() - 0.5) * 0.03, rnd() < 0.7 ? 0 : (rnd() - 0.5) * 2, false, rnd);
   }
 
   /** How much litter lies about at a point (map coordinates), against an ordinary street's. */
@@ -1886,6 +1899,7 @@ class ChunkBuilder {
 
   /** Around a service building: a flagpole, planters, a bench, bins and a bike rack on its frontage. */
   private service(i: number, k: number): void {
+    if (k === T_BUS) this.busQueue(i);
     const spec = SERVICES[k];
     if (!spec || spec.decoration) {
       if (k === T_PARK) this.wild(i, i % GRID, Math.floor(i / GRID), 0.5);

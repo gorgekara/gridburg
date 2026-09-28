@@ -68,5 +68,24 @@ test('smoke: stacks and chimneys breathe from their tops, and plain houses do no
   for (const [x, , z] of [...coal.e, ...factory.e, ...chimneyHouse.e]) assert.ok(Math.abs(x) < 1.6 && Math.abs(z) < 1.6, 'on its own site');
 });
 
+const C = await import('../src/render/character.ts');
+
+test('crowds: shopping streets fill at lunch, homes in the evening, offices at rush hour', () => {
+  const kind = new Uint8Array(40), level = new Uint8Array(40).fill(2), acc = new Int32Array(40).fill(-1);
+  for (let i = 0; i < 10; i++) { kind[i] = K.T_COM; acc[i] = 1; }
+  for (let i = 10; i < 20; i++) { kind[i] = K.T_RES; acc[i] = 2; }
+  for (let i = 20; i < 30; i++) { kind[i] = K.T_OFFICE; acc[i] = 3; }
+  for (let i = 30; i < 34; i++) { kind[i] = K.T_PARK; level[i] = 0; acc[i] = 4; }
+  const lengths = new Map([[1, 10], [2, 10], [3, 10], [4, 10]]);
+  const at = h => C.streetLife(kind, level, acc, lengths, h, k => k === K.T_PARK);
+  const noon = at(12.5), evening = at(21), rush = at(8), night = at(3);
+  assert.ok(noon.get(1).people > noon.get(2).people, 'shops beat homes at lunch');
+  assert.ok(evening.get(2).people > evening.get(1).people, 'homes beat shops in the evening');
+  assert.ok(rush.get(3).people > at(10).get(3).people * 2, 'office streets fill at rush hour');
+  assert.ok(rush.get(3).office > 0.9, 'and it is commuters');
+  assert.ok(noon.get(4).green > 0, 'parks draw the joggers');
+  assert.ok(night.get(1).people < noon.get(1).people * 0.2, 'shopping streets empty at night');
+});
+
 console.log(`\n${checks} passed, ${failures} failed`);
 if (failures) process.exit(1);

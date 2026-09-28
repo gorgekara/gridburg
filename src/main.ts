@@ -32,7 +32,7 @@ import { playerCarGeometry, streetCarGeometry, streetCarStats, TAKEABLE } from '
 import { GaragePanel } from './ui/garage';
 import { RaceHudView } from './ui/raceHud';
 import type { DetailSource } from './render/streetDetail';
-import { bandsOf, ordinaryBands, occupancy, type Bands } from './render/character';
+import { bandsOf, ordinaryBands, occupancy, streetLife, type Bands } from './render/character';
 import { assignVariants } from './render/variants';
 import { LandmarkLayer } from './render/landmarks';
 import { weatherAt, CLEAR, type Weather } from './render/weather';
@@ -65,7 +65,7 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET, F_NO_POWER } from './constants';
+import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET, F_NO_POWER, T_PARK, T_GARDEN, T_PLAZA, T_PLAYGROUND, T_SPORTS } from './constants';
 import { HALF_WIDTH, Network } from './roads/network';
 import { roadHeight } from './roads/structures';
 import { serviceCoverage } from './coverage';
@@ -126,6 +126,8 @@ const verges = new VergeLayer();
 const landmarks = new LandmarkLayer();
 const rain = new RainLayer();
 const smoke = new SmokeLayer();
+/** The hour the crowds were last sent out for (-1: send them again). */
+let lifeHour = -1;
 /** The weather now, for the sky, the rain, the wet streets and the umbrellas. */
 let weather: Weather = CLEAR;
 const parked = new ParkedCarLayer();
@@ -718,6 +720,7 @@ game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); au
 game.onUndo = () => { reshape(); };
 game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); hills.setTerrain(game.terrain, levels.edgeGround()); hills.rebuild(levels.ground, solidGround()); river.rebuild(game.terrain, levels.edgeGround()); flood.setTerrain(game.terrain); flood.rebuild(null, levels); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
+  lifeHour = -1;
   assignVariants(game.kind, game.level, game.raster, game.net);
   parkPaths.rebuild(game.parkPaths);
   showCoverage();
@@ -1093,6 +1096,17 @@ renderer.setAnimationLoop((now: number) => {
   rain.update(dt, camera, weather.rain, weather.windAngle, weather.wind, walker.active || driver.active);
   roads.setWet(weather.wet);
   pedestrians.setRain(weather.rain);
+  {
+    // Once an hour, and after an edit, send the crowds to where people are at this hour.
+    const hour = daylight(game.cityTime).hour, whole = Math.floor(hour);
+    if (whole !== lifeHour) {
+      lifeHour = whole;
+      const lengths = new Map<number, number>();
+      for (const sg of game.net.segs.values()) lengths.set(sg.id, sg.len);
+      const green = (k: number): boolean => k === T_PARK || k === T_GARDEN || k === T_PLAZA || k === T_PLAYGROUND || k === T_SPORTS;
+      pedestrians.setLife(streetLife(game.kind, game.level, game.raster.accSeg, lengths, hour, green), (hour >= 7.5 && hour < 9.5) || (hour >= 16.5 && hour < 18.5));
+    }
+  }
   {
     const hour = daylight(game.cityTime).hour, evening = hour >= 18 || hour < 8, shift = hour >= 6 && hour < 20;
     // Factories run by day and at half pace at night; the power stations never stop; house fires are lit

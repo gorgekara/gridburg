@@ -1,4 +1,4 @@
-import { GRID, N_TILES, tileHash } from '../constants';
+import { GRID, N_TILES, tileHash, T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE } from '../constants';
 import type { CityMaps } from '../sim/messages';
 
 /**
@@ -127,4 +127,49 @@ export function buildingTint(key: number, wealth: number, out: { x: number; y: n
     r = (r * 0.7 + grey * 0.3) * 0.94; g = (g * 0.7 + grey * 0.3) * 0.94; b = (b * 0.7 + grey * 0.3) * 0.94;
   }
   out.set(r, g, b);
+}
+
+/** How busy a street is with people on foot, from what fronts it, at an hour. */
+export interface StreetLife {
+  /** People on foot, per unit of street, besides the few every street sees. */
+  people: number;
+  /** The share of that from offices: at rush hour these are commuters in dark suits, in a hurry. */
+  office: number;
+  /** How much park and green fronts it: joggers and dog walkers come here. */
+  green: number;
+}
+
+const bell = (points: [number, number][], h: number): number => curve(points, ((h % 24) + 24) % 24);
+const SHOP_HOURS: [number, number][] = [[0, 0.05], [8, 0.1], [10, 0.6], [12, 1], [14, 0.8], [17, 1], [19, 0.6], [21, 0.2], [24, 0.05]];
+const OFFICE_HOURS: [number, number][] = [[0, 0.02], [6.5, 0.05], [8, 1], [9.5, 0.3], [12.5, 0.9], [14, 0.3], [17, 1], [19, 0.2], [21, 0.05], [24, 0.02]];
+const HOME_HOURS: [number, number][] = [[0, 0.1], [6, 0.2], [8, 0.8], [10, 0.35], [16, 0.35], [18, 0.9], [22, 0.5], [24, 0.1]];
+const LEISURE_HOURS: [number, number][] = [[0, 0.8], [2, 0.3], [5, 0.05], [10, 0.4], [17, 0.6], [20, 1], [24, 0.8]];
+const WORK_HOURS: [number, number][] = [[0, 0.05], [6, 0.5], [8, 0.2], [12, 0.4], [14, 0.2], [16, 0.5], [18, 0.1], [24, 0.05]];
+const GREEN_HOURS: [number, number][] = [[0, 0.05], [6, 0.6], [9, 0.5], [12, 0.6], [17, 0.9], [20, 0.5], [22, 0.1], [24, 0.05]];
+
+export function streetLife(kind: Uint8Array, level: Uint8Array, accSeg: Int32Array, lengths: ReadonlyMap<number, number>, hour: number, green: (k: number) => boolean): Map<number, StreetLife> {
+  const w = { shop: bell(SHOP_HOURS, hour), office: bell(OFFICE_HOURS, hour), home: bell(HOME_HOURS, hour), leisure: bell(LEISURE_HOURS, hour), work: bell(WORK_HOURS, hour), green: bell(GREEN_HOURS, hour) };
+  const sums = new Map<number, { people: number; office: number; green: number }>();
+  for (let i = 0; i < kind.length; i++) {
+    const s = accSeg[i], k = kind[i];
+    if (s < 0 || !k) continue;
+    const l = Math.max(1, level[i]);
+    let people = 0, office = 0, park = 0;
+    if (k === T_COM && level[i]) people = w.shop * l * 1.2;
+    else if (k === T_OFFICE && level[i]) { office = w.office * l * 1.1; people = office; }
+    else if (k === T_RES && level[i]) people = w.home * l * 0.6;
+    else if (k === T_LEISURE && level[i]) people = w.leisure * l * 1.2;
+    else if ((k === T_IND || k === T_FARM) && level[i]) people = w.work * 0.3;
+    else if (green(k)) { park = w.green; people = park * 0.6; }
+    if (!people) continue;
+    const t = sums.get(s) ?? { people: 0, office: 0, green: 0 };
+    t.people += people; t.office += office; t.green += park;
+    sums.set(s, t);
+  }
+  const out = new Map<number, StreetLife>();
+  for (const [s, t] of sums) {
+    const len = Math.max(0.5, lengths.get(s) ?? 1);
+    out.set(s, { people: t.people / len, office: t.people ? t.office / t.people : 0, green: Math.min(1, t.green / len) });
+  }
+  return out;
 }

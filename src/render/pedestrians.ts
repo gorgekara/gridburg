@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import type { StreetLife } from './character';
 import { sideHalf } from '../roads/lanes';
 import { GRID } from '../constants';
 import { isMotorway } from '../roads/network';
@@ -23,6 +24,9 @@ const CURB_TOP = 0.031;
 
 const HAIR = [0x2a1d14, 0x4a3222, 0x7a5230, 0xc9a45c, 0x1a1a1a, 0x8a8a8a, 0xb5562f, 0xe0d6c4];
 const BAGS = [0x2a2f36, 0x8a5a3c, 0xd8453b, 0x2f5f9f, 0x3f6b4a, 0xe0a021];
+const SPORTS = [0xff4d6d, 0x2fd0ff, 0xc6ff3d, 0xff9f1c, 0xf2f2ee, 0x7b5cff];
+const SUITS = [0x1f2226, 0x2a3140, 0x3a3f47, 0x2a2f36, 0x4a4e56];
+const DOGS = [0x6b4a2a, 0xd8b88a, 0x2a2624, 0xf2ece0, 0x9a6a3a, 0x7a7a7a];
 const UMBRELLAS = [0x1f2226, 0x1f2226, 0x2f3f6f, 0xc8382f, 0x3a6a4a, 0xe0a021, 0x6a3a6a, 0x1f2226];
 const SHIRTS = [0xd8453b, 0x2f6fb7, 0xe0a021, 0x3f9a5f, 0xf1ece0, 0x6a5acd, 0x2a2f36, 0xe07fb0, 0x5fb3b3, 0x8a5a3c];
 const SKIN = [0xf1c9a5, 0xd9a47c, 0xa8744f, 0x7a4e32, 0xe8b894];
@@ -46,6 +50,8 @@ interface Person {
   phase: number;
   /** Seconds left standing still (window shopping, waiting at a corner). */
   pause: number;
+  /** 0 out and about, 1 a jogger, 2 walking the dog. */
+  role: number;
 }
 
 function box(w: number, h: number, d: number, y: number, shade = 1, x = 0, z = 0): THREE.BufferGeometry {
@@ -76,6 +82,11 @@ export class PedestrianLayer {
   private bag: THREE.InstancedMesh;
   /** Umbrellas, up over the pavement crowd while it rains. */
   private umbrellas: THREE.InstancedMesh;
+  /** The dogs, trotting ahead of the people walking them. */
+  private dogs: THREE.InstancedMesh;
+  /** How busy each street is now (see `streetLife`), and whether it is rush hour. */
+  private life = new Map<number, StreetLife>();
+  private rush = false;
   private rain = 0;
   /** Per person: height, whether they have hair (and how much), and whether they carry a bag. */
   private looks: { height: number; hair: number; bag: number }[] = [];
@@ -140,6 +151,17 @@ export class PedestrianLayer {
     const colour = new THREE.Color();
     for (let i = 0; i < MAX_PEOPLE; i++) this.umbrellas.setColorAt(i, colour.setHex(UMBRELLAS[i % UMBRELLAS.length]));
     this.group.add(this.umbrellas);
+    // A dog: a body, a head held up, four legs and a tail.
+    const dog = mergeBoxes([
+      box(0.03, 0.013, 0.012, 0.014, 1, 0, 0), box(0.012, 0.012, 0.011, 0.022, 1, 0, 0.019), box(0.006, 0.004, 0.006, 0.02, 0.4, 0, 0.027),
+      box(0.004, 0.014, 0.004, 0, 0.8, -0.004, -0.011), box(0.004, 0.014, 0.004, 0, 0.8, 0.004, -0.011), box(0.004, 0.014, 0.004, 0, 0.8, -0.004, 0.011), box(0.004, 0.014, 0.004, 0, 0.8, 0.004, 0.011),
+      box(0.003, 0.003, 0.012, 0.026, 1, 0, -0.019),
+    ]);
+    dog.rotateY(Math.PI / 2);
+    this.dogs = new THREE.InstancedMesh(dog, mat(), MAX_PEOPLE);
+    this.dogs.count = 0; this.dogs.frustumCulled = false; this.dogs.castShadow = true;
+    this.dogs.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);
+    this.group.add(this.dogs);
     for (const m of this.meshes) {
       m.count = 0; m.frustumCulled = false; m.castShadow = true;
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.instanceMatrix.count * 3), 3);
@@ -154,6 +176,14 @@ export class PedestrianLayer {
   private random(): number {
     this.rnd = (this.rnd * 16807) % 2147483647;
     return (this.rnd - 1) / 2147483646;
+  }
+
+  /** How busy each street is at this hour, and whether commuters are about. */
+  setLife(life: Map<number, StreetLife>, rush: boolean): void {
+    // A new hour moves people on: a few at a time are sent to where the crowds are now.
+    this.life = life; this.rush = rush;
+    for (let k = 0; k < this.people.length; k += 3) { const q = this.spawn(k); if (q) this.people[k] = q; }
+    for (const m of [...this.meshes, this.dogs]) if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
 
   /** How hard it is raining: most people walk under an umbrella in the rain. */
@@ -178,23 +208,31 @@ export class PedestrianLayer {
   private spawn(i = this.people.length): Person | null {
     const net = this.net;
     if (!net) return null;
-    // Pick a street weighted by length, so long avenues carry more people than short stubs.
+    // Pick a street by how many people it draws now: its length, and what fronts it at this hour, so
+    // the shopping streets fill at lunch, the office streets at rush hour and the homes in the evening.
     const segs = [...net.segs.values()].filter(s => this.walkable(s));
     if (!segs.length) return null;
-    const total = segs.reduce((n, s) => n + s.len, 0);
+    const weight = (s: RSeg): number => s.len * (0.15 + (this.life.get(s.id)?.people ?? 0) * 0.8);
+    const total = segs.reduce((n, s) => n + weight(s), 0);
     let r = this.random() * total, seg = segs[0];
-    for (const s of segs) { r -= s.len; if (r <= 0) { seg = s; break; } }
+    for (const s of segs) { r -= weight(s); if (r <= 0) { seg = s; break; } }
+    const life = this.life.get(seg.id);
+    // Joggers and people walking the dog make for the parks; commuters hurry along the office streets.
+    const green = life?.green ?? 0, roll = this.random();
+    const role = roll < 0.03 + green * 0.3 ? 1 : roll < 0.06 + green * 0.5 ? 2 : 0;
+    const suit = role === 0 && this.rush && (life?.office ?? 0) > 0.4 && this.random() < 0.8;
     const n = this.people.length + this.rnd;
     const p: Person = {
       seg, side: this.random() < 0.5 ? 1 : -1, s: this.random() * seg.len, dir: this.random() < 0.5 ? 1 : -1,
-      speed: 0.09 + this.random() * 0.07, phase: this.random() * 6.28, pause: 0,
+      speed: role === 1 ? 0.24 + this.random() * 0.06 : (0.09 + this.random() * 0.07) * (suit ? 1.3 : 1), phase: this.random() * 6.28, pause: 0, role,
     };
     const pick = (palette: number[]): THREE.Color => new THREE.Color(palette[Math.floor(this.random() * palette.length)]);
-    const shirt = pick(SHIRTS), skin = pick(SKIN), trousers = new THREE.Color(TROUSERS[n % TROUSERS.length]);
+    const shirt = pick(role === 1 ? SPORTS : suit ? SUITS : SHIRTS), skin = pick(SKIN), trousers = new THREE.Color(role === 1 ? 0x1f2226 : suit ? SUITS[n % SUITS.length] : TROUSERS[n % TROUSERS.length]);
     this.torso.setColorAt(i, shirt); this.head.setColorAt(i, skin);
-    this.hair.setColorAt(i, pick(HAIR)); this.bag.setColorAt(i, pick(BAGS));
+    this.hair.setColorAt(i, pick(HAIR)); this.bag.setColorAt(i, pick(suit ? [0x3a2a1f, 0x1f2226] : BAGS));
     for (const k of [0, 1]) { this.legs.setColorAt(i * 2 + k, trousers); this.arms.setColorAt(i * 2 + k, shirt); this.hands.setColorAt(i * 2 + k, skin); }
-    this.looks[i] = { height: 0.9 + this.random() * 0.2, hair: this.random() < 0.1 ? 0 : 1, bag: this.random() < 0.35 ? 1 : 0 };
+    this.looks[i] = { height: 0.9 + this.random() * 0.2, hair: this.random() < 0.1 ? 0 : 1, bag: role ? 0 : suit ? 1 : this.random() < 0.35 ? 1 : 0 };
+    if (i < MAX_PEOPLE) this.dogs.setColorAt(i, pick(DOGS));
     return p;
   }
 
@@ -317,7 +355,7 @@ export class PedestrianLayer {
       for (const m of this.meshes) if (m.instanceColor) m.instanceColor.needsUpdate = true;
     }
     if (this.people.length > target) this.people.length = target;
-    const half = GRID / 2, obj = new THREE.Object3D(), leg = new THREE.Object3D(), hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+    const half = GRID / 2, obj = new THREE.Object3D(), leg = new THREE.Object3D(), dog = new THREE.Object3D(), hidden = new THREE.Matrix4().makeScale(0, 0, 0);
     this.people.forEach((p, i) => {
       if (!this.net!.segs.has(p.seg.id)) { const q = this.spawn(i); if (q) this.people[i] = p = q; }
       let moving = false;
@@ -346,7 +384,16 @@ export class PedestrianLayer {
       this.hair.setMatrixAt(i, look.hair ? obj.matrix : hidden);
       this.bag.setMatrixAt(i, look.bag ? obj.matrix : hidden);
       // Seven in ten put an umbrella up once it is properly raining; the rest put up with it.
-      this.umbrellas.setMatrixAt(i, this.rain > 0.15 && ((i * 2654435761) >>> 0) % 10 < 7 ? obj.matrix : hidden);
+      this.umbrellas.setMatrixAt(i, this.rain > 0.15 && p.role !== 1 && ((i * 2654435761) >>> 0) % 10 < 7 ? obj.matrix : hidden);
+      if (p.role === 2) {
+        // The dog trots a lead's length ahead.
+        const ds = Math.max(0, Math.min(p.seg.len, p.s + p.dir * 0.045)), dat = sample(p.seg, ds), doff = off - 0.012;
+        dog.position.set(dat.x - dat.tz * doff * p.side - half, y, dat.z + dat.tx * doff * p.side - half);
+        dog.rotation.set(0, obj.rotation.y, 0);
+        dog.scale.setScalar(PERSON);
+        dog.updateMatrix();
+        this.dogs.setMatrixAt(i, dog.matrix);
+      } else this.dogs.setMatrixAt(i, hidden);
       for (const k of [0, 1]) {
         leg.position.set(k ? 0.009 : -0.009, HIP, 0);
         leg.rotation.set((k ? 1 : -1) * stride * 0.45, 0, 0);
@@ -392,8 +439,9 @@ export class PedestrianLayer {
     this.torso.count = this.head.count = this.hair.count = this.bag.count = n;
     this.legs.count = this.arms.count = this.hands.count = n * 2;
     for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
-    this.umbrellas.count = Math.min(MAX_PEOPLE, this.people.length);
+    this.umbrellas.count = this.dogs.count = Math.min(MAX_PEOPLE, this.people.length);
     this.umbrellas.instanceMatrix.needsUpdate = true;
+    this.dogs.instanceMatrix.needsUpdate = true;
   }
 }
 
