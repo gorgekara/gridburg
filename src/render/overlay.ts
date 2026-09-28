@@ -1,8 +1,9 @@
 import type { Raster } from '../roads/raster';
-import { buildingHeight, VARIANTS } from './buildingGeo';
+import { lotVariant } from './variants';
+import { buildingHeight } from './buildingGeo';
 import * as THREE from 'three';
 import {
-  GRID, N_TILES, SERVICES, F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, F_DECLINING, isService, isZone, tileHash,
+  GRID, N_TILES, SERVICES, F_NO_POWER, F_NO_WATER, F_NO_SEWAGE, F_NO_ROAD, F_DECLINING, isService, isZone,
 } from '../constants';
 
 const m4 = new THREE.Matrix4();
@@ -176,7 +177,7 @@ export class OverlayLayer {
       if (!zone && !isService(k)) continue;
       const c = f & F_NO_ROAD ? C_ROAD : f & F_NO_POWER ? C_POWER : f & F_NO_WATER ? C_WATER : f & F_NO_SEWAGE ? C_SEWAGE : f & F_DECLINING ? 0xffa43b : 0;
       if (!c) continue;
-      const h = buildingHeight(k, zone ? level[i] : 1, zone ? Math.floor(tileHash(i) * VARIANTS) % VARIANTS : 0);
+      const h = buildingHeight(k, zone ? level[i] : 1, zone ? lotVariant(i) : 0);
       const footprint = SERVICES[k]?.footprint;
       pos.set(footprint ? i % GRID + footprint[0] / 2 - half : raster.lotX[i] - half, h + 0.35, footprint ? Math.floor(i / GRID) + footprint[1] / 2 - half : raster.lotZ[i] - half);
       m4.compose(pos, q, scl);

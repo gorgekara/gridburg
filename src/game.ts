@@ -64,6 +64,8 @@ export class Game {
   owners: Int32Array = new Int32Array(N_TILES).fill(-1);
   level = new Uint8Array(N_TILES);
   neglect = new Uint8Array(N_TILES);
+  /** The tick each lot last grew a level (0: not since the city was loaded). */
+  grownAt = new Float64Array(N_TILES);
   flags: Uint8Array = new Uint8Array(N_TILES);
   pollution: Uint8Array = new Uint8Array(N_TILES);
   riverPollution: Uint8Array = new Uint8Array(0);
@@ -115,6 +117,8 @@ export class Game {
       const m = ev.data;
       if (m.type === 'state') {
         this.incidents = m.incidents; this.incidentSave = m.incidentSave;
+        // When each lot last went up a level, for the scaffolding that stays up a while after.
+        for (let i = 0; i < N_TILES; i++) if (m.level[i] > this.level[i] && this.level[i] > 0) this.grownAt[i] = m.stats.tick;
         this.level.set(m.level);
         this.neglect.set(m.neglect);
         this.flags = m.flags;
@@ -380,6 +384,7 @@ export class Game {
     this.rot.set(d.rot ?? new Uint8Array(N_TILES));
     this.level.set(d.level);
     this.neglect.set(d.neglect ?? new Uint8Array(N_TILES));
+    this.grownAt.fill(0);
     this.flags = new Uint8Array(N_TILES);
     this.pollution = new Uint8Array(N_TILES);
     this.riverPollution = new Uint8Array(this.terrain.river.length);

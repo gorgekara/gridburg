@@ -170,11 +170,14 @@ it is not used. Instead:
 
 ### Window variation
 
-A second instance attribute, `aSeed` (float).
-- The vertex shader passes the world position of each vertex.
-- For a pane, the fragment shader hashes `floor(worldPos × 12)` with the seed, which gives a per-pane
-  random `r`.
-- A pane glows when `r < occupancy(hour)`.
+Lit windows used to be baked into each model, so every copy of a design lit the same panes. Now:
+- Every window pane is drawn in the lit colour and stamped with a `pane` vertex attribute. It packs
+  the pane's own random value together with how rarely that design lights its windows (the old `lit`
+  share), so a warehouse stays mostly dark while flats glow. Walls and everything else carry -1.
+- A second instance attribute, `aSeed`, shifts every pane's value per building, so each copy of a
+  design has its own pattern.
+- A pane is lit when its value is under the share lit at that hour. An unlit home window is drawn
+  as dark glass; an unlit office pane is discarded, and the glass band behind it shows.
 
 `occupancy(hour)` is a uniform (`cityLit`) that `main.ts` sets from the city clock:
 
@@ -191,42 +194,47 @@ Two things follow:
 
 Mid-rise flats (residential level 2–3) whose street segment also fronts a commercial lot within 2
 cells get a shop on the ground floor. The street detail draws it on the front wall:
-- a shopfront band 0.12 high
+- a shopfront as tall as the door, beside it
 - a coloured fascia and awning
-- a lit display strip that glows at night, drawn in the shop's own `WINDOW_LIT` colour so it picks up
-  the existing shader glow
+- a lit display strip that glows at night (see the glow mesh below)
+- shuttered at night, like the other shops
 
 ## Stage 3: street life
 
-- **Café seating by the hour.** Shops that already set out café tables (`shop()`) now:
-  - add sun umbrellas on rich and well-off streets
-  - add a few seated figures by day
-  - stack the chairs at night
+Most lots run right up to the kerb line, so the space to set things out in is the forecourt: the
+ground between the building's front and the kerb line. Measured on the demo, it is about 0.2 for small
+shops, 0.1 for mid-size shops and 0.08 for offices. The pieces below are sized to fit it.
 
-  Stacked chairs are a separate, cheap draw. The chunk signature includes a day/night bit so chunks
-  rebuild at the change.
-- **Market stalls.** On commercial avenues and roads where 3+ consecutive lots are commercial level
-  2–3, a row of 3–5 striped market stalls stands along the kerb by day (08–18 h), with crates of
-  produce. At night there are bare stall frames.
-- **Food trucks.** Beside office lots on avenues, one food truck per ~4 office lots, 11–15 h, with
-  a small queue of two or three figures.
-- **Delivery vans at shops.** A parked delivery van, with its rear doors open and a trolley of
-  boxes, stands on the kerb outside one commercial lot in six, 06–11 h. It is a static prop from the
-  existing van geometry; the traffic sim is not involved.
-- **Scaffolding on buildings growing.** A lot whose level rose in the last ~2 game days gets
-  scaffolding up its front, with a green debris net, for a while.
-  - Needs `levelChanged: Uint32Array` (the tick of the last level change), kept in `game.ts` from
-    the state messages.
+- **Café seating by the hour.** Shops that already set out café tables (`shop()`) now:
+  - seat a few figures by day, more at lunch and in the afternoon
+  - after closing, put the chairs up on the tables and furl the parasols
+- **Market stalls.** On a shop with at least 3 built shops in the 3 × 3 cells round it, half of them
+  (by hash) have a striped stall in the forecourt by day (08–18 h), with produce and crates. At other
+  hours there is a bare frame.
+- **Lunch carts.** Outside offices at midday: a steel cart under an umbrella with two to four people
+  queuing along the front. A quarter of office lots get one, nearly half on avenues. This replaces
+  the food trucks first planned: no office forecourt is deep enough for a truck.
+- **Delivery vans at shops.** One shop in six with a forecourt at least 0.16 deep has a van in it
+  06–11 h, with its back doors open and a trolley of boxes. It is drawn with the kit and has nothing
+  to do with the traffic sim.
+- **Scaffolding on buildings growing.** A lot whose level rose in the last 2 game days has
+  scaffolding up its front: tubes, boards and bands of green debris netting.
+  - `game.ts` keeps `grownAt`, the tick of each lot's last rise, from the state messages.
 - **Night shutters.** Shops pull roller shutters down 22–07 h, drawn as the same ribbed shutter as
   rough 2. Late places stay open: leisure, and 1 in 5 shops (a hash).
-- **Neon.** Signs on commercial level 2–3 and leisure lots at night: a coloured neon outline above
-  the door.
-  - It uses a third emissive key (a new `NEON` colour the street-detail material recognises). The
-    street-detail material gets the same `onBeforeCompile` night patch as buildings, for `WINDOW_LIT`
-    and `NEON`.
-  - The house door lamp (`houseFront`) and the verge lamps change to `WINDOW_LIT`, so they glow too.
+- **Neon.** Commercial level 2–3 and leisure lots get a neon sign above the door: a coloured outline
+  and a scrawl of lettering in a second colour.
+- **The glow mesh.** Everything that lights up goes into a second kit per street-detail chunk:
+  - neon
+  - shop displays
+  - house door lamps
+  - the verge gardens' lamp heads
 
-**Time bands.** The chunk signature gets a 3-bit time band from the city hour: night, early, morning,
+  The glow kit is drawn with an unlit, untone-mapped material that is dim by day (a bulb that is off)
+  and full at night. It replaces the colour-key shader patch first planned: a separate mesh cannot
+  mistake a yellow flower for a lamp.
+
+**Time bands.** The chunk signature gets a time band from the city hour: night, early, morning,
 midday, afternoon, evening. Only chunks in reach rebuild when it changes, over a few frames within
 the existing 5 ms budget. The city clock is fast (a day is 480 s by default), so a band lasts about
 80 s: rebuilds are occasional.
@@ -247,13 +255,22 @@ It draws:
   - four trees in grilles, benches and lamps
 
   The verge layer skips these tiles. `gardenTiles` gets a `skip` set from the landmark layer.
-- **Clock tower.** One per district, or one for the whole city when there are no districts. It goes
-  on the garden tile with the highest smoothed land value × density score in that district that is
-  at least 6 cells from any other clock tower, and it needs at least 20 built lots in the district.
-  - The tower: a stone shaft about 1.4 high, a clock face on all four sides, a belfry and a copper
-    spire.
-  - The hands show the city time. They are two small separate meshes, turned each frame.
-  - The clock faces glow at night (`WINDOW_LIT`).
+- **Clock tower.** One per district, or one for the whole city when there are no districts. It needs
+  at least 20 built lots in the district, and none is placed before the city's land values are known.
+  - **Where it goes:** the garden tile with the best score in that district that is at least 6 cells
+    from any other clock tower.
+  - **Score:** the homes, shops and offices within 3 cells, weighted by level (level 1 counts 1,
+    level 2 counts 2, level 3 counts 1), times (1 + land value / 64). This puts a town clock in the
+    old mid-rise heart of a place, where it rises over its neighbours, rather than at the foot of the
+    glass towers. Farms and industry do not count.
+  - **It stays put** while its spot is still garden ground in its district and scores at least 70% of
+    the best. Otherwise it would wander as land values drift.
+  - **The tower:** a stone shaft about 1.7 high with corner pilasters and slit windows. Above it:
+    - a clock stage with a lit dial and hour marks on all four sides
+    - an open belfry with its bell
+    - a copper spire
+  - **The hands** show the city time: one instanced mesh, set each frame.
+  - **The dials** glow at night (the glow mesh).
 - **Waterfront promenade.** Shore tiles that touch a built zone lot or a road get:
   - a paved walk along the water's edge
   - a railing on posts
@@ -261,7 +278,8 @@ It draws:
   - lamps every ~1.5 that glow at night
 
   These are stretches of real quayside rather than reeds. The street detail's `shore()` reeds are
-  skipped on those tiles.
+  skipped on those tiles. The street detail also leaves plaza and tower tiles alone (no grass through
+  the paving).
 
 Every landmark counts as a garden for the rest of the game. It takes no tile kind and costs
 nothing. It is pure dressing.

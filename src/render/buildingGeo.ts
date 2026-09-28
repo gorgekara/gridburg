@@ -53,6 +53,22 @@ export class Builder {
   shift = { x: 0, z: 0 };
 
   detail: VisualDetail;
+  /**
+   * Stamped on everything painted: -1 for walls, roofs and the rest; for a window's glass, its own
+   * number in [0, 1). The building shader lights a pane when its number is under the share of windows
+   * lit at that hour, so the windows come on one by one through the evening and go out late at night.
+   */
+  paneId = -1;
+
+  /**
+   * A pane's number for a design that lights `lit` of its windows (0.4 is typical): its own random
+   * value, and how much rarer than typical its windows light, packed as `2 × code + value` with
+   * code = rarity × 4. The shader unpacks both, so a warehouse stays mostly dark while flats glow.
+   */
+  paneFor(lit: number): number {
+    const code = Math.round(Math.min(20, 0.4 / Math.max(lit, 0.02)) * 4);
+    return code * 2 + this.rnd();
+  }
 
   constructor(seed: number, detail: VisualDetail = 1) {
     this.detail = detail;
@@ -73,6 +89,7 @@ export class Builder {
       arr[i * 3 + 2] = c.b;
     }
     g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    g.setAttribute('pane', new THREE.BufferAttribute(new Float32Array(n).fill(this.paneId), 1));
     this.parts.push(g);
   }
 
@@ -365,19 +382,21 @@ export class Builder {
   }
 
   /** Frames, glass, a central mullion and a sill: eight triangles versus twelve for a plain box. */
-  window(w: number, h: number, along: number, y: number, depth: number, turn: number, color: number): void {
+  window(w: number, h: number, along: number, y: number, depth: number, turn: number, color: number, pane = -1): void {
     const sn = Math.sin(turn), cs = Math.cos(turn);
-    const layer = (width: number, height: number, bottom: number, offset: number, tint: number): void => {
+    const layer = (width: number, height: number, bottom: number, offset: number, tint: number, id = -1): void => {
+      this.paneId = id;
       this.pane(width, height, along * cs + (depth + offset) * sn, bottom,
         -along * sn + (depth + offset) * cs, turn, tint);
+      this.paneId = -1;
     };
-    if (this.detail === 0) { layer(w, h, y, 0, color); return; }
+    if (this.detail === 0) { layer(w, h, y, 0, color, pane); return; }
     if (this.detail === 2) {
       layer(w + 0.026, 0.012, y + h + 0.009, 0.003, 0xc2b9a7);
       layer(w, 0.008, y + h * 0.53, 0.004, 0x9aa49e);
     }
     layer(w + 0.018, h + 0.018, y - 0.009, 0, 0x7b817e);
-    layer(w, h, y, 0.002, color);
+    layer(w, h, y, 0.002, color, pane);
     layer(0.009, h, y, 0.003, 0x9aa49e);
     layer(w + 0.026, 0.012, y - 0.009, 0.004, 0xc2b9a7);
   }
@@ -394,11 +413,11 @@ export class Builder {
       const y = y0 + f * fh + fh * 0.25;
       for (let j = 0; j < perSide; j++) {
         const t = -0.5 + (j + 0.5) / perSide;
-        const color = this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK;
-        this.window(ww, wh, t * w * 0.85, y, d / 2 + 0.012, 0, color);
-        this.window(ww, wh, -t * w * 0.85, y, d / 2 + 0.012, Math.PI, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
-        this.window(ww, wh, -t * d * 0.85, y, w / 2 + 0.012, Math.PI / 2, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
-        this.window(ww, wh, t * d * 0.85, y, w / 2 + 0.012, -Math.PI / 2, this.rnd() < lit ? WINDOW_LIT : WINDOW_DARK);
+        // Every pane can light: which ones are lit is the shader's, by the hour (see `paneId`).
+        this.window(ww, wh, t * w * 0.85, y, d / 2 + 0.012, 0, WINDOW_LIT, this.paneFor(lit));
+        this.window(ww, wh, -t * w * 0.85, y, d / 2 + 0.012, Math.PI, WINDOW_LIT, this.paneFor(lit));
+        this.window(ww, wh, -t * d * 0.85, y, w / 2 + 0.012, Math.PI / 2, WINDOW_LIT, this.paneFor(lit));
+        this.window(ww, wh, t * d * 0.85, y, w / 2 + 0.012, -Math.PI / 2, WINDOW_LIT, this.paneFor(lit));
       }
     }
   }
@@ -414,10 +433,12 @@ export class Builder {
       const y = y0 + f * fh + fh * bandY - ph * 0.1;
       for (let j = 0; j < perSide; j++) {
         const t = -0.5 + (j + 0.5) / perSide;
-        if (this.rnd() < lit) this.pane(pw, ph, t * w * 0.82, y, d / 2 + 0.028, 0, OFFICE_LIT);
-        if (this.rnd() < lit) this.pane(pw, ph, t * w * 0.82, y, -d / 2 - 0.028, Math.PI, OFFICE_LIT);
-        if (this.rnd() < lit) this.pane(pw, ph, w / 2 + 0.028, y, t * d * 0.82, Math.PI / 2, OFFICE_LIT);
-        if (this.rnd() < lit) this.pane(pw, ph, -w / 2 - 0.028, y, t * d * 0.82, -Math.PI / 2, OFFICE_LIT);
+        // Every slot has a pane; the shader shows the ones lit at the hour and leaves the rest out.
+        for (const [x, z, turn] of [[t * w * 0.82, d / 2 + 0.028, 0], [t * w * 0.82, -d / 2 - 0.028, Math.PI], [w / 2 + 0.028, t * d * 0.82, Math.PI / 2], [-w / 2 - 0.028, t * d * 0.82, -Math.PI / 2]]) {
+          this.paneId = this.paneFor(lit);
+          this.pane(pw, ph, x, y, z, turn, OFFICE_LIT);
+        }
+        this.paneId = -1;
       }
     }
   }

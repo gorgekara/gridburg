@@ -20,29 +20,36 @@ const STONE = 0xb4b0a6, PAVING = 0xc2bdb2, BRONZE = 0x5f7a66, WATER = 0x5fa8d8, 
 export class VergeLayer {
   readonly group = new THREE.Group();
   private material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 });
+  /** The lamp heads, unlit and brighter after dark (see the street detail's glow). */
+  private glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+  setNight(night: number): void { this.glowMaterial.color.setScalar(0.55 + 0.45 * night); }
   private signature = '';
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, net: Network, terrain: Terrain, terraform: Uint8Array, rot?: Uint8Array): void {
-    const spots = gardenTiles(kind, level, raster, terrain, terraform, rot);
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, net: Network, terrain: Terrain, terraform: Uint8Array, rot?: Uint8Array, skip?: ReadonlySet<number>): void {
+    // The landmarks (a plaza, a clock tower) have some of the garden ground to themselves.
+    const spots = gardenTiles(kind, level, raster, terrain, terraform, rot).filter(i => !skip?.has(i));
     const signature = `${net.version}:${spots.join(',')}`;
     if (signature === this.signature) return;
     this.signature = signature;
     for (const m of this.group.children) (m as THREE.Mesh).geometry.dispose();
     this.group.clear();
-    const kits = new Map<number, Kit>();
+    const kits = new Map<number, [Kit, Kit]>();
     for (const i of spots) {
       const x = i % GRID, z = Math.floor(i / GRID), key = Math.floor(z / CHUNK) * 100 + Math.floor(x / CHUNK);
-      let kit = kits.get(key);
-      if (!kit) { kit = new Kit(); kits.set(key, kit); }
-      garden(kit, i, kind, level, raster, net);
+      let pair = kits.get(key);
+      if (!pair) { pair = [new Kit(), new Kit()]; kits.set(key, pair); }
+      garden(pair[0], pair[1], i, kind, level, raster, net);
     }
-    for (const kit of kits.values()) {
+    for (const [kit, glow] of kits.values()) {
       const g = kit.build();
-      if (!g) continue;
-      const mesh = new THREE.Mesh(g, this.material);
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      mesh.matrixAutoUpdate = false;
-      this.group.add(mesh);
+      if (g) {
+        const mesh = new THREE.Mesh(g, this.material);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.matrixAutoUpdate = false;
+        this.group.add(mesh);
+      }
+      const l = glow.build();
+      if (l) { const mesh = new THREE.Mesh(l, this.glowMaterial); mesh.matrixAutoUpdate = false; this.group.add(mesh); }
     }
   }
 }
@@ -71,7 +78,7 @@ export function isGardenTile(i: number, kind: Uint8Array, level: Uint8Array, ras
   return road && built;
 }
 
-function garden(kit: Kit, i: number, kind: Uint8Array, level: Uint8Array, raster: Raster, net: Network): void {
+function garden(kit: Kit, glow: Kit, i: number, kind: Uint8Array, level: Uint8Array, raster: Raster, net: Network): void {
   const x = i % GRID, z = Math.floor(i / GRID), rnd = stream(i * 40503 + 17);
   // Whether a spot (map coordinates) is free: off the roads and pavements, and out of the lots next door.
   const free = (px: number, pz: number, r = 0.06): boolean => {
@@ -130,7 +137,8 @@ function garden(kit: Kit, i: number, kind: Uint8Array, level: Uint8Array, raster
     at(px, pz);
     kit.jitter = 0;
     kit.prism(0, 0, 0, 0.005, 0.2, 0x3a4046, 6);
-    kit.prism(0, 0.2, 0, 0.016, 0.022, 0xf2e6c0, 6, 0.01);
+    glow.at(px - HALF, 0, pz - HALF, 0);
+    glow.prism(0, 0.2, 0, 0.016, 0.022, 0xffe7a0, 6, 0.01);
     kit.prism(0, 0.222, 0, 0.012, 0.006, 0x3a4046, 6, 0);
   };
   const flowerBed = (px: number, pz: number, r: number): void => {

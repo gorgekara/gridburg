@@ -790,6 +790,9 @@ test('a fire in a back lot behind the street row is reached and put out', () => 
   }
   assert.ok(tile >= 0 && best > 1.5, `Demo should have a set-back home, deepest was ${best.toFixed(2)}`);
   city.incidents = { fires: [{ tile, age: 0 }], crime: [], patrol: [] };
+  // Its own random draws: otherwise anything earlier that draws a number (three.js does, for every
+  // geometry it makes) changes where the traffic jams up and whether the engine gets through.
+  Math.random = C.mulberry32(2026);
   load(city);
   // At under a third of the traffic: this is about reaching a set-back lot. The full demo runs at the vehicle cap,
   // and where it gridlocks (and so whether the engine gets through in time) turns on the random draws.

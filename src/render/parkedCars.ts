@@ -1,10 +1,10 @@
 import * as THREE from 'three';
+import { lotVariant } from './variants';
 import { sideHalf, roadHalf, busLaneOn, carriageHalf, PARK_W } from '../roads/lanes';
 import { GRID, N_TILES, T_BUS, T_FARM, T_RES, SERVICES, isParking, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
 import { lotScale } from '../placement';
 import { lotScaleAt } from '../roads/raster';
-import { VARIANTS } from './buildingGeo';
 import { parkingStalls } from './parkingGeo';
 import { KIND_AVENUE, KIND_ROAD } from '../roads/network';
 import { Network } from '../roads/network';
@@ -34,7 +34,7 @@ const DRIVE_X = 0.385, DRIVE_BACK = -0.2, DRIVE_WIDTH = 0.16;
 /** Some houses on a road get a drive down one side with the family car on it. */
 export function hasDriveway(tile: number, kind: Uint8Array, level: Uint8Array): boolean {
   if (kind[tile] !== T_RES || level[tile] !== 1) return false;
-  const variant = Math.floor(tileHash(tile) * VARIANTS) % VARIANTS;
+  const variant = lotVariant(tile);
   return DRIVE_VARIANTS.includes(variant) && tileHash(tile * 13 + 7) < 0.6;
 }
 

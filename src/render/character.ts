@@ -1,4 +1,4 @@
-import { GRID, N_TILES } from '../constants';
+import { GRID, N_TILES, tileHash } from '../constants';
 import type { CityMaps } from '../sim/messages';
 
 /**
@@ -110,4 +110,21 @@ function curve(points: [number, number][], h: number): number {
 export function occupancy(hour: number): [number, number] {
   const h = ((hour % 24) + 24) % 24;
   return [curve(HOME, h), curve(OFFICE, h)];
+}
+
+/**
+ * A building's own paint, as a factor on its walls near 1: a little lighter or darker, a little warmer
+ * or cooler, by a hash of `key` (a terrace run shares one key, so a row is painted alike). Rich streets
+ * lean to cream and brick; poor ones to a greyer, grimier shade.
+ */
+export function buildingTint(key: number, wealth: number, out: { x: number; y: number; z: number; set(x: number, y: number, z: number): unknown }): void {
+  const h1 = tileHash(key * 5 + 1), h2 = tileHash(key * 5 + 2);
+  const light = 0.9 + 0.2 * h1, warm = (h2 - 0.5) * 0.16;
+  let r = light * (1 + warm), g = light, b = light * (1 - warm);
+  if (wealth === 3) { r *= 1.04; g *= 1.02; b *= 0.94; }
+  else if (wealth === 0) {
+    const grey = (r + g + b) / 3;
+    r = (r * 0.7 + grey * 0.3) * 0.94; g = (g * 0.7 + grey * 0.3) * 0.94; b = (b * 0.7 + grey * 0.3) * 0.94;
+  }
+  out.set(r, g, b);
 }

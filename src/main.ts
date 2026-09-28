@@ -32,7 +32,9 @@ import { playerCarGeometry, streetCarGeometry, streetCarStats, TAKEABLE } from '
 import { GaragePanel } from './ui/garage';
 import { RaceHudView } from './ui/raceHud';
 import type { DetailSource } from './render/streetDetail';
-import { bandsOf, ordinaryBands, type Bands } from './render/character';
+import { bandsOf, ordinaryBands, occupancy, type Bands } from './render/character';
+import { assignVariants } from './render/variants';
+import { LandmarkLayer } from './render/landmarks';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
@@ -117,6 +119,7 @@ const pedestrians = new PedestrianLayer();
 const furniture = new StreetFurnitureLayer();
 const streetDetail = new StreetDetailLayer();
 const verges = new VergeLayer();
+const landmarks = new LandmarkLayer();
 const parked = new ParkedCarLayer();
 const terraformLayer = new TerraformLayer();
 const hills = new HillLayer();
@@ -130,7 +133,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(landmarks.group, hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -374,6 +377,10 @@ function detailSource(): DetailSource {
     surface: (tile) => game.waterSurface ? game.waterSurface[tile] : NaN,
     body: (k, l, v) => buildings.body(k, l, v),
     get bands() { return bands; },
+    get hour() { return daylight(game.cityTime).hour; },
+    // Scaffolding stays up for two days after a lot grows.
+    grown: (tile) => game.grownAt[tile] > 0 && game.cityTime - game.grownAt[tile] < DAY_SECONDS * 2,
+    landmark: (tile) => landmarks.taken.has(tile),
   };
 }
 /** Set while stepping out of the car or back into it, so the street stays set up between the two. */
@@ -702,6 +709,7 @@ game.onTerraform = () => { reshape(); boats.rebuild(game.kind, game.terrain); au
 game.onUndo = () => { reshape(); };
 game.onTerrain = () => { reshape(); alleys.reset(); transport.reset(); landscape.rebuild(game.terrain); hills.setTerrain(game.terrain, levels.edgeGround()); hills.rebuild(levels.ground, solidGround()); river.rebuild(game.terrain, levels.edgeGround()); flood.setTerrain(game.terrain); flood.rebuild(null, levels); hud.resetProgress(); hud.update(game.stats); };
 game.onEdit = () => {
+  assignVariants(game.kind, game.level, game.raster, game.net);
   parkPaths.rebuild(game.parkPaths);
   showCoverage();
   boats.rebuild(game.kind, game.terrain);
@@ -720,8 +728,9 @@ game.onEdit = () => {
   cyclists.rebuild(game.net);
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles);
-  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles, bands);
+  landmarks.rebuild({ kind: game.kind, level: game.level, raster: game.raster, terrain: game.terrain, terraform: game.extras.terraform, rot: game.rot, wealth: game.maps ? bands.wealth : null, land: game.maps?.land ?? null, district: game.extras.district }, game.net, (x, z) => hills.heightAt(x, z));
+  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot, landmarks.taken);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
@@ -731,11 +740,13 @@ game.onEdit = () => {
 game.onState = () => {
   bands = bandsOf(game.maps, game.neglect, game.maps ? bands : undefined);
   bandsTweak?.(bands);
+  assignVariants(game.kind, game.level, game.raster, game.net);
   streetlights.setBands(bands); streetlights.rebuild(game.net);
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
-  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles);
-  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot);
+  buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles, bands);
+  landmarks.rebuild({ kind: game.kind, level: game.level, raster: game.raster, terrain: game.terrain, terraform: game.extras.terraform, rot: game.rot, wealth: game.maps ? bands.wealth : null, land: game.maps?.land ?? null, district: game.extras.district }, game.net, (x, z) => hills.heightAt(x, z));
+  verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot, landmarks.taken);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
   trolleyWires.rebuild(game.kind, game.flags, game.raster, game.net);
   subway.rebuild(game.kind, game.flags, game.raster);
@@ -993,7 +1004,7 @@ function checkTutorial(): void {
   game.load = (...args: Parameters<typeof load>) => { tutorialPanel.close(); load(...args); };
 }
 
-const dbg = { game, get bands() { return bands; }, tweakBands(fn: ((b: Bands) => void) | null) { bandsTweak = fn; bands = bandsOf(game.maps, game.neglect); fn?.(bands); streetlights.setBands(bands); streetlights.rebuild(game.net); }, camera, controls, input, renderer, scene, walker, driver, raceWorld, wanted, garageState, frames: 0, layers: { balloons, streetDetail, verges, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
+const dbg = { game, get bands() { return bands; }, tweakBands(fn: ((b: Bands) => void) | null) { bandsTweak = fn; bands = bandsOf(game.maps, game.neglect); fn?.(bands); streetlights.setBands(bands); streetlights.rebuild(game.net); }, camera, controls, input, renderer, scene, walker, driver, raceWorld, wanted, garageState, frames: 0, layers: { balloons, streetDetail, verges, landmarks, hills, flood, terraformLayer, disasterLayer, cyclists, parked, pedestrians, furniture, busLanes, landscape, streetlights, river, structures, roads, buildings, overlay, cars, transport, subway, incidents } };
 /**
  * For looking at the street detail from the console: stand across the road from a lot's front, raised
  * by `lift` and looking down by `pitch`. Returns the lot, or -1 when nothing matches.
@@ -1080,6 +1091,11 @@ renderer.setAnimationLoop((now: number) => {
   }
   const light = daylight(game.cityTime);
   buildings.setNight(light.night);
+  buildings.setLit(...occupancy(light.hour));
+  streetDetail.setNight(light.night);
+  verges.setNight(light.night);
+  landmarks.setNight(light.night);
+  landmarks.update(light.hour);
   streetlights.update(light.night);
   cars.setNight(light.night);
   river.update(now / 1000);

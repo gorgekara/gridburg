@@ -1,5 +1,7 @@
-import { T_RES, T_COM, T_OFFICE } from '../constants';
+import { T_RES, T_COM, T_OFFICE, T_LEISURE } from '../constants';
+import { TIME } from './character';
 import type { Kit, Body } from './streetDetail';
+import { WINDOW_LIT } from './buildingGeo';
 
 /**
  * How a lot looks for the neighbourhood it stands in. The street detail draws what every lot of a kind
@@ -14,6 +16,16 @@ import type { Kit, Body } from './streetDetail';
  * street, the lot running from -0.5 to 0.5.
  */
 export interface LotLook {
+  /** Where what lights up at night is drawn: in the same frame as `kit`. */
+  glow: Kit;
+  /** The part of the day (see `TIME`). */
+  time: number;
+  /** The lot grew a level lately: scaffolding is still up. */
+  grown: boolean;
+  /** The lot is on an avenue. */
+  avenue: boolean;
+  /** A run of busy shops round it: a street a market sets up on. */
+  market: boolean;
   i: number;
   kind: number;
   level: number;
@@ -26,6 +38,8 @@ export interface LotLook {
   litter: number;
   loud: number;
   rnd: () => number;
+  /** Whether a built shop stands within a couple of cells: flats there may keep a shop downstairs. */
+  nearShops: boolean;
   /** A stable hash in [0, 1) for decisions that must not change between rebuilds. */
   hash: (salt: number) => number;
 }
@@ -39,6 +53,8 @@ export function dressLot(kit: Kit, look: LotLook): void {
   const front = b ? b.z1 : 0.4, left = b ? b.x0 : -0.4, right = b ? b.x1 : 0.4, back = b ? b.z0 : -0.35;
   const house = k === T_RES && l === 1, flats = k === T_RES && l > 1;
   const yard = front < 0.4;
+  // The clear ground between the building's front and the kerb line: the forecourt and any pavement.
+  const room = 0.5 + Math.max(0, look.pave) - front, mid = front + room / 2;
   // Where things set out at the front go: the forecourt if there is one, else the back of a wide pavement.
   const frontZ = front < 0.42 ? 0.44 : front + 0.028;
   kit.jitter = 0;
@@ -58,10 +74,25 @@ export function dressLot(kit: Kit, look: LotLook): void {
     wheelieBin(kit, -0.28, 0.42, pick(rnd, [0x3a4a3a, 0x4a4a52]));
   }
 
+  // Shops close at night, except the late ones; a rough street has some shut by day as well.
+  const night = look.time === TIME.NIGHT, late = look.hash(37) < 0.2;
+  const closed = k === T_COM && ((night && !late) || (look.rough > 0 && look.hash(13) < (look.rough === 2 ? 0.25 : 0.12)));
+
+  // A shop on the ground floor of flats beside a shopping street.
+  if (flats && b && look.nearShops && look.hash(29) < 0.6) groundShop(kit, look.glow, b, look.hash(31), night && !late, rnd);
+
+  // ---- street life ----
+  if (b && ((k === T_COM && look.level >= 2) || k === T_LEISURE)) neon(look.glow, front, look.hash(53), rnd);
+  const day = look.time === TIME.MORNING || look.time === TIME.MIDDAY || look.time === TIME.AFTERNOON;
+  if (k === T_COM && look.market && room >= 0.1 && look.hash(41) < 0.5) stall(kit, (look.hash(43) - 0.5) * 0.5, mid, day, rnd);
+  if (k === T_OFFICE && room >= 0.07 && look.time === TIME.MIDDAY && look.hash(47) < (look.avenue ? 0.45 : 0.25)) lunchCart(kit, look.hash(49) < 0.5 ? -0.28 : 0.28, mid, rnd);
+  if (k === T_COM && room >= 0.16 && (look.time === TIME.EARLY || look.time === TIME.MORNING) && look.hash(59) < 1 / 6) deliveryVan(kit, mid, rnd);
+  if (look.grown && b) scaffolding(kit, b, rnd);
+
   // ---- trouble ----
+  if (closed) shutter(kit, left, right, front, look.rough === 2 || night ? 1 : 0.5, rnd, look.rough > 0);
   if (look.rough > 0 && b) {
     if (look.hash(11) < (look.rough === 2 ? 0.6 : 0.3)) graffiti(kit, b, k === T_COM, rnd);
-    if (k === T_COM && look.hash(13) < (look.rough === 2 ? 0.25 : 0.12)) shutter(kit, left, right, front, look.rough === 2 ? 1 : 0.5, rnd, true);
     if (look.rough === 2 && (house || flats) && look.hash(17) < 0.2) boarded(kit, b, rnd);
   }
   if (look.rough === 2 && house) chainLink(kit, 0.47, -0.47, 0.47, 0.1);
@@ -97,6 +128,127 @@ function streetTree(kit: Kit, x: number, z: number, rnd: () => number): void {
   const leaf = pick(rnd, [0x4f7f3d, 0x5a8a45, 0x6a9a4a]);
   kit.lump(x, 0.13, z, 0.06, leaf, 0.85, rnd);
   kit.lump(x + 0.03, 0.17, z - 0.01, 0.045, leaf, 0.85, rnd);
+  kit.jitter = 0;
+}
+
+const FASCIA = [0x2f5f4f, 0x7a2f2f, 0x2f3f6f, 0x3a3a3a, 0x6a4f2f, 0x2f6f7f];
+
+/**
+ * A shop let into the ground floor of a block of flats, beside the door: a shop window with its lit
+ * display, a painted fascia board over it, and a short awning.
+ */
+function groundShop(kit: Kit, glow: Kit, b: Body, h: number, shut: boolean, rnd: () => number): void {
+  const x0 = b.x0 + b.r + 0.03, x1 = -0.09, z = b.z1;
+  if (x1 - x0 < 0.12) return;
+  const w = x1 - x0, x = (x0 + x1) / 2, fascia = FASCIA[Math.floor(h * FASCIA.length)];
+  kit.jitter = 0;
+  kit.box(x, 0.01, z + 0.002, w, 0.17, 0.004, 0x2a2f36);
+  kit.box(x, 0.022, z + 0.005, w - 0.016, 0.148, 0.002, 0x9fc4d8);
+  // The display's strip light, which glows after dark.
+  glow.box(x, 0.022, z + 0.0065, w - 0.03, 0.014, 0.0015, WINDOW_LIT);
+  for (let n = 0; n < 5; n++) kit.box(x0 + 0.03 + rnd() * (w - 0.06), 0.036, z + 0.008, 0.014, 0.02 + rnd() * 0.03, 0.006, pick(rnd, [0xd8453b, 0xf2c94c, 0x6fa8dc, 0xe8e2d0]));
+  kit.box(x, 0.18, z + 0.006, w + 0.01, 0.036, 0.008, fascia);
+  kit.box(x, 0.19, z + 0.0105, w * 0.6, 0.016, 0.001, 0xf2f2ee);
+  kit.beam(x0, 0.176, z + 0.004, x0, 0.15, z + 0.06, 0.004, fascia);
+  kit.box(x, 0.146, z + 0.034, w, 0.004, 0.06, fascia);
+  if (shut) shutter(kit, x0 - 0.01, x1 + 0.01, z + 0.004, 1, rnd);
+}
+
+const NEON = [0xff3d8b, 0x3de8ff, 0xffd23d, 0x9b5cff, 0x5cff8a, 0xff6a3d];
+
+/** A neon sign over the entrance: an outlined panel and a scrawl of lettering, lit after dark. */
+function neon(glow: Kit, front: number, h: number, rnd: () => number): void {
+  const color = NEON[Math.floor(h * NEON.length)], y = 0.22, z = front + 0.014, w = 0.14 + h * 0.06, t = 0.007, hh = 0.06;
+  glow.jitter = 0;
+  glow.beam(-w / 2, y, z, w / 2, y, z, t, color);
+  glow.beam(-w / 2, y + hh, z, w / 2, y + hh, z, t, color);
+  glow.beam(-w / 2, y, z, -w / 2, y + hh, z, t, color);
+  glow.beam(w / 2, y, z, w / 2, y + hh, z, t, color);
+  // The lettering, in a second colour: a looping scrawl across the panel.
+  const letters = pick(rnd, NEON.filter(c => c !== color));
+  let px = -w / 2 + 0.018, py = y + 0.02;
+  while (px < w / 2 - 0.022) {
+    const nx = px + 0.01 + rnd() * 0.012, ny = y + 0.014 + rnd() * 0.032;
+    glow.beam(px, py, z + 0.002, nx, ny, z + 0.002, 0.005, letters);
+    px = nx; py = ny;
+  }
+}
+
+const STRIPE = [0xc8382f, 0x2f6f4f, 0x2f5f9f, 0xd98a2b];
+const PRODUCE = [0xd8453b, 0xe0a021, 0x7fae4f, 0xf5a14a, 0x9a4fd8, 0xf2e6a0];
+
+/** A market stall on the pavement: a striped roof on poles over a trestle of produce, or by night the bare frame. */
+function stall(kit: Kit, x: number, z: number, open: boolean, rnd: () => number): void {
+  const w = 0.16, d = 0.06, h = 0.14;
+  kit.jitter = 0;
+  for (const [px, pz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2]]) kit.box(x + px, 0, z + pz, 0.004, h, 0.004, 0x5a5e62);
+  if (!open) { kit.beam(x - w / 2, h, z - d / 2, x + w / 2, h, z - d / 2, 0.004, 0x5a5e62); kit.beam(x - w / 2, h, z + d / 2, x + w / 2, h, z + d / 2, 0.004, 0x5a5e62); return; }
+  const color = pick(rnd, STRIPE);
+  for (let k = 0; k < 4; k++) kit.box(x - w / 2 + (k + 0.5) * w / 4, h, z, w / 4, 0.006, d + 0.02, k % 2 ? 0xf2f2ee : color);
+  kit.box(x, 0.055, z, w - 0.01, 0.006, d - 0.01, 0x8a6240);
+  for (let k = 0; k < 6; k++) { kit.jitter = (rnd() - 0.5) * 0.2; kit.lump(x - w / 2 + 0.015 + rnd() * (w - 0.03), 0.061, z - d / 2 + 0.01 + rnd() * (d - 0.02), 0.008, pick(rnd, PRODUCE), 0.8, rnd); }
+  kit.jitter = 0;
+  for (let k = 0; k < 3; k++) kit.box(x - w / 2 + 0.03 + k * 0.05, 0, z + d / 2 + 0.015, 0.035, 0.02, 0.025, 0x9a7a4a);
+}
+
+/** A person, standing or sat, as simply as the pavement crowds are drawn. */
+export function figure(kit: Kit, x: number, z: number, yaw: number, sat: boolean, rnd: () => number): void {
+  const coat = pick(rnd, [0x2f5f9f, 0xc8382f, 0x3a3c40, 0x6a8f4f, 0xe0a021, 0x8a6a9a]), skin = pick(rnd, [0xe8c4a0, 0xc68a5a, 0x8a5a3a, 0xf0d0b0]);
+  const base = sat ? 0.02 : 0;
+  kit.jitter = 0;
+  if (!sat) kit.box(x, 0, z, 0.014, 0.036, 0.01, 0x2a2c30, yaw);
+  kit.box(x, base + (sat ? 0 : 0.036), z, 0.018, 0.032, 0.012, coat, yaw);
+  kit.box(x, base + (sat ? 0.032 : 0.068), z, 0.011, 0.012, 0.011, skin, yaw);
+}
+
+/** A lunch cart outside the offices at midday: a steel cart, its umbrella, and people queuing along the front. */
+function lunchCart(kit: Kit, x: number, z: number, rnd: () => number): void {
+  const color = pick(rnd, [0xe0a021, 0xd8453b, 0x3fae9f, 0xf07ab8]);
+  kit.jitter = 0;
+  kit.box(x, 0.012, z, 0.09, 0.05, 0.045, 0xc8ccce);
+  kit.box(x, 0.035, z + 0.023, 0.07, 0.02, 0.002, color);
+  for (const o of [-0.03, 0.03]) kit.log(x + o, 0, z, 0.012, 0.006, 0x2a2f36, Math.PI / 2, 8);
+  kit.box(x, 0.062, z, 0.003, 0.09, 0.003, 0x9aa3a8);
+  kit.prism(x, 0.15, z, 0.07, 0.02, color, 8, 0.006);
+  const side = x < 0 ? 1 : -1;
+  for (let k = 0; k < 2 + Math.floor(rnd() * 3); k++) figure(kit, x + side * (0.07 + k * 0.035), z, side > 0 ? -Math.PI / 2 : Math.PI / 2, false, rnd);
+}
+
+/** A delivery van stopped at the kerb, back doors open, a trolley of boxes on the pavement. */
+function deliveryVan(kit: Kit, z: number, rnd: () => number): void {
+  const color = pick(rnd, [0xf2f2ee, 0xe0a021, 0x2f5f9f, 0xc8382f]);
+  kit.jitter = 0;
+  kit.box(-0.02, 0.015, z, 0.24, 0.11, 0.1, color);
+  kit.box(0.13, 0.015, z, 0.06, 0.08, 0.1, color);
+  kit.box(0.16, 0.055, z, 0.004, 0.035, 0.085, 0x2a3440);
+  for (const x of [-0.09, 0.12]) for (const o of [-0.048, 0.048]) kit.log(x, 0, z + o, 0.015, 0.012, 0x1f2124, Math.PI / 2, 8);
+  // The back doors swung open.
+  for (const o of [-1, 1]) kit.box(-0.14 - 0.02, 0.02, z + o * 0.06, 0.045, 0.1, 0.004, color, o * 0.9);
+  kit.box(-0.2, 0, z - 0.02, 0.04, 0.004, 0.03, 0x5a5e62);
+  kit.box(-0.22, 0, z - 0.02, 0.004, 0.07, 0.03, 0x5a5e62);
+  for (let k = 0; k < 3; k++) kit.box(-0.2, 0.004 + k * 0.022, z - 0.02, 0.034, 0.022, 0.026, 0xb08a5a);
+}
+
+/** Scaffolding up the front of a building that has just grown: tubes, boards, and a green debris net. */
+function scaffolding(kit: Kit, b: Body, rnd: () => number): void {
+  const top = Math.min(b.h - 0.05, 0.95), z = b.z1 + 0.035, x0 = b.x0 + 0.01, x1 = b.x1 - 0.01;
+  if (top < 0.2) return;
+  kit.jitter = 0;
+  for (let x = x0; x <= x1 + 1e-6; x += Math.max(0.1, (x1 - x0) / Math.max(1, Math.round((x1 - x0) / 0.14)))) {
+    kit.box(x, 0, z, 0.004, top, 0.004, 0x9aa3a8);
+    kit.box(x, 0, z - 0.03, 0.004, top, 0.004, 0x9aa3a8);
+  }
+  let lift = 0;
+  for (let y = 0.155; y < top; y += 0.155, lift++) {
+    kit.box((x0 + x1) / 2, y, z - 0.015, x1 - x0, 0.004, 0.034, 0x8a6240);
+    kit.beam(x0, y + 0.05, z + 0.002, x1, y + 0.05, z + 0.002, 0.003, 0x9aa3a8);
+    // Debris netting hung on the lifts being worked on: a band of green, not a wall of it.
+    if (lift % 2 === 1) {
+      kit.jitter = (rnd() - 0.5) * 0.08;
+      kit.box((x0 + x1) / 2, y + 0.006, z + 0.004, x1 - x0 + 0.01, 0.1, 0.001, 0x5f9a72);
+      kit.jitter = 0;
+    }
+  }
   kit.jitter = 0;
 }
 

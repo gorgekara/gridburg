@@ -7,7 +7,9 @@ import { lotScale } from '../placement';
 import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
-import { buildingGeometry, rotorGeometry, VARIANTS } from './buildingGeo';
+import { buildingGeometry, rotorGeometry, VARIANTS, WINDOW_DARK } from './buildingGeo';
+import { buildingTint, type Bands } from './character';
+import { lotVariant, terraceRun } from './variants';
 import { bodyOfGeometry } from './streetDetail';
 import type { Body } from './streetDetail';
 
@@ -19,6 +21,7 @@ const pos = new THREE.Vector3();
 const one = new THREE.Vector3(1, 1, 1);
 const lotSize = new THREE.Vector3(1, 1, 1);
 const col = new THREE.Color();
+const tint = new THREE.Vector3();
 const yAxis = new THREE.Vector3(0, 1, 0);
 const zAxis = new THREE.Vector3(0, 0, 1);
 
@@ -47,24 +50,54 @@ export class BuildingLayer {
   private detail: VisualDetail = 1;
 
   private night = { value: 0 };
+  /** The share of windows lit at this hour: homes, then offices (see `occupancy`). */
+  private lit = { value: new THREE.Vector2(0.2, 0.6) };
 
   setNight(value: number): void { this.night.value = value; }
+  setLit(home: number, office: number): void { this.lit.value.set(home, office); }
 
   constructor() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+    const dark = new THREE.Color(WINDOW_DARK);
     mat.onBeforeCompile = shader => {
       shader.uniforms.cityNight = this.night;
-      shader.fragmentShader = 'uniform float cityNight;\n' + shader.fragmentShader;
-      shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-        // Only the warm window glass emits; walls and roofs retain their lighting.
+      shader.uniforms.cityLit = this.lit;
+      shader.uniforms.windowDark = { value: new THREE.Vector3(dark.r, dark.g, dark.b) };
+      // Each building has its own wall tint and its own shuffle of which windows are lit.
+      shader.vertexShader = 'attribute float pane;\nattribute vec3 aTint;\nattribute float aSeed;\nvarying float vPane;\nvarying vec3 vTint;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        vTint = aTint;
+        vPane = pane;
+        if (pane >= 0.0) { float code = floor(pane * 0.5); vPane = code * 2.0 + fract(pane - code * 2.0 + aSeed); }`);
+      shader.fragmentShader = 'uniform float cityNight;\nuniform vec2 cityLit;\nuniform vec3 windowDark;\nvarying float vPane;\nvarying vec3 vTint;\nfloat paneOn;\n' + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+        // Window glass is known by its colour: the warm homes and the cool offices.
         float windowMask = step(0.95, vColor.r) * step(0.68, vColor.g) * (1.0 - step(0.5, vColor.b));
-        totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * cityNight * 1.8;
-        // Office floors: the cool white panes on commercial and office facades.
         float officeMask = step(0.88, vColor.r) * step(0.88, vColor.g) * step(0.95, vColor.b);
-        totalEmissiveRadiance += vec3(0.82, 0.88, 1.0) * officeMask * cityNight * 1.5;`);
+        paneOn = 1.0;
+        if (vPane >= 0.0) {
+          // A pane is lit when its number, made rarer for designs that light few windows, is under
+          // the share lit at this hour. An unlit home window is dark glass; an unlit office pane is
+          // not there at all, and the glass band behind it shows.
+          float code = floor(vPane * 0.5);
+          float share = officeMask > 0.5 ? cityLit.y : cityLit.x;
+          paneOn = step((vPane - code * 2.0) * code * 0.25, share);
+          if (paneOn < 0.5) {
+            if (officeMask > 0.5) discard;
+            diffuseColor.rgb = windowDark;
+          }
+        }
+        diffuseColor.rgb *= mix(vTint, vec3(1.0), max(windowMask, officeMask) * paneOn);`);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        // Only the lit window glass emits; walls and roofs retain their lighting.
+        totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * paneOn * cityNight * 1.8;
+        totalEmissiveRadiance += vec3(0.82, 0.88, 1.0) * officeMask * paneOn * cityNight * 1.5;`);
     };
     const add = (k: number, l: number, v: number, cap: number): void => {
       const mesh = new THREE.InstancedMesh(buildingGeometry(k, l, v), mat, cap);
+      mesh.userData.tint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3);
+      mesh.userData.seed = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      withInstanceData(mesh);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.count = 0;
@@ -130,6 +163,7 @@ export class BuildingLayer {
       const level = group % 4, kind = Math.floor(group / 4);
       const previous = mesh.geometry;
       mesh.geometry = buildingGeometry(kind, level, variant, detail);
+      withInstanceData(mesh);
       mesh.boundingSphere = null;
       previous.dispose();
     }
@@ -137,7 +171,7 @@ export class BuildingLayer {
 
   showZones(show: boolean): void { this.zones.visible = show; this.cells.visible = show; }
 
-  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array, bayTiles?: ReadonlySet<number>): void {
+  rebuild(kind: Uint8Array, level: Uint8Array, raster: Raster, rot?: Uint8Array, water?: Uint8Array, parkPathMask?: Uint8Array, bayTiles?: ReadonlySet<number>, bands?: Bands): void {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
@@ -174,7 +208,7 @@ export class BuildingLayer {
         if (level[i] === 0) continue;
       }
       const l = zone ? level[i] : 1;
-      let variant = zone ? Math.floor(tileHash(i) * VARIANTS) % VARIANTS : 0;
+      let variant = zone ? lotVariant(i) : 0;
       if (k === T_PATH) for (let d = 0; d < 4; d++) {
         const n = neighbor(i, d);
         if (n >= 0 && (isDecoration(kind[n]) || raster.cover[n])) variant |= 1 << d;
@@ -228,11 +262,17 @@ export class BuildingLayer {
       }
       mesh.setMatrixAt(n, m4);
       mesh.userData.tileIds[n] = i;
+      // A zone building's own paint (a terrace is painted alike), and its own shuffle of lit windows.
+      if (zone) buildingTint(terraceRun(i) >= 0 ? terraceRun(i) : i + 7919, bands ? bands.wealth[i] : 1, tint);
+      else tint.set(1, 1, 1);
+      (mesh.userData.tint as THREE.InstancedBufferAttribute).setXYZ(n, tint.x, tint.y, tint.z);
+      (mesh.userData.seed as THREE.InstancedBufferAttribute).setX(n, tileHash(i * 31 + 7));
       if (k === T_WIND) this.rotorSites.push({ x: pos.x, z: pos.z, rot: facing, phase: tileHash(i) * 6.28 });
     }
     for (const [kk, mesh] of this.meshes) {
       mesh.count = counts.get(kk) ?? 0;
       mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.count) { (mesh.userData.tint as THREE.InstancedBufferAttribute).needsUpdate = true; (mesh.userData.seed as THREE.InstancedBufferAttribute).needsUpdate = true; }
       mesh.boundingSphere = null; // Recompute lazily for picking after buildings move or grow.
     }
     this.zones.count = nz;
@@ -256,6 +296,16 @@ export class BuildingLayer {
       this.rotors.setMatrixAt(i, m4);
     }
     if (n) this.rotors.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/** Hang a building mesh's own per-instance tint and seed on its (possibly new) geometry. */
+function withInstanceData(mesh: THREE.InstancedMesh): void {
+  mesh.geometry.setAttribute('aTint', mesh.userData.tint);
+  mesh.geometry.setAttribute('aSeed', mesh.userData.seed);
+  // Geometry built without window numbers (none of ours, but to be safe) lights nothing specially.
+  if (!mesh.geometry.getAttribute('pane') && mesh.geometry.getAttribute('position')) {
+    mesh.geometry.setAttribute('pane', new THREE.BufferAttribute(new Float32Array(mesh.geometry.getAttribute('position').count).fill(-1), 1));
   }
 }
 

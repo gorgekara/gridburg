@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { lotVariant } from './variants';
+import { isPromenadeTile } from './landmarks';
 import { sideHalf, roadHalf } from '../roads/lanes';
 import {
   GRID, idx, inBounds, tileHash, isService, isZone, SERVICES,
@@ -10,13 +12,12 @@ import type { RSeg } from '../roads/network';
 import type { Raster } from '../roads/raster';
 import type { Terrain } from '../terrain';
 import { lotScaleAt } from '../roads/raster';
-import { VARIANTS } from './buildingGeo';
 import type { VisualDetail } from './detail';
 import { isGardenTile } from './verges';
 import { hasDriveway } from './parkedCars';
 import { siteOwners } from '../sites';
-import { bandCode, type Bands } from './character';
-import { dressLot, chainLink } from './dressing';
+import { bandCode, timeBand, TIME, type Bands } from './character';
+import { dressLot, chainLink, figure } from './dressing';
 
 /**
  * Street-level detail, streamed in around the camera while walking or driving: the things nobody sees
@@ -71,6 +72,12 @@ export interface DetailSource {
   body(kind: number, level: number, variant: number): Body | null;
   /** Each tile's neighbourhood character; without it every street is ordinary. */
   bands?: Bands;
+  /** The hour of the city's day, for street life that comes and goes; noon without it. */
+  hour?: number;
+  /** Whether a lot grew a level lately and still has its scaffolding up. */
+  grown?(tile: number): boolean;
+  /** Whether a landmark (a plaza, a clock tower) stands on a tile: nothing else is put there. */
+  landmark?(tile: number): boolean;
 }
 export interface Body {
   x0: number; x1: number; z0: number; z1: number; h: number;
@@ -264,11 +271,17 @@ const WOOD = 0x8a6240, WOOD_DARK = 0x6b4f36, METAL = 0x9aa3a8, DARK = 0x2f3338, 
 
 // ---- the layer -------------------------------------------------------------------------------------
 
-interface Chunk { key: number; mesh: THREE.Mesh | null; fine: boolean; signature: number }
+interface Chunk { key: number; mesh: THREE.Mesh | null; glow: THREE.Mesh | null; fine: boolean; signature: number }
 
 export class StreetDetailLayer {
   readonly group = new THREE.Group();
   private readonly material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+  /**
+   * What lights up after dark: lamps, lit shop displays, neon. Drawn unlit, dim by day (a bulb that is
+   * off) and at full brightness at night.
+   */
+  private readonly glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+  setNight(night: number): void { this.glowMaterial.color.setScalar(0.55 + 0.45 * night); }
   private chunks = new Map<number, Chunk>();
   private source: DetailSource | null = null;
   private active = false;
@@ -309,10 +322,8 @@ export class StreetDetailLayer {
   }
 
   private drop(c: Chunk): void {
-    if (!c.mesh) return;
-    this.group.remove(c.mesh);
-    c.mesh.geometry.dispose();
-    c.mesh = null;
+    for (const m of [c.mesh, c.glow]) if (m) { this.group.remove(m); m.geometry.dispose(); }
+    c.mesh = null; c.glow = null;
   }
 
   /**
@@ -355,7 +366,7 @@ export class StreetDetailLayer {
       this.buildChunk(w.key, w.fine, w.signature, src);
     }
     let triangles = 0;
-    for (const c of this.chunks.values()) if (c.mesh) triangles += (c.mesh.geometry.attributes.position.count / 3) | 0;
+    for (const c of this.chunks.values()) for (const m of [c.mesh, c.glow]) if (m) triangles += (m.geometry.attributes.position.count / 3) | 0;
     this.stats.chunks = this.chunks.size;
     this.stats.triangles = triangles;
   }
@@ -369,12 +380,14 @@ export class StreetDetailLayer {
 
   /** A fingerprint of everything a chunk is built from, so it is rebuilt only when that changes. */
   private signature(kx: number, kz: number, src: DetailSource): number {
-    let h = src.net.version | 0;
+    // The time of day: street life changes with it, so a chunk is rebuilt when it moves on.
+    let h = (src.net.version | 0) * 8 + timeBand(src.hour ?? 12);
     for (let z = kz * CHUNK - 1; z <= kz * CHUNK + CHUNK; z++) for (let x = kx * CHUNK - 1; x <= kx * CHUNK + CHUNK; x++) {
       if (!inBounds(x, z)) continue;
       const i = idx(x, z);
       h = (Math.imul(h, 31) + src.kind[i] * 7 + src.level[i] * 3 + src.terraform[i] * 11 + src.raster.cover[i]) | 0;
       if (src.bands) h = (Math.imul(h, 17) + bandCode(src.bands, i)) | 0;
+      if (src.grown?.(i)) h = (h + 0x9e37 * (i + 1)) | 0;
     }
     return h;
   }
@@ -383,10 +396,10 @@ export class StreetDetailLayer {
     const old = this.chunks.get(key);
     if (old) this.drop(old);
     const n = Math.ceil(GRID / CHUNK), x0 = (key % n) * CHUNK, z0 = Math.floor(key / n) * CHUNK;
-    const kit = new Kit();
-    new ChunkBuilder(kit, src, x0, z0, fine).build();
-    const geometry = kit.build();
-    let mesh: THREE.Mesh | null = null;
+    const kit = new Kit(), glowKit = new Kit();
+    new ChunkBuilder(kit, glowKit, src, x0, z0, fine).build();
+    const geometry = kit.build(), lights = glowKit.build();
+    let mesh: THREE.Mesh | null = null, glow: THREE.Mesh | null = null;
     if (geometry) {
       mesh = new THREE.Mesh(geometry, this.material);
       mesh.receiveShadow = true;
@@ -395,7 +408,12 @@ export class StreetDetailLayer {
       mesh.matrixAutoUpdate = false;
       this.group.add(mesh);
     }
-    this.chunks.set(key, { key, mesh, fine, signature });
+    if (lights) {
+      glow = new THREE.Mesh(lights, this.glowMaterial);
+      glow.matrixAutoUpdate = false;
+      this.group.add(glow);
+    }
+    this.chunks.set(key, { key, mesh, glow, fine, signature });
     this.stats.built++;
   }
 }
@@ -406,12 +424,16 @@ export class StreetDetailLayer {
 class ChunkBuilder {
   private readonly rnd: () => number;
   private readonly kit: Kit;
+  /** Where what lights up at night goes, in step with `kit`'s frame. */
+  private readonly glow: Kit;
+  /** The part of the day (see `TIME`). */
+  private readonly time: number;
   private readonly src: DetailSource;
   private readonly x0: number;
   private readonly z0: number;
   private readonly fine: boolean;
-  constructor(kit: Kit, src: DetailSource, x0: number, z0: number, fine: boolean) {
-    this.kit = kit; this.src = src; this.x0 = x0; this.z0 = z0; this.fine = fine;
+  constructor(kit: Kit, glow: Kit, src: DetailSource, x0: number, z0: number, fine: boolean) {
+    this.kit = kit; this.glow = glow; this.time = timeBand(src.hour ?? 12); this.src = src; this.x0 = x0; this.z0 = z0; this.fine = fine;
     this.rnd = stream(x0 * 7919 + z0 * 104729 + (fine ? 1 : 0));
     this.owners = siteOwners(src.kind, src.rot);
   }
@@ -670,6 +692,16 @@ class ChunkBuilder {
     }
   }
 
+  private nearShops(i: number): boolean {
+    const { kind, level } = this.src, x = i % GRID, z = Math.floor(i / GRID);
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+      if (!inBounds(x + dx, z + dz)) continue;
+      const n = idx(x + dx, z + dz);
+      if (kind[n] === T_COM && level[n] > 0) return true;
+    }
+    return false;
+  }
+
   private poorAt(x: number, z: number): boolean {
     const b = this.src.bands, tx = Math.floor(x), tz = Math.floor(z);
     return !!b && inBounds(tx, tz) && b.wealth[idx(tx, tz)] === 0;
@@ -793,10 +825,11 @@ class ChunkBuilder {
     const { kind, level, terrain, raster, terraform } = this.src;
     const x = i % GRID, z = Math.floor(i / GRID);
     if (terrain.water[i]) { this.water(i, x, z); return; }
-    if (raster.cover[i]) return;
+    if (raster.cover[i] || this.src.landmark?.(i)) return;
     const k = kind[i];
     const shaped = terraform[i] !== 0;
-    if (terrain.shore[i]) this.shore(i, x, z);
+    // Where the town comes down to the water there is a promenade instead of reeds.
+    if (terrain.shore[i] && !isPromenadeTile(i, kind, this.src.level, raster, terrain)) this.shore(i, x, z);
     // The cells of a big building are its own, even where no wall stands.
     if (!k && this.owners[i] >= 0) return;
     // The planted cells in town have their own gardens: only a little grass here.
@@ -1031,7 +1064,7 @@ class ChunkBuilder {
     }
     kit.jitter = 0;
     kit.box(0.19, 0.2, z + 0.008, 0.014, 0.022, 0.014, 0x2a2f36);
-    kit.box(0.19, 0.205, z + 0.016, 0.009, 0.012, 0.002, 0xffe7a0);
+    this.glow.box(0.19, 0.205, z + 0.016, 0.009, 0.012, 0.002, 0xffe7a0);
     kit.box(0.1, 0.001, z + 0.04, 0.07, 0.003, 0.035, 0x6b4f36);
     // The house number on a little plaque.
     kit.box(0.2, 0.16, z + 0.004, 0.022, 0.016, 0.002, 0xe8e2d0);
@@ -1229,12 +1262,13 @@ class ChunkBuilder {
 
   private lot(i: number): void {
     const { kind, level } = this.src;
-    const k = kind[i], l = level[i], v = Math.floor(tileHash(i) * VARIANTS) % VARIANTS;
+    const k = kind[i], l = level[i], v = lotVariant(i);
     const body = this.src.body(k, l, v);
     const f = this.lotFrame(i);
     const top = lotTop(k, l);
     this.remember(f.x, top, f.z, f.yaw, f.scale);
     this.kit.at(f.x, top, f.z, f.yaw, f.scale);
+    this.glow.at(f.x, top, f.z, f.yaw, f.scale);
     const rnd = stream(i * 2654435761 + (this.fine ? 7 : 3));
     if (body) this.walls(body, k, l, rnd);
     if (body?.roof && !(k === T_RES && l === 1 && body.roof.y < body.h + 0.02)) {
@@ -1256,8 +1290,13 @@ class ChunkBuilder {
       // How much pavement lies between the lot's front edge and the kerb, in the lot's own units.
       const { raster, net } = this.src, seg = raster.accSeg[i] >= 0 ? net.segs.get(raster.accSeg[i]) : undefined;
       const pave = seg ? (Math.hypot(raster.lotX[i] - raster.accX[i], raster.lotZ[i] - raster.accZ[i]) - 0.5 * f.scale - roadHalf(seg) - KERB) / f.scale : 0;
+      const x = i % GRID, z = Math.floor(i / GRID);
+      let shops = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) if (inBounds(x + dx, z + dz) && this.src.kind[idx(x + dx, z + dz)] === T_COM && this.src.level[idx(x + dx, z + dz)] > 0) shops++;
+      this.glow.at(...this.saved);
       dressLot(this.kit, {
-        i, kind: k, level: l, body, fine: this.fine, pave, rnd: stream(i * 48271 + (this.fine ? 5 : 1)), hash: salt => tileHash(i * 97 + salt),
+        glow: this.glow, time: this.time, grown: !!this.src.grown?.(i), avenue: seg?.kind === KIND_AVENUE, market: shops >= 3,
+        i, kind: k, level: l, body, fine: this.fine, pave, nearShops: k === T_RES && l > 1 && this.nearShops(i), rnd: stream(i * 48271 + (this.fine ? 5 : 1)), hash: salt => tileHash(i * 97 + salt),
         wealth: bands.wealth[i], rough: bands.rough[i], litter: bands.litter[i], loud: bands.loud[i],
       });
     }
@@ -1568,12 +1607,22 @@ class ChunkBuilder {
     if (this.fine) this.pigeons(rnd, front, 3);
     // Café tables with parasols where the pavement in front is the shop's own.
     if (front < 0.36 && tileHash(i * 13 + 2) < 0.5) {
+      // By day people sit out; after closing the chairs go up on the tables and the parasols are furled.
+      const shut = this.time === TIME.NIGHT && tileHash(i * 97 + 37) >= 0.2, busy = this.time === TIME.MIDDAY || this.time === TIME.AFTERNOON ? 0.5 : this.time === TIME.MORNING || this.time === TIME.EVENING ? 0.25 : 0;
       for (const x of [left + 0.1, (left + right) / 2, right - 0.1]) {
         const z = front + (0.47 - front) / 2;
         kit.box(x, 0, z, 0.005, 0.035, 0.005, DARK);
         kit.disc(x, 0.035, z, 0.022, 0xe8e2d0, 8);
-        for (const o of [-0.03, 0.03]) this.chair(x + o, z, o < 0 ? Math.PI / 2 : -Math.PI / 2, 0x3a3c40);
         kit.box(x, 0.035, z, 0.003, 0.07, 0.003, METAL);
+        if (shut) {
+          for (const o of [-0.01, 0.01]) kit.box(x + o, 0.036, z, 0.018, 0.02, 0.018, 0x3a3c40);
+          kit.prism(x, 0.05, z, 0.008, 0.06, color, 6, 0.004);
+          continue;
+        }
+        for (const o of [-0.03, 0.03]) {
+          this.chair(x + o, z, o < 0 ? Math.PI / 2 : -Math.PI / 2, 0x3a3c40);
+          if (rnd() < busy) figure(kit, x + o, z, o < 0 ? Math.PI / 2 : -Math.PI / 2, true, rnd);
+        }
         kit.prism(x, 0.1, z, 0.06, 0.02, color, 8, 0.004);
       }
     }

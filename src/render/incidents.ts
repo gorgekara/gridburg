@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { GRID, tileHash, isZone, mulberry32 } from '../constants';
-import { buildingHeight, VARIANTS } from './buildingGeo';
+import { lotVariant } from './variants';
+import { GRID, isZone, mulberry32 } from '../constants';
+import { buildingHeight } from './buildingGeo';
 import type { IncidentView } from '../sim/incidents';
 import type { Raster } from '../roads/raster';
 
@@ -42,7 +43,7 @@ export class IncidentLayer {
     this.group.clear(); this.flames = []; this.puffs = []; this.embers = []; this.glows = [];
     for (const { tile } of view.fires) {
       if (!isZone(kind[tile]) || !level[tile]) continue;
-      const height = buildingHeight(kind[tile], Math.max(1, level[tile]), Math.floor(tileHash(tile) * VARIANTS) % VARIANTS);
+      const height = buildingHeight(kind[tile], Math.max(1, level[tile]), lotVariant(tile));
       const cx = raster.lotX[tile] - GRID / 2, cz = raster.lotZ[tile] - GRID / 2;
       const rnd = mulberry32(tile * 7919 + 13);
       // A ring of tongues over the roof, taller in the middle, with a hot core licking up inside them.
@@ -77,7 +78,7 @@ export class IncidentLayer {
     }
     for (const { tile } of view.heists) {
       const mesh = new THREE.Mesh(this.shared.warning, this.heist);
-      mesh.position.set(raster.lotX[tile] - GRID / 2, buildingHeight(kind[tile], Math.max(1, level[tile]), Math.floor(tileHash(tile) * VARIANTS) % VARIANTS) + 0.5, raster.lotZ[tile] - GRID / 2);
+      mesh.position.set(raster.lotX[tile] - GRID / 2, buildingHeight(kind[tile], Math.max(1, level[tile]), lotVariant(tile)) + 0.5, raster.lotZ[tile] - GRID / 2);
       this.group.add(mesh);
     }
     for (const crash of view.crashes) {
@@ -88,7 +89,7 @@ export class IncidentLayer {
     for (const tile of view.crime) {
       if (!isZone(kind[tile]) || !level[tile]) continue;
       const mesh = new THREE.Mesh(this.shared.warning, this.crime);
-      mesh.position.set(raster.lotX[tile] - GRID / 2, buildingHeight(kind[tile], Math.max(1, level[tile]), Math.floor(tileHash(tile) * VARIANTS) % VARIANTS) + 0.22, raster.lotZ[tile] - GRID / 2); this.group.add(mesh);
+      mesh.position.set(raster.lotX[tile] - GRID / 2, buildingHeight(kind[tile], Math.max(1, level[tile]), lotVariant(tile)) + 0.22, raster.lotZ[tile] - GRID / 2); this.group.add(mesh);
     }
   }
   update(time: number): void {
