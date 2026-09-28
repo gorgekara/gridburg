@@ -1,13 +1,14 @@
 import { isDecoration, T_PATH, T_TREE, neighbor } from '../constants';
 import type { VisualDetail } from './detail';
-import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS, T_AIRPORT, T_PUMP, T_OUTLET } from '../constants';
+import { T_OFFICE, T_FARM, T_LEISURE, T_FLOOD_BARRIER, T_BUS, T_AIRPORT, T_PUMP, T_OUTLET, T_COAL, T_GAS, T_NUCLEAR } from '../constants';
 import { footprint } from '../sites';
 import { BAY_SETBACK } from '../roads/busLanes';
 import { lotScale } from '../placement';
 import * as THREE from 'three';
 import { GRID, N_TILES, T_RES, T_COM, T_IND, T_WIND, T_DOCKS, T_HYDRO, SERVICES, isService, isZone, tileHash } from '../constants';
 import type { Raster } from '../roads/raster';
-import { buildingGeometry, rotorGeometry, VARIANTS, WINDOW_DARK } from './buildingGeo';
+import { buildingGeometry, rotorGeometry, emittersOf, VARIANTS, WINDOW_DARK } from './buildingGeo';
+import type { Emitter } from './smoke';
 import { buildingTint, type Bands } from './character';
 import { lotVariant, terraceRun } from './variants';
 import { bodyOfGeometry } from './streetDetail';
@@ -22,6 +23,7 @@ const one = new THREE.Vector3(1, 1, 1);
 const lotSize = new THREE.Vector3(1, 1, 1);
 const col = new THREE.Color();
 const tint = new THREE.Vector3();
+const spot = new THREE.Vector3();
 const yAxis = new THREE.Vector3(0, 1, 0);
 const zAxis = new THREE.Vector3(0, 0, 1);
 
@@ -46,6 +48,8 @@ export class BuildingLayer {
   private zones: THREE.InstancedMesh;
   private rotors: THREE.InstancedMesh;
   private rotorSites: { x: number; z: number; rot: number; phase: number }[] = [];
+  /** Where smoke and steam leave the buildings standing now, in the scene. */
+  emitters: Emitter[] = [];
 
   private detail: VisualDetail = 1;
 
@@ -175,6 +179,7 @@ export class BuildingLayer {
     const half = GRID / 2;
     const counts = new Map<number, number>();
     this.rotorSites = [];
+    this.emitters = [];
     let nz = 0, nc = 0;
     for (let i = 0; i < N_TILES; i++) {
       const k = kind[i];
@@ -262,6 +267,10 @@ export class BuildingLayer {
       }
       mesh.setMatrixAt(n, m4);
       mesh.userData.tileIds[n] = i;
+      for (const [ex, ey, ez, ek] of emittersOf(k, l, variant)) {
+        spot.set(ex, ey, ez).applyMatrix4(m4);
+        this.emitters.push({ x: spot.x, y: spot.y, z: spot.z, kind: ek, tile: i, always: k === T_COAL || k === T_GAS || k === T_NUCLEAR });
+      }
       // A zone building's own paint (a terrace is painted alike), and its own shuffle of lit windows.
       if (zone) buildingTint(terraceRun(i) >= 0 ? terraceRun(i) : i + 7919, bands ? bands.wealth[i] : 1, tint);
       else tint.set(1, 1, 1);

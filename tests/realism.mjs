@@ -52,5 +52,21 @@ test('weather: nothing snaps at midnight', () => {
   }
 });
 
+const G = await import('../src/render/buildingGeo.ts');
+const K = await import('../src/constants.ts');
+
+test('smoke: stacks and chimneys breathe from their tops, and plain houses do not', () => {
+  const tops = (k, l, v) => { G.buildingGeometry(k, l, v, 1); return { e: G.emittersOf(k, l, v), h: G.buildingHeight(k, l, v) }; };
+  const coal = tops(K.T_COAL, 1, 0);
+  assert.ok(coal.e.length >= 3, 'a coal plant has its stacks and its cooling tower');
+  assert.ok(coal.e.some(([, y, , k]) => k === G.Emit.Smoke && y > coal.h - 0.05), 'smoke from the top of the tallest stack');
+  const factory = tops(K.T_IND, 1, 1);
+  assert.ok(factory.e.filter(([, , , k]) => k === G.Emit.Smoke).length === 2, 'the brick plant smokes from both stacks');
+  const chimneyHouse = tops(K.T_RES, 1, 5), plain = tops(K.T_RES, 1, 2);
+  assert.equal(chimneyHouse.e.length, 1); assert.equal(chimneyHouse.e[0][3], G.Emit.Chimney);
+  assert.equal(plain.e.length, 0);
+  for (const [x, , z] of [...coal.e, ...factory.e, ...chimneyHouse.e]) assert.ok(Math.abs(x) < 1.6 && Math.abs(z) < 1.6, 'on its own site');
+});
+
 console.log(`\n${checks} passed, ${failures} failed`);
 if (failures) process.exit(1);

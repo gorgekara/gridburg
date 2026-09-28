@@ -37,6 +37,8 @@ import { assignVariants } from './render/variants';
 import { LandmarkLayer } from './render/landmarks';
 import { weatherAt, CLEAR, type Weather } from './render/weather';
 import { RainLayer } from './render/rain';
+import { SmokeLayer, type Emitter } from './render/smoke';
+import { Emit } from './render/buildingGeo';
 import { PedestrianLayer } from './render/pedestrians';
 import { StreetFurnitureLayer } from './render/streetFurniture';
 import { ParkedCarLayer } from './render/parkedCars';
@@ -63,7 +65,7 @@ import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
 import { setDayLength } from './render/daylight';
-import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET } from './constants';
+import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET, F_NO_POWER } from './constants';
 import { HALF_WIDTH, Network } from './roads/network';
 import { roadHeight } from './roads/structures';
 import { serviceCoverage } from './coverage';
@@ -123,6 +125,7 @@ const streetDetail = new StreetDetailLayer();
 const verges = new VergeLayer();
 const landmarks = new LandmarkLayer();
 const rain = new RainLayer();
+const smoke = new SmokeLayer();
 /** The weather now, for the sky, the rain, the wet streets and the umbrellas. */
 let weather: Weather = CLEAR;
 const parked = new ParkedCarLayer();
@@ -138,7 +141,7 @@ const cyclists = new CyclistLayer();
 const audio = new CityAudio();
 const achievements = new AchievementLog();
 let showTraffic = false;
-scene.add(landmarks.group, rain.lines, hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
+scene.add(landmarks.group, rain.lines, smoke.mesh, hills.group, terraformLayer.group, disasterLayer.group, flood.group, districtLabels.group, cyclists.group, parked.group, pedestrians.group, furniture.group, streetDetail.group, verges.group, helicopters.group, balloons.group, boats.group, structures.group, landscape.group, streetlights.group, river.group, alleys.group, overlay.group, roads.group, buildings.group, cars.mesh, transport.group, subway.group, transitLines.group, incidents.group);
 
 const game = new Game();
 const input = new Input(canvas, camera, game, scene);
@@ -735,6 +738,7 @@ game.onEdit = () => {
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles, bands);
+  smoke.setEmitters(buildings.emitters);
   landmarks.rebuild({ kind: game.kind, level: game.level, raster: game.raster, terrain: game.terrain, terraform: game.extras.terraform, rot: game.rot, wealth: game.maps ? bands.wealth : null, land: game.maps?.land ?? null, district: game.extras.district }, game.net, (x, z) => hills.heightAt(x, z));
   verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot, landmarks.taken);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
@@ -751,6 +755,7 @@ game.onState = () => {
   alleys.rebuild(game.kind, game.level, game.raster, game.terrain);
   transitLines.rebuild(game.kind, game.flags, game.raster, game.net, entryGates());
   buildings.rebuild(game.kind, game.level, game.raster, game.rot, game.terrain.water, game.parkPathMask, busLanes.bayTiles, bands);
+  smoke.setEmitters(buildings.emitters);
   landmarks.rebuild({ kind: game.kind, level: game.level, raster: game.raster, terrain: game.terrain, terraform: game.extras.terraform, rot: game.rot, wealth: game.maps ? bands.wealth : null, land: game.maps?.land ?? null, district: game.extras.district }, game.net, (x, z) => hills.heightAt(x, z));
   verges.rebuild(game.kind, game.level, game.raster, game.net, game.terrain, game.extras.terraform, game.rot, landmarks.taken);
   transport.rebuild(game.kind, game.flags, game.raster, game.net, entryGates(), game.rot);
@@ -1088,6 +1093,18 @@ renderer.setAnimationLoop((now: number) => {
   rain.update(dt, camera, weather.rain, weather.windAngle, weather.wind, walker.active || driver.active);
   roads.setWet(weather.wet);
   pedestrians.setRain(weather.rain);
+  {
+    const hour = daylight(game.cityTime).hour, evening = hour >= 18 || hour < 8, shift = hour >= 6 && hour < 20;
+    // Factories run by day and at half pace at night; the power stations never stop; house fires are lit
+    // in the evening, and on a grey day too. Nothing without power smokes.
+    const running = (e: Emitter): number => {
+      if (!e.always && game.flags[e.tile] & F_NO_POWER) return 0;
+      if (e.always || e.kind === Emit.Tower) return 1;
+      if (e.kind === Emit.Chimney) return evening ? 0.7 + weather.cloud * 0.3 : weather.cloud > 0.7 ? 0.3 : 0;
+      return shift ? 1 : 0.5;
+    };
+    smoke.update(dt, camera.position, weather.windAngle, weather.wind, running);
+  }
   landscape.update(camera.position);
   if (walker.active || driver.active) streetDetail.update(camera.position);
   else {

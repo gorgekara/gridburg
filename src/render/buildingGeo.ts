@@ -59,6 +59,9 @@ export class Builder {
    * lit at that hour, so the windows come on one by one through the evening and go out late at night.
    */
   paneId = -1;
+  /** Where smoke or steam leaves the model: x, y, z (model space) and what comes out (see `Emit`). */
+  emitters: [number, number, number, number][] = [];
+  emit(x: number, y: number, z: number, kind: number): void { this.emitters.push([x + this.shift.x, y, z + this.shift.z, kind]); }
 
   /**
    * A pane's number for a design that lights `lit` of its windows (0.4 is typical): its own random
@@ -478,6 +481,13 @@ const IND_WALLS = [0xc2bb9f, 0xa89f82, 0xb0aa93, 0x9c9a90, 0xb6ab8d, 0xa4a89b];
 
 export const VARIANTS = 6;
 const heights = new Map<string, number>();
+/** What comes out of an emitter: smoke from a stack, steam from a vent, a house's chimney (evenings), a faint haze, a cooling tower's plume. */
+export const Emit = { Smoke: 0, Steam: 1, Chimney: 2, Haze: 3, Tower: 4 } as const;
+const emitterMap = new Map<string, [number, number, number, number][]>();
+/** The emitters of a design, in its model space (after the facade shift): x, y, z and `Emit` kind. */
+export function emittersOf(kind: number, level: number, variant: number): readonly [number, number, number, number][] {
+  return emitterMap.get(`${kind}:${level}:${variant}`) ?? [];
+}
 
 export function buildingHeight(kind: number, level: number, variant: number): number {
   const key = `${kind}:${level}:${variant}`;
@@ -829,10 +839,12 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
           porch.moveTo(d / 2 - 0.01, 0.25); porch.lineTo(d / 2 + 0.13, 0.25); porch.lineTo(d / 2 + 0.13, 0.26); porch.lineTo(d / 2 - 0.01, 0.3); porch.closePath();
           b.profile(porch, 0.22, 0.1, roof, 0.004, 1);
         }
-        if (v === 5) {
-          // A chimney breast up the side wall.
-          b.box(0.08, h + 0.3, 0.12, w / 2 + 0.03, 0, -0.12, 0x9a5a44);
+        if (v === 5 || v === 0 || v === 3) {
+          // A chimney breast up the side wall, and its pots.
+          b.box(0.08, h + 0.3, 0.12, w / 2 + 0.03, 0, -0.12, v === 3 ? 0x8a5a44 : 0x9a5a44);
           b.box(0.1, 0.03, 0.14, w / 2 + 0.03, h + 0.3, -0.12, 0x6b6560);
+          for (const o of [-0.03, 0.03]) b.cyl(0.013, 0.035, w / 2 + 0.03, h + 0.33, -0.12 + o, 0xa0582f, 6);
+          b.emit(w / 2 + 0.03, h + 0.37, -0.12, Emit.Chimney);
         }
       }
       if (v === 1 || v === 3) b.windows(w, h, d, 0.34, 1, 2, 0.1);
@@ -990,6 +1002,11 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
           tooth.moveTo(z - 0.13, h); tooth.lineTo(z + 0.1, h); tooth.lineTo(z + 0.1, h + 0.14); tooth.closePath();
           b.profile(tooth, 0.88, 0, 0x717873, 0.006, 1);
           b.box(0.8, 0.1, 0.006, 0, h + 0.02, z + 0.104, 0xabc8d0);
+          if (z === 0) {
+            // An extract vent on the roof, breathing steam.
+            b.cyl(0.03, 0.08, 0.3, h + 0.06, z, 0x8a9096, 8);
+            b.emit(0.3, h + 0.15, z, Emit.Steam);
+          }
         } else {
           b.box(0.88, 0.12, 0.2, 0, h, z, 0x717873);
           b.box(0.64, 0.035, 0.12, 0, h + 0.12, z, 0xabc8d0);
@@ -1001,6 +1018,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       for (const z of [-0.25, 0.19]) {
         b.cyl(0.065, 0.5 + level * 0.18, 0.34, 0.025, z, 0x686960, 10);
         b.cyl(0.07, 0.07, 0.34, 0.38 + level * 0.18, z, 0xc65343, 10);
+        b.emit(0.34, 0.47 + level * 0.18, z, Emit.Smoke);
       }
       b.at(-0.06, 0, () => b.windows(0.7, h, 0.76, 0.15, level, 3, 0.05));
       b.box(0.3, 0.1, 0.34, -0.13, h + 0.025, 0, 0x738791);
@@ -1011,6 +1029,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
         b.taper(0.02, 0.17, 0.13, 0.23, h + 0.025, z, 0x919f9b);
       }
       b.pipe(0.04, 0.7, 0.22, 0.2, 0, 0xd2ab58);
+      b.emit(-0.22, h * 0.7 + 0.05, 0.2, Emit.Steam);
       b.box(0.3, 0.26, 0.03, -0.22, 0.025, 0.435, 0x465058);
     } else { // distribution warehouse with solar and container yard
       b.box(0.88, h * 0.72, 0.58, 0, 0.025, -0.13, wall);
@@ -1042,6 +1061,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.cyl(0.062, 0.07, 0.28, 1.2, 0.28, 0xb8433a, 10);
     b.cyl(0.055, 1.05, 0.1, 0.04, 0.33, 0x5a5650, 10);
     b.cyl(0.062, 0.07, 0.1, 1.0, 0.33, 0xb8433a, 10);
+    b.emit(0.28, 1.3, 0.28, Emit.Smoke); b.emit(0.1, 1.1, 0.33, Emit.Smoke); b.emit(0.25, 0.8, -0.2, Emit.Steam);
     b.box(0.3, 0.12, 0.25, -0.2, 0.04, -0.3, 0x24262b);
   } else if (kind === T_GAS) {
     // A compact turbine hall with two slim stacks and a row of gas tanks.
@@ -1049,7 +1069,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.56, 0.36, 0.42, -0.14, 0.04, 0.14, 0xc9ccce);
     b.box(0.58, 0.05, 0.44, -0.14, 0.4, 0.14, 0x3f6f9e);
     b.at(-0.14, 0.14, () => b.windows(0.56, 0.36, 0.42, 0.1, 1, 3, 0.3, 0.09));
-    for (const x of [0.22, 0.34]) { b.cyl(0.04, 0.95, x, 0.04, 0.22, 0xb9bcbe, 10); b.cyl(0.045, 0.05, x, 0.96, 0.22, 0x3f6f9e, 10); }
+    for (const x of [0.22, 0.34]) { b.cyl(0.04, 0.95, x, 0.04, 0.22, 0xb9bcbe, 10); b.cyl(0.045, 0.05, x, 0.96, 0.22, 0x3f6f9e, 10); b.emit(x, 1.02, 0.22, Emit.Haze); }
     for (const x of [-0.3, -0.05, 0.2]) b.cyl(0.1, 0.24, x, 0.04, -0.28, 0xe9e9e4, 14);
     b.box(0.7, 0.03, 0.03, -0.05, 0.2, -0.28, 0x8c9092);
   } else if (kind === T_HYDRO) {
@@ -1084,6 +1104,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     b.box(0.66, 0.05, 0.54, -0.06, 0.37, 0.05, 0x55595e);
     b.at(-0.06, 0.05, () => b.windows(0.62, 0.34, 0.5, 0.12, 1, 3, 0.2, 0.08));
     b.cyl(0.05, 0.75, 0.3, 0.03, -0.25, 0x8f8a80, 10); // chimney
+    b.emit(0.3, 0.8, -0.25, Emit.Haze);
     b.box(0.3, 0.2, 0.03, -0.06, 0.03, 0.31, 0x3a2e28);
     for (const x of [-0.38, 0.38]) b.taper(0.01, 0.08, 0.28, x, 0.03, 0.38, 0x2f5a37, 8);
   } else if (kind === T_POST_OFFICE) {
@@ -1124,6 +1145,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       b.taper(0.62, 0.42, 1.0, x, 0.05, z, 0xd8d6cf, 20);
       b.taper(0.42, 0.5, 0.75, x, 1.05, z, 0xd8d6cf, 20);
       b.cyl(0.5, 0.04, x, 1.8, z, 0xb4b1a8, 20);
+      b.emit(x, 1.86, z, Emit.Tower);
     }
     b.cyl(0.42, 0.7, -0.4, 0.05, 0.75, 0xe6e4dd, 18); // reactor building
     b.taper(0.42, 0.05, 0.35, -0.4, 0.75, 0.75, 0xcfccc3, 18); // dome
@@ -1446,11 +1468,14 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   // The frontmost building detail meets the lot's +z boundary; rotation then faces it
   // toward the road. Keep the tile center fixed so zoning, picking and saves agree.
   geometry.computeBoundingBox();
+  let shiftZ = 0;
   if (!isDecoration(kind) && !isParking(kind) && kind !== T_WIND && !SERVICES[kind]?.footprint && geometry.boundingBox) {
-    geometry.translate(0, 0, 0.5 - geometry.boundingBox.max.z);
+    shiftZ = 0.5 - geometry.boundingBox.max.z;
+    geometry.translate(0, 0, shiftZ);
     geometry.computeBoundingBox();
   }
   heights.set(`${kind}:${level}:${variant}`, geometry.boundingBox!.max.y);
+  emitterMap.set(`${kind}:${level}:${variant}`, b.emitters.map(([x, y, z, k]) => [x, y, z + shiftZ, k]));
   // The lot is added after the facade shift so it always fills the tile.
   const lot = lotGeometry(kind, level, v);
   if (!lot) return geometry;
