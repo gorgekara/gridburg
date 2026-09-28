@@ -1,5 +1,6 @@
 import { T_RES, T_COM, T_OFFICE, T_LEISURE } from '../constants';
 import { TIME } from './character';
+import { tileHash } from '../constants';
 import type { Kit, Body } from './streetDetail';
 import { WINDOW_LIT } from './buildingGeo';
 
@@ -26,6 +27,8 @@ export interface LotLook {
   avenue: boolean;
   /** A run of busy shops round it: a street a market sets up on. */
   market: boolean;
+  /** A house with a drive (see `hasDriveway`): a garage stands at the end of it. */
+  drive: boolean;
   i: number;
   kind: number;
   level: number;
@@ -81,6 +84,20 @@ export function dressLot(kit: Kit, look: LotLook): void {
   // A shop on the ground floor of flats beside a shopping street.
   if (flats && b && look.nearShops && look.hash(29) < 0.6) groundShop(kit, look.glow, b, look.hash(31), night && !late, rnd);
 
+  // ---- houses ----
+  if (house && b) {
+    if (look.drive) garage(kit, look.hash(61) < 0.25, look.hash(67), rnd);
+    // Hanging baskets either side of the door.
+    if (look.wealth >= 1 && look.hash(71) < 0.5) for (const x of [0.03, 0.17]) {
+      kit.jitter = 0;
+      kit.beam(x, 0.215, b.z1 + 0.004, x, 0.195, b.z1 + 0.018, 0.0015, 0x2a2c30);
+      kit.prism(x, 0.18, b.z1 + 0.018, 0.012, 0.014, 0x5a4330, 6, 0.008);
+      kit.jitter = (rnd() - 0.5) * 0.2;
+      kit.lump(x, 0.182, b.z1 + 0.018, 0.013, pick(rnd, [0xd8453b, 0xf09ac0, 0xb784d6, 0xf2c94c]), 0.9, rnd);
+      kit.jitter = 0;
+    }
+  }
+
   // ---- street life ----
   if (b && ((k === T_COM && look.level >= 2) || k === T_LEISURE)) neon(look.glow, front, look.hash(53), rnd);
   const day = look.time === TIME.MORNING || look.time === TIME.MIDDAY || look.time === TIME.AFTERNOON;
@@ -88,6 +105,9 @@ export function dressLot(kit: Kit, look: LotLook): void {
   if (k === T_OFFICE && room >= 0.07 && look.time === TIME.MIDDAY && look.hash(47) < (look.avenue ? 0.45 : 0.25)) lunchCart(kit, look.hash(49) < 0.5 ? -0.28 : 0.28, mid, rnd);
   if (k === T_COM && room >= 0.16 && (look.time === TIME.EARLY || look.time === TIME.MORNING) && look.hash(59) < 1 / 6) deliveryVan(kit, mid, rnd);
   if (look.grown && b) scaffolding(kit, b, rnd);
+
+  // What the shop sells, and what that puts out front and over the door.
+  if (k === T_COM && b) shopTrade(kit, look.glow, tradeOf(look.i), left, right, front, !closed, look.time === TIME.EVENING || night, rnd);
 
   // ---- trouble ----
   if (closed) shutter(kit, left, right, front, look.rough === 2 || night ? 1 : 0.5, rnd, look.rough > 0);
@@ -152,6 +172,82 @@ function groundShop(kit: Kit, glow: Kit, b: Body, h: number, shut: boolean, rnd:
   kit.beam(x0, 0.176, z + 0.004, x0, 0.15, z + 0.06, 0.004, fascia);
   kit.box(x, 0.146, z + 0.034, w, 0.004, 0.06, fascia);
   if (shut) shutter(kit, x0 - 0.01, x1 + 0.01, z + 0.004, 1, rnd);
+}
+
+export const TRADES = ['café', 'bakery', 'pharmacy', 'bank', 'barber', 'florist', 'grocer', 'books', 'hardware', 'bar'] as const;
+export type Trade = typeof TRADES[number];
+export function tradeOf(i: number): Trade { return TRADES[Math.floor(tileHash(i * 211 + 5) * TRADES.length) % TRADES.length]; }
+
+/**
+ * A shop's own front for its trade: a projecting sign that says what it is (a pharmacy's green cross,
+ * a barber's pole, a bank's panel, a loaf, a cup), what it sets out on the pavement, and after dark the
+ * glow of its window while it is open.
+ */
+function shopTrade(kit: Kit, glow: Kit, trade: Trade, left: number, right: number, front: number, open: boolean, dark: boolean, rnd: () => number): void {
+  const sx = right - 0.035, sy = 0.24, sz = front + 0.03;
+  kit.jitter = 0;
+  // The bracket the sign hangs from.
+  kit.box(sx, sy + 0.05, front + 0.015, 0.004, 0.004, 0.03, 0x2a2c30);
+  const sign = (color: number, lit = false): void => { (lit ? glow : kit).box(sx, sy, sz, 0.006, 0.05, 0.05, color); };
+  switch (trade) {
+    case 'pharmacy':
+      // The green cross, lit day and night.
+      glow.box(sx, sy + 0.015, sz, 0.007, 0.02, 0.05, 0x2fd06a);
+      glow.box(sx, sy, sz, 0.007, 0.05, 0.018, 0x2fd06a);
+      break;
+    case 'barber':
+      // The striped pole by the door.
+      for (let y = 0; y < 0.1; y += 0.012) kit.prism(left + 0.03, 0.06 + y, front + 0.012, 0.007, 0.012, [0xd8453b, 0xf2f2ee, 0x2f5f9f][Math.round(y / 0.012) % 3], 8);
+      kit.prism(left + 0.03, 0.16, front + 0.012, 0.009, 0.01, 0xd8d0b0, 8);
+      break;
+    case 'bank':
+      sign(0x1f3a5f); kit.box(sx, sy + 0.01, sz, 0.007, 0.01, 0.036, 0xc9a24a);
+      // A cash machine in the wall, its screen lit.
+      kit.box(left + 0.05, 0.05, front + 0.003, 0.04, 0.06, 0.006, 0x5a6068);
+      glow.box(left + 0.05, 0.075, front + 0.007, 0.024, 0.016, 0.002, 0x7fd0ff);
+      break;
+    case 'bakery':
+      sign(0xf2e6c8); kit.jitter = 0; kit.lump(sx, sy + 0.02, sz, 0.012, 0xc8904a, 0.6, rnd);
+      break;
+    case 'café':
+      sign(0x3a2a1f); kit.prism(sx, sy + 0.012, sz, 0.008, 0.014, 0xf2f2ee, 8);
+      break;
+    case 'florist':
+      sign(0x2f6f4f);
+      // Buckets of flowers on the pavement.
+      for (let n = 0; n < 5 && open; n++) {
+        const x = left + 0.05 + n * 0.035;
+        kit.prism(x, 0, front + 0.03, 0.012, 0.02, 0x5a6068, 8);
+        kit.jitter = (rnd() - 0.5) * 0.2;
+        kit.lump(x, 0.02, front + 0.03, 0.013, pick(rnd, [0xd8453b, 0xf2c94c, 0xf09ac0, 0xb784d6, 0xf2f2ee]), 0.9, rnd);
+        kit.jitter = 0;
+      }
+      break;
+    case 'grocer':
+      sign(0x7a9a3a);
+      break;
+    case 'books':
+      sign(0x6a2a2a); kit.box(sx, sy + 0.005, sz, 0.007, 0.02, 0.03, 0xe8dcc0);
+      break;
+    case 'hardware':
+      sign(0xe0a021);
+      // A ladder and a few buckets out front.
+      if (open) {
+        kit.beam(right - 0.06, 0, front + 0.035, right - 0.07, 0.12, front + 0.004, 0.004, 0x9aa3a8);
+        kit.beam(right - 0.1, 0, front + 0.035, right - 0.11, 0.12, front + 0.004, 0.004, 0x9aa3a8);
+        for (let y = 0.02; y < 0.12; y += 0.025) kit.box(right - 0.085, y, front + 0.035 - y * 0.26, 0.04, 0.003, 0.003, 0x9aa3a8);
+      }
+      break;
+    case 'bar':
+      // A lantern by the door and a lit glass on the sign.
+      glow.box(sx, sy, sz, 0.006, 0.05, 0.05, 0x3a1f14);
+      glow.prism(sx, sy - 0.012, sz, 0.008, 0.024, 0xffc84a, 6, 0.01);
+      kit.box(left + 0.03, 0.17, front + 0.01, 0.014, 0.02, 0.014, 0x2a2c30);
+      glow.box(left + 0.03, 0.172, front + 0.018, 0.01, 0.014, 0.002, 0xffd28a);
+      break;
+  }
+  // After dark an open shop's window glows from inside.
+  if (open && dark) glow.box((left + right) / 2, 0.025, front + 0.0035, Math.max(0.05, right - left - 0.08), 0.1, 0.001, 0xffe6b0);
 }
 
 const NEON = [0xff3d8b, 0x3de8ff, 0xffd23d, 0x9b5cff, 0x5cff8a, 0xff6a3d];
@@ -250,6 +346,25 @@ function scaffolding(kit: Kit, b: Body, rnd: () => number): void {
     }
   }
   kit.jitter = 0;
+}
+
+/** A garage at the end of a house's drive, its up-and-over door facing down the drive; now and then open. */
+function garage(kit: Kit, open: boolean, h: number, rnd: () => number): void {
+  const x = 0.385, z = -0.33, w = 0.17, d = 0.22, ht = 0.13, wall = [0xd8cfc0, 0xb8a58c, 0xc8c2b8, 0x9a7a62][Math.floor(h * 4)];
+  kit.jitter = 0;
+  kit.box(x, 0, z, w, ht, d, wall);
+  kit.box(x, ht, z, w + 0.012, 0.012, d + 0.012, 0x5a5e62);
+  const door = z + d / 2 + 0.002;
+  if (open) {
+    kit.box(x, 0.004, door, w - 0.03, ht - 0.03, 0.002, 0x1f2124);
+    // Up and over: the door lies under the ceiling; inside, a bike and a shelf of tins.
+    kit.box(x, ht - 0.026, door - 0.05, w - 0.03, 0.004, 0.1, [0xf2f2ee, 0x2f5f4f, 0x7a2f2f][Math.floor(h * 30) % 3]);
+    kit.box(x - 0.05, 0.004, door - 0.03, 0.004, 0.035, 0.05, pick(rnd, [0x2f6fb7, 0xc8382f, 0x3f3f3f]));
+    for (let n = 0; n < 3; n++) kit.box(x + 0.04, 0.06 + n * 0.018, door - 0.08, 0.05, 0.004, 0.02, 0x8a6240);
+  } else {
+    kit.box(x, 0.004, door, w - 0.03, ht - 0.03, 0.003, [0xf2f2ee, 0x2f5f4f, 0x7a2f2f][Math.floor(h * 30) % 3]);
+    for (let y = 0.02; y < ht - 0.03; y += 0.018) kit.box(x, y, door + 0.002, w - 0.03, 0.002, 0.001, 0x9a968c);
+  }
 }
 
 /** A clipped hedge along the front of a house, open at the path, with stone piers either side of the gap. */

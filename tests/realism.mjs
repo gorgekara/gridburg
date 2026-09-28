@@ -87,5 +87,20 @@ test('crowds: shopping streets fill at lunch, homes in the evening, offices at r
   assert.ok(night.get(1).people < noon.get(1).people * 0.2, 'shopping streets empty at night');
 });
 
+const D = await import('../src/render/dressing.ts');
+const { Kit } = await import('../src/render/streetDetail.ts');
+
+test('shops: each has a trade, every trade turns up, and the trade shows on the front', () => {
+  const seen = new Set();
+  for (let i = 0; i < 400; i++) { const t = D.tradeOf(i); assert.ok(D.TRADES.includes(t)); seen.add(t); }
+  assert.equal(seen.size, D.TRADES.length);
+  const body = { x0: -0.3, x1: 0.3, z0: -0.3, z1: 0.3, h: 0.6, r: 0, roof: null };
+  const draw = (i, time) => { const kit = new Kit(), glow = new Kit(); let n = 1; D.dressLot(kit, { glow, time, grown: false, avenue: false, market: false, drive: false, i, kind: K.T_COM, level: 1, body, fine: true, pave: 0, nearShops: false, wealth: 1, rough: 0, litter: 0, loud: 0, rnd: () => (n = (n * 16807) % 2147483647) / 2147483647, hash: () => 0.5 }); return glow.triangles; };
+  const pharmacy = [...Array(400).keys()].find(i => D.tradeOf(i) === 'pharmacy');
+  assert.ok(draw(pharmacy, C.TIME.MIDDAY) > 0, 'the green cross is lit');
+  const books = [...Array(400).keys()].find(i => D.tradeOf(i) === 'books');
+  assert.ok(draw(books, C.TIME.EVENING) > draw(books, C.TIME.MIDDAY), 'windows glow once it is dark');
+});
+
 console.log(`\n${checks} passed, ${failures} failed`);
 if (failures) process.exit(1);

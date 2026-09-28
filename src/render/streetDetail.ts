@@ -17,7 +17,7 @@ import { isGardenTile } from './verges';
 import { hasDriveway } from './parkedCars';
 import { siteOwners } from '../sites';
 import { bandCode, timeBand, TIME, type Bands } from './character';
-import { dressLot, chainLink, figure } from './dressing';
+import { dressLot, chainLink, figure, tradeOf } from './dressing';
 
 /**
  * Street-level detail, streamed in around the camera while walking or driving: the things nobody sees
@@ -76,6 +76,8 @@ export interface DetailSource {
   hour?: number;
   /** Whether a lot grew a level lately and still has its scaffolding up. */
   grown?(tile: number): boolean;
+  /** The city's day number: each street has its bin day. */
+  day?: number;
   /** How wet the streets are, 0 to 1: puddles lie in the gutters above 0.3. */
   wet?: number;
   /** Whether a landmark (a plaza, a clock tower) stands on a tile: nothing else is put there. */
@@ -383,7 +385,7 @@ export class StreetDetailLayer {
   /** A fingerprint of everything a chunk is built from, so it is rebuilt only when that changes. */
   private signature(kx: number, kz: number, src: DetailSource): number {
     // The time of day: street life changes with it, so a chunk is rebuilt when it moves on.
-    let h = ((src.net.version | 0) * 8 + timeBand(src.hour ?? 12)) * 2 + ((src.wet ?? 0) > 0.3 ? 1 : 0);
+    let h = (((src.net.version | 0) * 8 + timeBand(src.hour ?? 12)) * 2 + ((src.wet ?? 0) > 0.3 ? 1 : 0)) * 7 + (src.day ?? 0) % 7;
     for (let z = kz * CHUNK - 1; z <= kz * CHUNK + CHUNK; z++) for (let x = kx * CHUNK - 1; x <= kx * CHUNK + CHUNK; x++) {
       if (!inBounds(x, z)) continue;
       const i = idx(x, z);
@@ -1328,7 +1330,7 @@ class ChunkBuilder {
       for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) if (inBounds(x + dx, z + dz) && this.src.kind[idx(x + dx, z + dz)] === T_COM && this.src.level[idx(x + dx, z + dz)] > 0) shops++;
       this.glow.at(...this.saved);
       dressLot(this.kit, {
-        glow: this.glow, time: this.time, grown: !!this.src.grown?.(i), avenue: seg?.kind === KIND_AVENUE, market: shops >= 3,
+        glow: this.glow, time: this.time, grown: !!this.src.grown?.(i), avenue: seg?.kind === KIND_AVENUE, market: shops >= 3, drive: hasDriveway(i, this.src.kind, this.src.level),
         i, kind: k, level: l, body, fine: this.fine, pave, nearShops: k === T_RES && l > 1 && this.nearShops(i), rnd: stream(i * 48271 + (this.fine ? 5 : 1)), hash: salt => tileHash(i * 97 + salt),
         wealth: bands.wealth[i], rough: bands.rough[i], litter: bands.litter[i], loud: bands.loud[i],
       });
@@ -1388,7 +1390,13 @@ class ChunkBuilder {
     // Wheelie bins beside the house, on the side away from the drive if it has one.
     const drive = hasDriveway(i, this.src.kind, this.src.level);
     const binX = !drive && right + 0.05 < 0.45 ? right + 0.045 : left - 0.045;
-    if (Math.abs(binX) < 0.44) for (const [n, color] of [[0, pick(rnd, BIN)], [1, pick(rnd, BIN)]] as [number, number][]) {
+    // On the street's bin day the bins are out at the kerb, by the gate.
+    const binDay = this.src.day !== undefined && this.src.raster.accSeg[i] >= 0 && this.src.day % 7 === Math.floor(tileHash(this.src.raster.accSeg[i] * 7 + 3) * 7);
+    if (binDay) for (const [n, color] of [[0, pick(rnd, BIN)], [1, pick(rnd, BIN)]] as [number, number][]) {
+      kit.box(-0.28 + n * 0.042, 0, 0.455, 0.034, 0.05, 0.036, color);
+      kit.box(-0.28 + n * 0.042, 0.05, 0.455, 0.037, 0.005, 0.04, color);
+    }
+    else if (Math.abs(binX) < 0.44) for (const [n, color] of [[0, pick(rnd, BIN)], [1, pick(rnd, BIN)]] as [number, number][]) {
       const z = front - 0.03 - n * 0.045;
       kit.box(binX, 0, z, 0.034, 0.05, 0.036, color);
       kit.box(binX, 0.05, z, 0.037, 0.005, 0.04, color);
@@ -1611,13 +1619,8 @@ class ChunkBuilder {
       }
       kit.box((left + right) / 2, y - 0.012, front + depth - 0.002, w - 0.04, 0.012, 0.003, color);
     }
-    // A blade sign sticking out from the facade.
-    if (rnd() < 0.6) {
-      const x = rnd() < 0.5 ? left + 0.03 : right - 0.03, y = 0.26 + rnd() * 0.1;
-      kit.box(x, y + 0.04, front + 0.01, 0.004, 0.004, 0.02, DARK);
-      kit.box(x, y, front + 0.03, 0.006, 0.05, 0.035, pick(rnd, AWNING));
-      kit.box(x, y + 0.01, front + 0.03, 0.007, 0.03, 0.025, 0xf2f2ee);
-    }
+    // (The shop's projecting sign is its trade's: see `shopTrade`.)
+    rnd(); rnd(); rnd();
     // An A-board and a potted bay tree by the door; crates of produce in front of a grocer.
     if (front < 0.47) {
       const z = Math.min(0.47, front + 0.04);
@@ -1631,7 +1634,7 @@ class ChunkBuilder {
         kit.prism(x, 0.02, front + 0.02, 0.0025, 0.012, WOOD_DARK, 4);
         kit.jitter = 0;
       }
-      if (tileHash(i * 11) < 0.35) for (let n = 0; n < 3; n++) {
+      if (tileHash(i * 11) < 0.35 || tradeOf(i) === 'grocer') for (let n = 0; n < 3; n++) {
         const x = 0.2 + n * 0.045;
         kit.box(x, 0, front + 0.025, 0.04, 0.02, 0.03, WOOD);
         for (let m = 0; m < 3; m++) kit.lump(x - 0.012 + m * 0.012, 0.02, front + 0.025, 0.007, pick(rnd, [0xd8453b, 0xe0a021, 0x7fae4f, 0xf5a14a]), 1, rnd);
@@ -1639,7 +1642,7 @@ class ChunkBuilder {
     }
     if (this.fine) this.pigeons(rnd, front, 3);
     // Café tables with parasols where the pavement in front is the shop's own.
-    if (front < 0.36 && tileHash(i * 13 + 2) < 0.5) {
+    if (front < 0.36 && (tileHash(i * 13 + 2) < 0.5 || tradeOf(i) === 'café' || tradeOf(i) === 'bar')) {
       // By day people sit out; after closing the chairs go up on the tables and the parasols are furled.
       const shut = this.time === TIME.NIGHT && tileHash(i * 97 + 37) >= 0.2, busy = this.time === TIME.MIDDAY || this.time === TIME.AFTERNOON ? 0.5 : this.time === TIME.MORNING || this.time === TIME.EVENING ? 0.25 : 0;
       for (const x of [left + 0.1, (left + right) / 2, right - 0.1]) {

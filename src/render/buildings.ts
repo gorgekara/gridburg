@@ -36,6 +36,8 @@ const ZONE_COLOR: Record<number, number> = {
   [T_LEISURE]: 0xe07fb0,
 };
 const SERVICE_KINDS = Object.keys(SERVICES).map(Number);
+/** Roof tiles: slate, terracotta, brown, weathered green, charcoal, red. */
+const ROOFS = [0x4a5058, 0xa4523a, 0x6b4a3a, 0x4f6e5a, 0x33363b, 0x8e3b2e, 0x4a5058, 0xa4523a];
 
 function key(kind: number, level: number, variant: number): number {
   return (kind * 4 + level) * 16 + variant;
@@ -68,12 +70,13 @@ export class BuildingLayer {
       shader.uniforms.cityLit = this.lit;
       shader.uniforms.windowDark = { value: new THREE.Vector3(dark.r, dark.g, dark.b) };
       // Each building has its own wall tint and its own shuffle of which windows are lit.
-      shader.vertexShader = 'attribute float pane;\nattribute vec3 aTint;\nattribute float aSeed;\nvarying float vPane;\nvarying vec3 vTint;\n' + shader.vertexShader;
+      shader.vertexShader = 'attribute float pane;\nattribute vec3 aTint;\nattribute float aSeed;\nattribute float aWear;\nattribute vec3 aRoof;\nvarying float vPane;\nvarying vec3 vTint;\nvarying float vWear;\nvarying vec3 vRoof;\nvarying float vUp;\nvarying float vHeight;\nvarying vec3 vWorld;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-        vTint = aTint;
+        vTint = aTint; vWear = aWear; vRoof = aRoof; vUp = normal.y; vHeight = position.y;
+        vWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
         vPane = pane;
         if (pane >= 0.0) { float code = floor(pane * 0.5); vPane = code * 2.0 + fract(pane - code * 2.0 + aSeed); }`);
-      shader.fragmentShader = 'uniform float cityNight;\nuniform vec2 cityLit;\nuniform vec3 windowDark;\nvarying float vPane;\nvarying vec3 vTint;\nfloat paneOn;\n' + shader.fragmentShader;
+      shader.fragmentShader = 'uniform float cityNight;\nuniform vec2 cityLit;\nuniform vec3 windowDark;\nvarying float vPane;\nvarying vec3 vTint;\nvarying float vWear;\nvarying vec3 vRoof;\nvarying float vUp;\nvarying float vHeight;\nvarying vec3 vWorld;\nfloat paneOn;\nfloat hash1(float n) { return fract(sin(n) * 43758.5453); }\n' + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
         // Window glass is known by its colour: the warm homes and the cool offices.
         float windowMask = step(0.95, vColor.r) * step(0.68, vColor.g) * (1.0 - step(0.5, vColor.b));
@@ -91,7 +94,22 @@ export class BuildingLayer {
             diffuseColor.rgb = windowDark;
           }
         }
-        diffuseColor.rgb *= mix(vTint, vec3(1.0), max(windowMask, officeMask) * paneOn);`);
+        float glass = max(windowMask, officeMask);
+        diffuseColor.rgb *= mix(vTint, vec3(1.0), glass * paneOn);
+        // Pitched roofs in their own tiles: slate, terracotta, brown, green or charcoal, keeping the
+        // light and shade of the courses.
+        if (vRoof.r + vRoof.g + vRoof.b > 0.0 && vUp > 0.35 && vUp < 0.97) {
+          float luma = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+          diffuseColor.rgb = vRoof * (0.7 + luma * 1.2);
+        }
+        // Weathering on the walls: grime creeping up from the pavement, and dirt streaking down from
+        // under each sill and ledge, heavier on the neglected streets.
+        if (vUp < 0.3 && glass < 0.5) {
+          float grime = 1.0 - smoothstep(0.0, 0.16, vHeight);
+          float column = hash1(floor((vWorld.x + vWorld.z) * 42.0) + floor(vHeight / 0.31) * 7.0);
+          float streak = step(0.78, column) * (1.0 - fract(vHeight / 0.31 + 0.15)) * step(0.1, vHeight);
+          diffuseColor.rgb *= 1.0 - vWear * (grime * 0.32 + streak * 0.22);
+        }`);
       shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         // Only the lit window glass emits; walls and roofs retain their lighting.
         totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * paneOn * cityNight * 1.8;
@@ -101,6 +119,8 @@ export class BuildingLayer {
       const mesh = new THREE.InstancedMesh(buildingGeometry(k, l, v), mat, cap);
       mesh.userData.tint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3);
       mesh.userData.seed = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      mesh.userData.wear = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      mesh.userData.roof = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       withInstanceData(mesh);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -276,12 +296,19 @@ export class BuildingLayer {
       else tint.set(1, 1, 1);
       (mesh.userData.tint as THREE.InstancedBufferAttribute).setXYZ(n, tint.x, tint.y, tint.z);
       (mesh.userData.seed as THREE.InstancedBufferAttribute).setX(n, tileHash(i * 31 + 7));
+      // How worn the walls are: by the street's standing and its troubles, and a little by chance.
+      const wealth = bands ? bands.wealth[i] : 1, rough = bands ? bands.rough[i] : 0;
+      (mesh.userData.wear as THREE.InstancedBufferAttribute).setX(n, zone ? Math.min(1, [0.8, 0.4, 0.2, 0.05][wealth] + rough * 0.2 + tileHash(i * 53 + 1) * 0.2) : 0.3);
+      // Tiles for the pitched roofs of homes and shops; a terrace shares its roof as it shares its paint.
+      const roofKey = terraceRun(i) >= 0 ? terraceRun(i) : i + 7919;
+      if (zone && k !== T_IND && k !== T_FARM) { col.setHex(ROOFS[Math.floor(tileHash(roofKey * 3 + 11) * ROOFS.length)]); (mesh.userData.roof as THREE.InstancedBufferAttribute).setXYZ(n, col.r, col.g, col.b); }
+      else (mesh.userData.roof as THREE.InstancedBufferAttribute).setXYZ(n, 0, 0, 0);
       if (k === T_WIND) this.rotorSites.push({ x: pos.x, z: pos.z, rot: facing, phase: tileHash(i) * 6.28 });
     }
     for (const [kk, mesh] of this.meshes) {
       mesh.count = counts.get(kk) ?? 0;
       mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.count) { (mesh.userData.tint as THREE.InstancedBufferAttribute).needsUpdate = true; (mesh.userData.seed as THREE.InstancedBufferAttribute).needsUpdate = true; }
+      if (mesh.count) for (const a of ['tint', 'seed', 'wear', 'roof']) (mesh.userData[a] as THREE.InstancedBufferAttribute).needsUpdate = true;
       mesh.boundingSphere = null; // Recompute lazily for picking after buildings move or grow.
     }
     this.zones.count = nz;
@@ -312,6 +339,8 @@ export class BuildingLayer {
 function withInstanceData(mesh: THREE.InstancedMesh): void {
   mesh.geometry.setAttribute('aTint', mesh.userData.tint);
   mesh.geometry.setAttribute('aSeed', mesh.userData.seed);
+  mesh.geometry.setAttribute('aWear', mesh.userData.wear);
+  mesh.geometry.setAttribute('aRoof', mesh.userData.roof);
   // Geometry built without window numbers (none of ours, but to be safe) lights nothing specially.
   if (!mesh.geometry.getAttribute('pane') && mesh.geometry.getAttribute('position')) {
     mesh.geometry.setAttribute('pane', new THREE.BufferAttribute(new Float32Array(mesh.geometry.getAttribute('position').count).fill(-1), 1));

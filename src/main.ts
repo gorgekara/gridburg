@@ -64,7 +64,7 @@ import { junctionLab, highwayLab } from './debugMaps';
 import { clearLocal, loadFromHash, loadLocal, saveLocal, shareUrl } from './save';
 import { MainMenu, loadSettings, saveSettings } from './ui/menu';
 import type { Settings } from './ui/menu';
-import { setDayLength } from './render/daylight';
+import { setDayLength, currentDayLength } from './render/daylight';
 import { GRID, MAX_CARS, N_TILES, RES_POP, SERVICES, isZone, T_PUMP, T_OUTLET, F_NO_POWER, T_PARK, T_GARDEN, T_PLAZA, T_PLAYGROUND, T_SPORTS } from './constants';
 import { HALF_WIDTH, Network } from './roads/network';
 import { roadHeight } from './roads/structures';
@@ -392,6 +392,7 @@ function detailSource(): DetailSource {
     grown: (tile) => game.grownAt[tile] > 0 && game.cityTime - game.grownAt[tile] < DAY_SECONDS * 2,
     landmark: (tile) => landmarks.taken.has(tile),
     get wet() { return weather.wet; },
+    get day() { return Math.floor((9 + game.cityTime * 24 / currentDayLength()) / 24); },
   };
 }
 /** Set while stepping out of the car or back into it, so the street stays set up between the two. */
