@@ -737,7 +737,7 @@ game.onEdit = () => {
   refreshRelief();
   pedestrians.rebuild(game.net);
   furniture.rebuild(game.net, game.kind, game.raster, busLanes.bays);
-  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot);
+  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot, game.maps ? bands : undefined);
   cyclists.rebuild(game.net);
   districtLabels.rebuild(game.extras.district, game.extras.districtNames);
   if (!quietEdits) audio.play(input.tool === 'bulldoze' ? 'bulldoze' : 'build');
@@ -769,7 +769,7 @@ game.onState = () => {
   // The police and traffic helicopters only take to the air once the town is a City.
   helicopters.group.visible = game.stats.cityLevel >= 4;
   helicopters.watch(game.incidents);
-  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot);
+  parked.rebuild(game.net, game.kind, game.level, game.raster, game.rot, game.maps ? bands : undefined);
   pedestrians.setCrowd(game.stats.pop, daylight(game.cityTime).night);
   overlay.setFlags(game.kind, game.level, game.flags, game.raster);
   overlay.setPollution(game.pollution);
@@ -1096,6 +1096,7 @@ renderer.setAnimationLoop((now: number) => {
   updateScene(dt, game.cityTime, weather);
   rain.update(dt, camera, weather.rain, weather.windAngle, weather.wind, walker.active || driver.active);
   roads.setWet(weather.wet);
+  cars.setWet(weather.wet);
   pedestrians.setRain(weather.rain);
   {
     // Once an hour, and after an edit, send the crowds to where people are at this hour.

@@ -8,7 +8,8 @@ import { lotScaleAt } from '../roads/raster';
 import { parkingStalls } from './parkingGeo';
 import { KIND_AVENUE, KIND_ROAD } from '../roads/network';
 import { Network } from '../roads/network';
-import { vehicleColor, vehicleGeometry } from './cars';
+import { vehicleColor, vehicleGeometry, carShape, CAR_SHAPES } from './cars';
+import type { Bands } from './character';
 import { sample } from './pedestrians';
 import { crossingApproaches } from '../roads/crossings';
 
@@ -24,7 +25,7 @@ const LOT_REACH = 3;
 const HALF_LENGTH = 0.14, HALF_WIDTH_CAR = 0.075;
 
 /** A parked car: where it stands and which way it faces, and which instance of which mesh draws it. */
-interface Parked { x: number; z: number; fx: number; fz: number; type: number; slot: number; color: number }
+interface Parked { x: number; z: number; fx: number; fz: number; type: number; mesh: number; slot: number; color: number }
 
 /** House designs narrow enough to leave room for a drive down their right-hand side, inside the fence. */
 const DRIVE_VARIANTS = [0, 2, 5];
@@ -59,8 +60,9 @@ export class ParkedCarLayer {
     this.drives = new THREE.InstancedMesh(drive, new THREE.MeshStandardMaterial({ color: 0xb3aea3, roughness: 0.9 }), N_TILES);
     this.drives.count = 0; this.drives.frustumCulled = false; this.drives.receiveShadow = true;
     this.group.add(this.drives);
-    this.meshes = [1, 2].map(type => {
-      const g = vehicleGeometry(type); g.scale(SCALE, SCALE, SCALE);
+    // Cars in all five bodies (see `CAR_SHAPES`), then vans.
+    this.meshes = [...CAR_SHAPES.map(shape => ({ type: 1, shape })), { type: 2, shape: undefined }].map(({ type, shape }) => {
+      const g = vehicleGeometry(type, 1, shape); g.scale(SCALE, SCALE, SCALE);
       const m = new THREE.InstancedMesh(g, mat, CAP);
       m.count = 0; m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(CAP * 3), 3);
@@ -69,23 +71,30 @@ export class ParkedCarLayer {
     });
   }
 
-  rebuild(net: Network, kind: Uint8Array, level: Uint8Array, raster?: Raster, rot?: Uint8Array): void {
+  rebuild(net: Network, kind: Uint8Array, level: Uint8Array, raster?: Raster, rot?: Uint8Array, bands?: Bands): void {
     let built = 0;
     for (let i = 0; i < N_TILES; i++) if (level[i] || isParking(kind[i])) built = (built * 31 + i * 4 + level[i] + kind[i] * 7 + (rot?.[i] ?? 0) * 3) >>> 0;
-    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike || x.bus || x.parking).length}:${raster ? 1 : 0}`;
+    let rich = 0;
+    if (bands) for (let i = 0; i < N_TILES; i++) if (level[i]) rich = (rich * 7 + bands.wealth[i]) >>> 0;
+    const signature = `${net.version}:${built}:${[...net.segs.values()].filter(x => x.bike || x.bus || x.parking).length}:${raster ? 1 : 0}:${rich}`;
     if (signature === this.signature) return;
     this.signature = signature;
     this.byTile.clear();
     const half = GRID / 2, obj = new THREE.Object3D(), color = new THREE.Color();
-    const counts = [0, 0];
+    const counts = this.meshes.map(() => 0), grey = new THREE.Color();
     const put = (x: number, z: number, angle: number, type: number, id: number): void => {
-      const m = type - 1;
+      // What the street can afford: estates and supercars outside the dear houses, plain hatchbacks
+      // with tired paint on the poorer streets.
+      const tile = Math.floor(z + half) * GRID + Math.floor(x + half), wealth = bands && tile >= 0 && tile < N_TILES ? bands.wealth[tile] : 1;
+      const m = type === 2 ? this.meshes.length - 1 : carShape(id, [-1, 0, 0.5, 1][wealth]);
       if (counts[m] >= CAP) return;
       obj.position.set(x, 0, z); obj.rotation.set(0, angle, 0); obj.updateMatrix();
+      color.setHex(vehicleColor(type, id));
+      if (wealth === 0) { color.lerp(grey.setRGB(0.3, 0.3, 0.3), 0.35).multiplyScalar(0.9); }
       this.meshes[m].setMatrixAt(counts[m], obj.matrix);
-      this.meshes[m].setColorAt(counts[m]++, color.setHex(vehicleColor(type, id)));
-      const tile = Math.floor(z + half) * GRID + Math.floor(x + half), list = this.byTile.get(tile) ?? [];
-      list.push({ x, z, fx: Math.sin(angle), fz: Math.cos(angle), type, slot: counts[m] - 1, color: vehicleColor(type, id) });
+      this.meshes[m].setColorAt(counts[m]++, color);
+      const list = this.byTile.get(tile) ?? [];
+      list.push({ x, z, fx: Math.sin(angle), fz: Math.cos(angle), type, mesh: m, slot: counts[m] - 1, color: color.getHex() });
       this.byTile.set(tile, list);
     };
     // Mouths of the drives, so nobody parks across them.
@@ -180,23 +189,14 @@ export class ParkedCarLayer {
           if (!isZone(kind[lot]) || !level[lot] || kind[lot] === T_FARM) continue;
           // Not in a bus stop's lay-by, which runs along the kerb either side of the stop.
           if ([-1.4, -0.7, 0.7, 1.4].some(d => { const q = sample(seg, Math.max(0, Math.min(seg.len, s + d))); const tx = Math.floor(q.x - q.tz * side * (off + 0.6)), tz = Math.floor(q.z + q.tx * side * (off + 0.6)); return tx >= 0 && tz >= 0 && tx < GRID && tz < GRID && kind[tz * GRID + tx] === T_BUS; })) continue;
-          const type = h > 0.9 ? 2 : 1, m = type - 1;
-          if (counts[m] >= CAP) continue;
+          const type = h > 0.9 ? 2 : 1;
           const x = at.x + rx * off - half, z = at.z + rz * off - half;
           if (!seg.parking && nearLot[Math.floor(z + half) * GRID + Math.floor(x + half)]) continue;
           if (net.onRoad(x + half, z + half, seg.id, 0.12)) continue;
           if (mouths.some(m => Math.abs(m.x - x) + Math.abs(m.z - z) < 0.3)) continue;
           // Parked facing the way traffic runs on that side, nose slightly out now and then.
           const fx = at.tx * side, fz = at.tz * side;
-          obj.position.set(x, 0, z);
-          obj.rotation.set(0, Math.atan2(fx, fz) + (h - 0.66) * 0.08, 0);
-          obj.updateMatrix();
-          this.meshes[m].setMatrixAt(counts[m], obj.matrix);
-          this.meshes[m].setColorAt(counts[m]++, color.setHex(vehicleColor(type, id)));
-          const tile = Math.floor(z + half) * GRID + Math.floor(x + half);
-          const list = this.byTile.get(tile) ?? [];
-          list.push({ x, z, fx, fz, type, slot: counts[m] - 1, color: vehicleColor(type, id) });
-          this.byTile.set(tile, list);
+          put(x, z, Math.atan2(fx, fz) + (h - 0.66) * 0.08, type, id);
         }
       }
     }
@@ -224,7 +224,7 @@ export class ParkedCarLayer {
     if (!best) return null;
     const { p, list } = best;
     list.splice(list.indexOf(p), 1);
-    const mesh = this.meshes[p.type - 1];
+    const mesh = this.meshes[p.mesh];
     mesh.setMatrixAt(p.slot, new THREE.Matrix4().makeScale(0, 0, 0));
     mesh.instanceMatrix.needsUpdate = true;
     return { x: p.x, z: p.z, heading: Math.atan2(p.fx, p.fz), type: p.type, color: p.color };

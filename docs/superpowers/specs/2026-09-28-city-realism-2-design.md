@@ -178,3 +178,27 @@ Budgets:
 - **Car shapes:** every shape appears among the uids.
 
 Each stage is also checked in the preview, with screenshots.
+
+## As built
+
+The plan above was followed, except where noted here.
+
+- **Weather:** fog pulls the far plane in to 110 on the map and 38 in the street (near planes 30 and
+  4). Rain streaks are sized to each view: 0.045 long in a 1.4 box in the street, 0.35 in a 9 box on
+  the map.
+- **Smoke:**
+  - Also comes from gas-plant stacks and the crematorium, as a faint haze.
+  - Three of the six house designs have a chimney breast and pots, not one.
+  - The 260 emitters nearest the camera run at once.
+- **Crowds:** joggers and dog walkers pick streets beside parks rather than following the park-path
+  polylines. On the demo at noon, shopping streets are 8% of street length and carry 19% of the
+  walkers.
+- **Houses:** solar panels and dishes on rich pitched roofs were not built; the existing roof and
+  wall clutter stays as it was.
+- **Roads:**
+  - Faded centre markings on poor streets were not built: overlaying the road mesh's paint is fragile.
+  - Bridges got joints, spouts and lit lamps, but no splash zone or streaked soffit.
+  - Street cabinets and corner bollards stand at about half the junctions.
+- **Road works** are placed by `roadWorksOn` (street detail), tested to stay out of the traffic lanes.
+- **Cars:** rain doesn't darken car paint. Parked cars take their body and paint from the street's
+  wealth band.

@@ -75,6 +75,32 @@ fix them. Keep the lights on, the water clean, and the factories away from the h
   - Civic plazas with fountains or statues where land is dear.
   - A clock tower in each district's old heart, keeping the city's time.
   - Promenades with railings, benches and lamps wherever the town meets the water.
+- **Weather.** Each day is clear, overcast, rainy or foggy (Settings → Weather turns it off).
+  - Cloud dims the sun and greys the sky.
+  - Fog is thickest at dawn.
+  - Rain falls in showers: the roads go dark and glossy, puddles gather in the gutters and umbrellas go up.
+- **Smoke and steam.** Factory stacks and power stations smoke, vents and cooling towers steam, and
+  house chimneys are lit in the evening, all drifting with the wind.
+- **Crowds where people are.** People on foot gather where the day takes them:
+  - shopping streets at lunch
+  - office streets at rush hour, commuters in dark suits
+  - homes in the evening
+  - joggers and dog walkers by the parks
+  - queues at bus stops
+- **Shops by trade.** Café, bakery, pharmacy, bank, barber, florist, grocer, bookshop, hardware or bar,
+  each with its own sign and pavement display. Windows glow after dark while a shop is open.
+- **Buildings that weather.** Grime and streaks show on the walls, heavier on poor streets. Pitched
+  roofs come in their own tiles.
+- **Houses.** Some have a garage at the end of the drive or hanging baskets by the door. Bins go out
+  on each street's bin day.
+- **Roads that wear.**
+  - Wheel tracks along the lanes, and potholes on the rough streets.
+  - Now and then a street is freshly resurfaced.
+  - Road works move about town: barriers, cones, a digger, and the crew by day.
+  - Bridges have expansion joints, drainage spouts and lamps lit at night.
+- **Cars.** Traffic comes in saloons, hatchbacks, estates, muscle cars and supercars. Parked cars
+  follow the street's wealth. Headlights throw pools of light on the road at night, longer on a wet
+  road.
 - **Seeded river valleys.** Every seed lays out a different river, hills and highway entry, and you
   can type a seed in when starting a city.
 - **Freeform roads, placed with clicks like Cities: Skylines.** Straight (two clicks), Curved (start, bend,

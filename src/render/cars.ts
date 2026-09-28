@@ -4,11 +4,11 @@ import { VEHICLE_SCALE } from '../sim/trafficSpace';
 import * as THREE from 'three';
 import { MAX_CARS } from '../constants';
 import { Builder } from './buildingGeo';
-import { carShell, busShell, truckShell, SEDAN, COUPE, VAN, BUS_LAMP_Y, TRUCK_LAMP_Y } from './carShell';
+import { carShell, busShell, truckShell, SEDAN, COUPE, VAN, HATCH, WAGON, MUSCLE, SUPER, BUS_LAMP_Y, TRUCK_LAMP_Y } from './carShell';
 import type { CarSpec } from './carShell';
 
 /** Vehicle types match the worker frame: 1 car, 2 van, 3 truck, 4 bus, 5 patrol, 6 engine, 7 racer, 8 trolleybus, 9 taxi, 10 garbage truck. */
-export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.BufferGeometry {
+export function vehicleGeometry(type: number, detail: VisualDetail = 1, shape?: CarSpec): THREE.BufferGeometry {
   const emergency = type === 5 || type === 6;
   const b = new Builder(type);
   const model = type === 5 || type === 7 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
@@ -17,7 +17,7 @@ export function vehicleGeometry(type: number, detail: VisualDetail = 1): THREE.B
   const body = [0, 0xffffff, 0xffffff, 0x508e9d, 0xeebc55, 0xe6ecec, 0xd44434, 0x2a2f36, 0x38b49b, 0xf7c62f, 0x3f8a4a][type];
   // Cars and vans are shaped from a side profile: rounded, raked and arched rather than boxed.
   if (detail > 0 && (model === 1 || model === 2)) {
-    const spec = shellSpec(type)!;
+    const spec = shape ?? shellSpec(type)!;
     carShell(b, spec, { paint: body, glass: 0x243a4b, trim: 0x2a2f36, rim: type === 7 ? 0x2a2f36 : 0xc4ccd0, lamp: 0xfff1c8, tail: 0xc8282a });
     const roof = spec.cabin.roof, mid = (spec.cabin.front - spec.cabin.rake + spec.cabin.back + spec.cabin.rearRake) / 2;
     if (type === 9) {
@@ -222,7 +222,7 @@ export function shellSpec(type: number): CarSpec | null {
 }
 
 /** Head and tail lamps, drawn additively after dark. The lamps light up; the road stays dark. */
-function lightGeometry(type: number): THREE.BufferGeometry {
+function lightGeometry(type: number, shape?: CarSpec): THREE.BufferGeometry {
   const model = type === 5 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   const pos: number[] = [], col: number[] = [];
@@ -232,7 +232,7 @@ function lightGeometry(type: number): THREE.BufferGeometry {
     g.dispose();
   };
   const warm = [1, 0.93, 0.72], red = [1, 0.12, 0.08];
-  const spec = shellSpec(type);
+  const spec = shape ?? shellSpec(type);
   if (spec) {
     // Over the shaped car's own lamps.
     for (const side of [-1, 1]) {
@@ -265,7 +265,7 @@ function lightGeometry(type: number): THREE.BufferGeometry {
  * corners on one side (left is +x in the car's own frame, facing +z), and on police cars and fire
  * engines a blue or a red beacon on the light bar.
  */
-function signalGeometry(type: number, which: 'brake' | 'left' | 'right' | 'blue' | 'red'): THREE.BufferGeometry {
+function signalGeometry(type: number, which: 'brake' | 'left' | 'right' | 'blue' | 'red', shape?: CarSpec): THREE.BufferGeometry {
   const model = type === 5 || type === 9 ? 1 : type === 6 || type === 10 ? 3 : type === 8 ? 4 : type;
   const length = model >= 3 ? 0.78 : model === 2 ? 0.54 : 0.46;
   const pos: number[] = [], col: number[] = [];
@@ -275,7 +275,7 @@ function signalGeometry(type: number, which: 'brake' | 'left' | 'right' | 'blue'
     g.dispose();
   };
   // Where the head and tail lamps are, as lightGeometry has them: x, y, z, width, height for each end.
-  const spec = shellSpec(type);
+  const spec = shape ?? shellSpec(type);
   let front: [number, number, number, number, number], rear: [number, number, number, number, number];
   if (spec) {
     front = [spec.width * 0.32, spec.nose - 0.018 + 0.066, spec.length / 2 + 0.006, 0.058, 0.024];
@@ -305,6 +305,28 @@ function signalGeometry(type: number, which: 'brake' | 'left' | 'right' | 'blue'
 }
 const SIGNALS = ['brake', 'left', 'right', 'blue', 'red'] as const;
 
+/**
+ * The city's cars come in five bodies: saloons and hatchbacks mostly, then estates, and now and then a
+ * muscle car or a supercar. Drawn as extra meshes after the ten vehicle types (keys 11 to 14), picked
+ * by the car's own id, so the simulation knows nothing of it.
+ */
+export const CAR_SHAPES: CarSpec[] = [SEDAN, HATCH, WAGON, MUSCLE, SUPER];
+const SHAPE_SHARE = [0.35, 0.3, 0.18, 0.09, 0.08];
+export function carShape(id: number, lean = 0): number {
+  const h = (Math.imul(id ^ (id >>> 13), 0x5bd1e995) >>> 0) / 4294967296;
+  // `lean` > 0 tips the odds towards the dearer bodies, < 0 towards the plain ones.
+  const w = SHAPE_SHARE.map((v, k) => v * (lean > 0 ? [0.7, 0.8, 1.6, 1.4, 2.4][k] : lean < 0 ? [1.1, 1.6, 0.6, 0.5, 0.2][k] : 1));
+  const total = w.reduce((a, b) => a + b, 0);
+  let r = h * total;
+  for (let k = 0; k < w.length; k++) { r -= w[k]; if (r < 0) return k; }
+  return 0;
+}
+/** The mesh key a vehicle draws with: its type, or for a car its body. */
+const keyOf = (type: number, id: number): number => type === 1 ? (carShape(id) ? 10 + carShape(id) : 1) : type;
+const KEYS = 14;
+const typeOfKey = (key: number): number => key > 10 ? 1 : key;
+const shapeOfKey = (key: number): CarSpec | undefined => key > 10 ? CAR_SHAPES[key - 10] : undefined;
+
 // Still plenty of white, black and silver, but with a good share of colour: reds, blues, greens,
 // yellows, oranges, teals and the odd pastel, so a street reads as a lively mix.
 const CAR_COLORS = [
@@ -325,6 +347,7 @@ const matrix = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.
 const pitchQ = new THREE.Quaternion(), pitchAxis = new THREE.Vector3(1, 0, 0);
 const one = new THREE.Vector3(1, 1, 1), axis = new THREE.Vector3(0, 1, 0), color = new THREE.Color();
 const half = new THREE.Vector3(0.5, 0.5, 0.5);
+const pool = new THREE.Matrix4(), poolScale = new THREE.Vector3();
 export class CarLayer {
   readonly mesh = new THREE.Group();
   private detail: VisualDetail = 1;
@@ -334,18 +357,36 @@ export class CarLayer {
   /** Per vehicle type, the signalling lamps: brake, left, right, blue beacon, red beacon. */
   private signals: THREE.InstancedMesh[][] = [];
   private signalMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
+  /** The light each car throws on the road ahead after dark: a soft pool, longer on a wet road. */
+  private pools: THREE.InstancedMesh;
+  private poolMaterial: THREE.MeshBasicMaterial;
+  private night = 0;
+  private wet = 0;
   constructor() {
-    for (let type = 1; type <= 10; type++) {
-      const mesh = new THREE.InstancedMesh(vehicleGeometry(type), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }), MAX_CARS);
+    const size = 32, data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const u = (x + 0.5) / size * 2 - 1, v = (y + 0.5) / size, r = Math.hypot(u, (v - 0.35) * 1.6), i = (y * size + x) * 4;
+      // Brightest just ahead of the lamps, fading out down the road and to the sides.
+      data[i] = 255; data[i + 1] = 236; data[i + 2] = 190; data[i + 3] = Math.round(Math.max(0, 1 - r) ** 1.6 * (1 - v * 0.6) * 120);
+    }
+    const texture = new THREE.DataTexture(data, size, size); texture.needsUpdate = true;
+    this.poolMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    const plane = new THREE.PlaneGeometry(0.34, 0.7); plane.rotateX(-Math.PI / 2); plane.rotateY(Math.PI); plane.translate(0, 0.05, 0.5);
+    this.pools = new THREE.InstancedMesh(plane, this.poolMaterial, MAX_CARS);
+    this.pools.count = 0; this.pools.frustumCulled = false; this.pools.renderOrder = 1; this.pools.visible = false;
+    this.mesh.add(this.pools);
+    for (let key = 1; key <= KEYS; key++) {
+      const type = typeOfKey(key), shape = shapeOfKey(key);
+      const mesh = new THREE.InstancedMesh(vehicleGeometry(type, 1, shape), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }), MAX_CARS);
       if (type === 1 || type === 2) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_CARS * 3).fill(1), 3);
       mesh.castShadow = true; mesh.count = 0; mesh.frustumCulled = false;
       this.vehicles.push(mesh); this.mesh.add(mesh);
-      const lights = new THREE.InstancedMesh(lightGeometry(type), this.lightMaterial, MAX_CARS);
+      const lights = new THREE.InstancedMesh(lightGeometry(type, shape), this.lightMaterial, MAX_CARS);
       lights.count = 0; lights.frustumCulled = false; lights.renderOrder = 2; lights.visible = false;
       this.lights.push(lights); this.mesh.add(lights);
       const emergency = type === 5 || type === 6;
       this.signals.push(SIGNALS.filter(w => emergency || (w !== 'blue' && w !== 'red')).map(w => {
-        const m = new THREE.InstancedMesh(signalGeometry(type, w), this.signalMaterial, MAX_CARS);
+        const m = new THREE.InstancedMesh(signalGeometry(type, w, shape), this.signalMaterial, MAX_CARS);
         m.count = 0; m.frustumCulled = false; m.name = w;
         this.mesh.add(m);
         return m;
@@ -357,19 +398,27 @@ export class CarLayer {
     this.detail = detail;
     this.vehicles.forEach((mesh, index) => {
       const previous = mesh.geometry;
-      mesh.geometry = vehicleGeometry(index + 1, detail);
+      mesh.geometry = vehicleGeometry(typeOfKey(index + 1), detail, shapeOfKey(index + 1));
       mesh.boundingSphere = null;
       previous.dispose();
     });
   }
   /** 0 by day, 1 at night: fades the head and tail lamps. */
+  /** How wet the road is: the pools stretch and brighten on a wet road. */
+  setWet(wet: number): void { this.wet = wet; this.setNight(this.night); }
   setNight(night: number): void {
+    this.night = night;
+    this.poolMaterial.opacity = Math.min(1, night * 1.2) * (0.7 + this.wet * 0.5);
+    this.pools.visible = night > 0.05;
+    this.pools.scale.set(1, 1, 1);
     const on = night > 0.05;
     this.lightMaterial.opacity = Math.min(1, night * 1.3);
     for (const m of this.lights) m.visible = on;
   }
   update(prev: Float32Array, next: Float32Array, alpha: number, prevIds?: Uint32Array, nextIds?: Uint32Array, heights?: Float32Array, prevHeights?: Float32Array, pitch?: Float32Array, flags?: Uint8Array, time = 0): void {
-    const counts = new Array(10).fill(0);
+    const counts = new Array(KEYS).fill(0);
+    let pools = 0;
+    const stretch = 1 + this.wet * 0.6;
     // Indicators blink at 1.5 Hz; beacons swap blue and red three times a second.
     const blink = Math.floor(time * 3) % 2 === 0, beacon = Math.floor(time * 6) % 2 === 0;
     const lit = new Map<THREE.InstancedMesh, number>();
@@ -389,8 +438,9 @@ export class CarLayer {
       const f = flags?.[i] ?? 0;
       // About to be removed after being stuck for a very long time: it shrinks away rather than blinking out.
       pos.set(x, y, z); q.setFromAxisAngle(axis, a); q.multiply(pitchQ.setFromAxisAngle(pitchAxis, pitch?.[i] ?? 0)); matrix.compose(pos, q, f & CAR_LEAVING ? half : one);
-      const slot = counts[type - 1]++, mesh = this.vehicles[type - 1];
-      for (const lamp of this.signals[type - 1]) {
+      const key = keyOf(type, nextIds?.[i] ?? i);
+      const slot = counts[key - 1]++, mesh = this.vehicles[key - 1];
+      for (const lamp of this.signals[key - 1]) {
         const on = lamp.name === 'brake' ? f & CAR_BRAKE : lamp.name === 'left' ? f & CAR_LEFT && blink : lamp.name === 'right' ? f & CAR_RIGHT && blink
           : lamp.name === 'blue' ? f & CAR_BLUE && beacon : f & CAR_BLUE && !beacon;
         // Only lit lamps are drawn: most cars show none, so most lamp meshes draw next to nothing.
@@ -398,9 +448,11 @@ export class CarLayer {
       }
       mesh.setMatrixAt(slot, matrix);
       if (type <= 2) mesh.setColorAt(slot, color.setHex(vehicleColor(type, nextIds?.[i] ?? i)));
-      if (y > -0.05) this.lights[type - 1].setMatrixAt(slot, matrix);
-      else this.lights[type - 1].setMatrixAt(slot, matrix.makeScale(0, 0, 0));
+      if (this.pools.visible && y > -0.05) { this.pools.setMatrixAt(pools++, pool.compose(pos, q.setFromAxisAngle(axis, a), poolScale.set(type >= 3 && type !== 5 && type !== 7 && type !== 9 ? 1.3 : 1, 1, stretch))); }
+      if (y > -0.05) this.lights[key - 1].setMatrixAt(slot, matrix);
+      else this.lights[key - 1].setMatrixAt(slot, matrix.makeScale(0, 0, 0));
     }
+    this.pools.count = pools; this.pools.instanceMatrix.needsUpdate = true;
     this.vehicles.forEach((mesh, i) => {
       mesh.count = counts[i]; mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;

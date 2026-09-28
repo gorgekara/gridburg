@@ -123,5 +123,15 @@ test('road works: now and then on a street, never in a lane the traffic uses', (
   assert.ok(lane > 0, 'in the parking lane where there is one');
 });
 
+const Cars = await import('../src/render/cars.ts');
+
+test('cars: every body turns up in traffic, and dear streets park dearer cars', () => {
+  const n = [0, 0, 0, 0, 0], rich = [0, 0, 0, 0, 0], poor = [0, 0, 0, 0, 0];
+  for (let id = 0; id < 5000; id++) { n[Cars.carShape(id)]++; rich[Cars.carShape(id, 1)]++; poor[Cars.carShape(id, -1)]++; }
+  assert.ok(n.every(c => c > 150), `every body: ${n}`);
+  assert.ok(n[0] + n[1] > n[3] + n[4], 'mostly saloons and hatchbacks');
+  assert.ok(rich[4] > n[4] * 1.5 && poor[4] < n[4] * 0.5, 'supercars on the dear streets, not the poor ones');
+});
+
 console.log(`\n${checks} passed, ${failures} failed`);
 if (failures) process.exit(1);

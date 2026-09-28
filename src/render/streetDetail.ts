@@ -543,7 +543,7 @@ class ChunkBuilder {
         kit.jitter = 0;
         for (const c of lanes) for (const o of [-0.05, 0.05]) {
           const lat = c + o, x = p.x - p.tz * lat - HALF, z = p.z + p.tx * lat - HALF;
-          kit.at(x, ASPHALT_TOP + 0.0003, z, yaw).quad(0, 0, 0, 0.028, 0.5, 0x303138);
+          kit.at(x, ASPHALT_TOP + 0.0003, z, yaw).quad(0, 0, 0, 0.022, 0.5, 0x35363d);
         }
       }
     }
@@ -937,6 +937,19 @@ class ChunkBuilder {
     kit.at(x - HALF, PAVE, z - HALF, 0);
     kit.box(0, 0, 0, 0.006, 0.22, 0.006, POLE);
     kit.prism(0, 0.22, 0, 0.004, 0.006, POLE, 6, 0.001);
+    // At some corners a street cabinet (the telephone and signal boxes) and a few bollards round the
+    // corner to keep vehicles off the pavement.
+    if (tileHash(node * 11 + 3) < 0.45) {
+      const yaw = Math.atan2(bx, bz);
+      kit.box(Math.sin(yaw + 1.2) * 0.07, 0, Math.cos(yaw + 1.2) * 0.07, 0.05, 0.08, 0.028, tileHash(node * 13) < 0.5 ? 0x5f6f64 : 0x6a7076, yaw);
+      kit.box(Math.sin(yaw + 1.2) * 0.07, 0.08, Math.cos(yaw + 1.2) * 0.07, 0.054, 0.004, 0.032, 0x4a5056, yaw);
+    }
+    if (tileHash(node * 17 + 5) < 0.4) for (const da of [-0.5, 0, 0.5]) {
+      const ang = Math.atan2(bx, bz) + Math.PI + da;
+      const px = Math.sin(ang) * -0.05, pz = Math.cos(ang) * -0.05;
+      kit.prism(px, 0, pz, 0.006, 0.04, 0x2a2c30, 6);
+      kit.prism(px, 0.03, pz, 0.0062, 0.005, 0xf2f2ee, 6);
+    }
     const colors = [0x2f6f4f, 0x2f5f9f];
     [a, b].forEach((d, k) => {
       const yaw = Math.atan2(d.x, d.z), y = 0.19 + k * 0.016;
