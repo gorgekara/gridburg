@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { lotVariant } from './variants';
+import { lotVariant, lotPartner, isPairFollower } from './variants';
 import { isPromenadeTile } from './landmarks';
 import { sideHalf, roadHalf, carriageHalf, laneCentre, lanesFor, PARK_W } from '../roads/lanes';
 import {
@@ -976,6 +976,8 @@ class ChunkBuilder {
     if (shaped || !k) { this.wild(i, x, z, shaped ? 0.6 : 1); return; }
     if (isZone(k)) {
       if (!level[i]) { this.emptyLot(i, x, z); return; }
+      // The second lot of a pair belongs to the building drawn from the first.
+      if (isPairFollower(i)) return;
       this.lot(i);
       return;
     }
@@ -1394,7 +1396,9 @@ class ChunkBuilder {
   /** The frame of a built lot: its centre in the scene and the way its front faces. */
   private lotFrame(i: number): { x: number; z: number; yaw: number; scale: number } {
     const { raster } = this.src;
-    const tx = raster.lotX[i], tz = raster.lotZ[i];
+    // A pair's building, and all about it, is framed on the middle of its two lots.
+    const p = lotPartner(i);
+    const tx = p >= 0 ? (raster.lotX[i] + raster.lotX[p]) / 2 : raster.lotX[i], tz = p >= 0 ? (raster.lotZ[i] + raster.lotZ[p]) / 2 : raster.lotZ[i];
     const yaw = raster.accSeg[i] >= 0 ? raster.face[i] : 0;
     return { x: tx - HALF, z: tz - HALF, yaw, scale: raster.accSeg[i] >= 0 ? lotScaleAt(raster, i) : 1 };
   }

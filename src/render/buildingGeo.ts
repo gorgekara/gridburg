@@ -59,6 +59,12 @@ export class Builder {
    * lit at that hour, so the windows come on one by one through the evening and go out late at night.
    */
   paneId = -1;
+  /**
+   * How many times wider than its design a building is drawn (see `SIZE_FULL`, `SIZE_PAIR`): its
+   * front and back carry that many more windows, spaced as the design spaces them.
+   */
+  wide = 1;
+  across(perSide: number): number { return Math.max(perSide, Math.round(perSide * this.wide)); }
   /** Where smoke or steam leaves the model: x, y, z (model space) and what comes out (see `Emit`). */
   emitters: [number, number, number, number][] = [];
   emit(x: number, y: number, z: number, kind: number): void { this.emitters.push([x + this.shift.x, y, z + this.shift.z, kind]); }
@@ -411,14 +417,17 @@ export class Builder {
   windows(w: number, h: number, d: number, y0: number, floors: number, perSide: number, lit: number, size = 0.13): void {
     const fh = (h - y0) / floors;
     const wh = Math.min(size, fh * 0.55);
-    const ww = size * 0.8;
+    const ww = size * 0.8, front = this.across(perSide);
     for (let f = 0; f < floors; f++) {
       const y = y0 + f * fh + fh * 0.25;
-      for (let j = 0; j < perSide; j++) {
-        const t = -0.5 + (j + 0.5) / perSide;
-        // Every pane can light: which ones are lit is the shader's, by the hour (see `paneId`).
+      // Every pane can light: which ones are lit is the shader's, by the hour (see `paneId`).
+      for (let j = 0; j < front; j++) {
+        const t = -0.5 + (j + 0.5) / front;
         this.window(ww, wh, t * w * 0.85, y, d / 2 + 0.012, 0, WINDOW_LIT, this.paneFor(lit));
         this.window(ww, wh, -t * w * 0.85, y, d / 2 + 0.012, Math.PI, WINDOW_LIT, this.paneFor(lit));
+      }
+      for (let j = 0; j < perSide; j++) {
+        const t = -0.5 + (j + 0.5) / perSide;
         this.window(ww, wh, -t * d * 0.85, y, w / 2 + 0.012, Math.PI / 2, WINDOW_LIT, this.paneFor(lit));
         this.window(ww, wh, t * d * 0.85, y, w / 2 + 0.012, -Math.PI / 2, WINDOW_LIT, this.paneFor(lit));
       }
@@ -431,18 +440,26 @@ export class Builder {
    */
   litPanes(w: number, h: number, d: number, y0: number, floors: number, perSide: number, lit: number, bandY = 0.3): void {
     const fh = (h - y0) / floors;
-    const pw = Math.min(0.12, (w * 0.8) / perSide - 0.03), ph = Math.min(0.1, fh * 0.34);
+    const front = this.across(perSide), ph = Math.min(0.1, fh * 0.34);
+    const pw = Math.min(0.12, (w * 0.8) / front - 0.03), ps = Math.min(0.12, (w / this.wide * 0.8) / perSide - 0.03);
     for (let f = 0; f < floors; f++) {
       const y = y0 + f * fh + fh * bandY - ph * 0.1;
+      // Every slot has a pane; the shader shows the ones lit at the hour and leaves the rest out.
+      for (let j = 0; j < front; j++) {
+        const t = -0.5 + (j + 0.5) / front;
+        for (const [z, turn] of [[d / 2 + 0.028, 0], [-d / 2 - 0.028, Math.PI]]) {
+          this.paneId = this.paneFor(lit);
+          this.pane(pw, ph, t * w * 0.82, y, z, turn, OFFICE_LIT);
+        }
+      }
       for (let j = 0; j < perSide; j++) {
         const t = -0.5 + (j + 0.5) / perSide;
-        // Every slot has a pane; the shader shows the ones lit at the hour and leaves the rest out.
-        for (const [x, z, turn] of [[t * w * 0.82, d / 2 + 0.028, 0], [t * w * 0.82, -d / 2 - 0.028, Math.PI], [w / 2 + 0.028, t * d * 0.82, Math.PI / 2], [-w / 2 - 0.028, t * d * 0.82, -Math.PI / 2]]) {
+        for (const [x, turn] of [[w / 2 + 0.028, Math.PI / 2], [-w / 2 - 0.028, -Math.PI / 2]]) {
           this.paneId = this.paneFor(lit);
-          this.pane(pw, ph, x, y, z, turn, OFFICE_LIT);
+          this.pane(ps, ph, x, y, t * d * 0.82, turn, OFFICE_LIT);
         }
-        this.paneId = -1;
       }
+      this.paneId = -1;
     }
   }
 
@@ -480,6 +497,17 @@ const GLASS_TOWERS = [0x5f93cf, 0x3e6fae, 0x6aa8c9, 0x4b7fb3, 0x5c9c8b, 0x7e88ac
 const IND_WALLS = [0xc2bb9f, 0xa89f82, 0xb0aa93, 0x9c9a90, 0xb6ab8d, 0xa4a89b];
 
 export const VARIANTS = 6;
+/**
+ * A zone lot's variant is its design (0 to VARIANTS - 1) plus 8 times its size: SIZE_LOT is the design
+ * as drawn, SIZE_FULL the same design built out to fill its lot (a terrace of houses wall to wall, a
+ * block out to its neighbours), and SIZE_PAIR one building across two neighbouring lots, drawn from
+ * the lead lot (see `lotPartner`).
+ */
+export const SIZE_LOT = 0, SIZE_FULL = 1, SIZE_PAIR = 2;
+export const sizeOf = (variant: number): number => variant >> 3;
+export const designOf = (variant: number): number => variant & 7;
+/** How wide each house design is built out to fill its lot, clear of its chimney, porch and eaves and inside the fence. */
+const HOUSE_FULL = [0.78, 0.86, 0.84, 0.78, 0.84, 0.78];
 const heights = new Map<string, number>();
 /** What comes out of an emitter: smoke from a stack, steam from a vent, a house's chimney (evenings), a faint haze, a cooling tower's plume. */
 export const Emit = { Smoke: 0, Steam: 1, Chimney: 2, Haze: 3, Tower: 4 } as const;
@@ -769,7 +797,15 @@ function leisure(b: Builder, level: number, v: number): void {
 /** Build the geometry for a (kind, level, variant) triple. Front of the building faces +z. */
 export function buildingGeometry(kind: number, level: number, variant: number, detail: VisualDetail = 1): THREE.BufferGeometry {
   const b = new Builder(kind * 100 + level * 10 + variant, detail);
-  const v = variant % VARIANTS;
+  // Homes, shops and offices carry a size (see `SIZE_FULL`) above their design.
+  const size = kind === T_RES || kind === T_COM || kind === T_OFFICE ? sizeOf(variant) : 0;
+  const v = (size ? designOf(variant) : variant) % VARIANTS;
+  /** A design's width at the lot's size: as drawn, built out to fill its lot, or across two lots. */
+  const widen = (w: number): number => {
+    const out = size === SIZE_PAIR ? w + 1 : size === SIZE_FULL ? (kind === T_RES && level === 1 ? HOUSE_FULL[v] : Math.max(w, 0.9)) : w;
+    b.wide = out / w;
+    return out;
+  };
   if (isDecoration(kind)) {
     parkGeometry(b, kind, variant);
   } else if (isParking(kind)) {
@@ -777,7 +813,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     parkingGeometry(b, w, d);
   } else if (kind === T_RES) {
     if (level === 1) {
-      const w = [0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v], h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
+      const w = widen([0.5, 0.62, 0.54, 0.6, 0.66, 0.46][v]), h = [0.4, 0.65, 0.48, 0.72, 0.44, 0.56][v], d = [0.56, 0.6, 0.68, 0.58, 0.52, 0.7][v];
       const shaped = b.detail > 0;
       if (v === 2) {
         // A modern house: rounded walls, a thin overhanging roof, and a glass corner.
@@ -799,7 +835,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
         // A stone plinth round the foot of the walls.
         b.box(w + 0.02, 0.05, d + 0.02, 0, 0, 0, 0x9a9282);
         const roof = RES_ROOFS[v], wall = RES_WALLS[v];
-        if (v === 0) {
+        if (v === 0 && !size) {
           // A lower side wing with its own gable, running across.
           const ww = 0.2, wd = 0.34, wh = 0.3, wx = -w / 2 - ww / 2 + 0.01, wz = -0.06;
           b.box(ww, wh, wd, wx, 0, wz, wall);
@@ -850,6 +886,13 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       if (v === 1 || v === 3) b.windows(w, h, d, 0.34, 1, 2, 0.1);
       b.box(0.12, 0.2, 0.02, 0.1, 0, d / 2 + 0.005, 0x5a3b2a);
       b.box(0.1, 0.1, 0.02, -0.13, 0.18, d / 2 + 0.005, WINDOW_DARK);
+      if (w > 0.7) {
+        // A house built out to its lot has a room more each side: windows front and back.
+        for (const x of [-w / 2 + 0.1, w / 2 - 0.1]) {
+          b.box(0.1, 0.1, 0.02, x, 0.18, d / 2 + 0.005, WINDOW_DARK);
+          b.box(0.1, 0.1, 0.02, -x, 0.18, -d / 2 - 0.005, WINDOW_DARK);
+        }
+      }
       b.box(0.1, 0.1, 0.02, 0.13, 0.18, -d / 2 - 0.005, WINDOW_DARK);
       b.box(0.02, 0.1, 0.1, w / 2 + 0.005, 0.18, 0.05, WINDOW_DARK);
       b.box(0.07, 0.24, 0.07, -0.15, h + 0.05, -0.12, 0x6b6560);
@@ -865,7 +908,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       }
     } else if (level === 2) {
       const floors = [3, 4, 5, 4, 2, 6][v];
-      const w = [0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v], h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
+      const w = widen([0.68, 0.76, 0.64, 0.72, 0.8, 0.6][v]), h = 0.22 + floors * 0.31, d = [0.68, 0.62, 0.74, 0.7, 0.66, 0.78][v];
       // Rounded corners, a plinth, a moulded cornice in two steps.
       const r = Math.min(fitR([0.05, 0.02, 0.09, 0.035, 0.07, 0.1][v], w, d, v === 2 ? 2 : 3, 0.85, 0.15 * 0.4), w / 2 - (0.26 * w + 0.105));
       b.mass(w, h, d, 0, 0, 0, APT_WALLS[v], r);
@@ -884,7 +927,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       terrace(b, w, d, h + 0.05, v);
     } else {
       const floors = [7, 9, 6, 11, 5, 8][v];
-      const w = [0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v], h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
+      const w = widen([0.7, 0.65, 0.8, 0.68, 0.78, 0.62][v]), h = 0.28 + floors * 0.34, d = [0.7, 0.76, 0.64, 0.7, 0.72, 0.8][v];
       const r = Math.min(fitR([0.08, 0.1, 0.04, 0.1, 0.06, 0.1][v], w, d, 3, 0.85, 0.12 * 0.4), w / 2 - (0.26 * w + 0.105));
       b.mass(w, h, d, 0, 0, 0, TOWER_WALLS[v], r);
       b.mass(w + 0.05, 0.08, d + 0.05, 0, 0, 0, 0x7a7469, r + 0.025);
@@ -907,7 +950,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     }
   } else if (kind === T_COM) {
     if (level === 1) {
-      const w = [0.82, 0.78, 0.84, 0.7, 0.86, 0.66][v], h = [0.55, 0.7, 0.48, 0.85, 0.42, 0.95][v], d = [0.7, 0.62, 0.76, 0.66, 0.8, 0.58][v];
+      const w = widen([0.82, 0.78, 0.84, 0.7, 0.86, 0.66][v]), h = [0.55, 0.7, 0.48, 0.85, 0.42, 0.95][v], d = [0.7, 0.62, 0.76, 0.66, 0.8, 0.58][v];
       const r = [0.03, 0.05, 0.02, 0.04, 0.03, 0.06][v];
       b.mass(w, h, d, 0, 0, 0, SHOP_WALLS[v], r);
       b.box(w * 0.6, 0.28, 0.03, -w * 0.12, 0.12, d / 2 + 0.005, GLASS);
@@ -932,7 +975,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     } else if (level === 2) {
       // Two, three or six storeys, and a parapet or a setback top floor rather than one flat slab.
       const floors = [3, 5, 2, 6, 4, 3][v];
-      const w = [0.8, 0.72, 0.84, 0.68, 0.76, 0.82][v], h = 0.3 + floors * 0.31, d = [0.76, 0.7, 0.8, 0.66, 0.78, 0.72][v];
+      const w = widen([0.8, 0.72, 0.84, 0.68, 0.76, 0.82][v]), h = 0.3 + floors * 0.31, d = [0.76, 0.7, 0.8, 0.66, 0.78, 0.72][v];
       const r = fitR([0.06, 0.03, 0.08, 0.1, 0.02, 0.05][v], w, d, 4, 0.82, Math.min(0.12, (w * 0.8) / 4 - 0.03) / 2);
       b.mass(w, h, d, 0, 0, 0, BLOCK_WALLS[v], r);
       b.mass(w + 0.04, 0.1, d + 0.04, 0, 0, 0, 0x6b6257, r + 0.02);
@@ -946,7 +989,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
       entrance(b, d, 0, false);
     } else {
       const floors = [12, 9, 15, 11, 6, 8][v];
-      const w = [0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v], h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
+      const w = widen([0.8, 0.7, 0.66, 0.76, 0.86, 0.72][v]), h = floors * 0.35, d = [0.8, 0.74, 0.7, 0.78, 0.84, 0.76][v];
       const r = fitR([0.1, 0.06, 0.1, 0.08, 0.04, 0.1][v], w, d, 5, 0.82, Math.min(0.12, (w * 0.8) / 5 - 0.03) / 2);
       b.mass(w, h, d, 0, 0, 0, GLASS_TOWERS[v], r);
       b.mass(w + 0.05, 0.12, d + 0.05, 0, 0, 0, 0x3a4a5a, r + 0.025);
@@ -977,7 +1020,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
     }
   } else if (kind === T_OFFICE) {
     const floors = level === 1 ? [2, 3, 2, 4, 1, 3][v] : level === 2 ? [5, 7, 6, 8, 3, 4][v] : [11, 14, 12, 16, 7, 9][v];
-    const w = [0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v], d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
+    const w = widen([0.76, 0.65, 0.8, 0.7, 0.84, 0.68][v]), d = [0.68, 0.8, 0.62, 0.74, 0.78, 0.7][v], h = floors * 0.3;
     const r = Math.min(fitR([0.05, 0.1, 0.03, 0.08, 0.02, 0.06][v], w, d, 4, 0.82, Math.min(0.12, (w * 0.8) / 4 - 0.03) / 2), w / 2 - (0.3 * w + 0.02));
     b.mass(w, h, d, 0, 0, 0, OFFICE_WALLS[v], r);
     b.bands(w, h, d, 0.18, floors, 0x284c68, 0.16, r);
@@ -1477,7 +1520,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
   heights.set(`${kind}:${level}:${variant}`, geometry.boundingBox!.max.y);
   emitterMap.set(`${kind}:${level}:${variant}`, b.emitters.map(([x, y, z, k]) => [x, y, z + shiftZ, k]));
   // The lot is added after the facade shift so it always fills the tile.
-  const lot = lotGeometry(kind, level, v);
+  const lot = lotGeometry(kind, level, v, size === SIZE_PAIR ? 1 : 0);
   if (!lot) return geometry;
   const merged = mergeGeometries([geometry, lot], false)!;
   geometry.dispose(); lot.dispose();
@@ -1486,7 +1529,7 @@ export function buildingGeometry(kind: number, level: number, variant: number, d
 }
 
 /** Ground of a zoned lot in tile space (front edge at +z): fenced gardens for houses, paving for everything bigger. */
-function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeometry | null {
+function lotGeometry(kind: number, level: number, v: number, extra = 0): THREE.BufferGeometry | null {
   if (kind !== T_RES && kind !== T_COM && kind !== T_OFFICE && kind !== T_LEISURE) return null;
   const b = new Builder(kind * 31 + level * 7 + v), e = 0.47;
   if (kind === T_RES && level === 1) {
@@ -1510,11 +1553,12 @@ function lotGeometry(kind: number, level: number, v: number): THREE.BufferGeomet
     b.cyl(0.05, 0.07, sx, 0.1, -0.33, 0x5d8a45, 7);
     return b.build();
   }
-  // Concrete plaza with a kerb and a tree pit.
-  b.box(0.96, 0.014, 0.96, 0, 0, 0, [0xb4b2aa, 0xaaa9a3, 0xbcb8ae, 0xa7a8a4, 0xb0ada3, 0xa9aca6][v]);
-  b.box(0.96, 0.024, 0.03, 0, 0, -0.465, 0x8f8e88);
-  for (const side of [-1, 1]) b.box(0.03, 0.024, 0.96, side * 0.465, 0, 0, 0x8f8e88);
-  for (const x of [-0.25, 0, 0.25]) b.box(0.004, 0.0165, 0.96, x, 0, 0, 0x97968f);
+  // Concrete plaza with a kerb and a tree pit; a pair's building stands on one across both lots.
+  const pw = 0.96 + extra, ex = 0.465 + extra / 2;
+  b.box(pw, 0.014, 0.96, 0, 0, 0, [0xb4b2aa, 0xaaa9a3, 0xbcb8ae, 0xa7a8a4, 0xb0ada3, 0xa9aca6][v]);
+  b.box(pw, 0.024, 0.03, 0, 0, -0.465, 0x8f8e88);
+  for (const side of [-1, 1]) b.box(0.03, 0.024, 0.96, side * ex, 0, 0, 0x8f8e88);
+  for (let x = -ex + 0.215; x < ex - 0.2; x += 0.25) b.box(0.004, 0.0165, 0.96, x, 0, 0, 0x97968f);
   return b.build();
 }
 

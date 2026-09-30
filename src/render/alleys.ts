@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GRID, N_TILES, isZone, tileHash, T_FARM } from '../constants';
 import type { Raster } from '../roads/raster';
 import { MeshBuilder } from './meshBuilder';
+import { lotPartner } from './variants';
 
 /** A building further than this from its access road stands behind the row that fronts the street. */
 const SET_BACK = 1.5;
@@ -73,6 +74,13 @@ export class AlleyLayer {
       const built = (t: number): boolean => t >= 0 && isZone(kind[t]) && level[t] > 0;
       if (!built(left) || !built(right)) continue;
       const curb = alongX ? raster.accX[i] : raster.accZ[i];
+      // Nor through a building standing across two lots: a pair closes the gap the lane would take.
+      let closed = false;
+      for (let a = Math.floor(Math.min(back, curb)); a <= Math.floor(Math.max(back, curb)) && !closed; a++) {
+        const [l0, l1] = [lateral - 1, lateral].map(l => { const tx = alongX ? a : l, tz = alongX ? l : a; return tx >= 0 && tz >= 0 && tx < GRID && tz < GRID ? tz * GRID + tx : -1; });
+        if (l0 >= 0 && l1 >= 0 && lotPartner(l0) === l1) closed = true;
+      }
+      if (closed) continue;
       // Never pave the bank or the river: skip an alley that would cross either.
       if (terrain) {
         const lo = Math.floor(Math.min(back, curb)), hi = Math.floor(Math.max(back, curb));

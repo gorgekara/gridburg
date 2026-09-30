@@ -10,7 +10,7 @@ import type { Raster } from '../roads/raster';
 import { buildingGeometry, rotorGeometry, emittersOf, VARIANTS, WINDOW_DARK } from './buildingGeo';
 import type { Emitter } from './smoke';
 import { buildingTint, type Bands } from './character';
-import { lotVariant, terraceRun } from './variants';
+import { lotVariant, lotPartner, isPairFollower, terraceRun } from './variants';
 import { bodyOfGeometry } from './streetDetail';
 import type { Body } from './streetDetail';
 
@@ -40,7 +40,7 @@ const SERVICE_KINDS = Object.keys(SERVICES).map(Number);
 const ROOFS = [0x4a5058, 0xa4523a, 0x6b4a3a, 0x4f6e5a, 0x33363b, 0x8e3b2e, 0x4a5058, 0xa4523a];
 
 function key(kind: number, level: number, variant: number): number {
-  return (kind * 4 + level) * 16 + variant;
+  return (kind * 4 + level) * 32 + variant;
 }
 
 export class BuildingLayer {
@@ -115,25 +115,11 @@ export class BuildingLayer {
         totalEmissiveRadiance += vec3(1.0, 0.65, 0.24) * windowMask * paneOn * cityNight * 1.8;
         totalEmissiveRadiance += vec3(0.82, 0.88, 1.0) * officeMask * paneOn * cityNight * 1.5;`);
     };
-    const add = (k: number, l: number, v: number, cap: number): void => {
-      const mesh = new THREE.InstancedMesh(buildingGeometry(k, l, v), mat, cap);
-      mesh.userData.tint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3);
-      mesh.userData.seed = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
-      mesh.userData.wear = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
-      mesh.userData.roof = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-      withInstanceData(mesh);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.count = 0;
-      mesh.userData.tileIds = [];
-      mesh.frustumCulled = false;
-      this.meshes.set(key(k, l, v), mesh);
-      this.group.add(mesh);
-    };
+    this.mat = mat;
     for (const k of [T_RES, T_COM, T_IND, T_OFFICE, T_FARM, T_LEISURE]) {
-      for (let l = 1; l <= 3; l++) for (let v = 0; v < VARIANTS; v++) add(k, l, v, N_TILES);
+      for (let l = 1; l <= 3; l++) for (let v = 0; v < VARIANTS; v++) this.add(k, l, v, N_TILES);
     }
-    for (const k of SERVICE_KINDS) for (let v = 0; v < (k === T_PATH || k === T_TREE ? 16 : 1); v++) add(k, 1, v, isDecoration(k) ? N_TILES : 512);
+    for (const k of SERVICE_KINDS) for (let v = 0; v < (k === T_PATH || k === T_TREE ? 16 : 1); v++) this.add(k, 1, v, isDecoration(k) ? N_TILES : 512);
 
     this.rotors = new THREE.InstancedMesh(rotorGeometry(), new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.6 }), 512);
     this.rotors.castShadow = true;
@@ -165,6 +151,35 @@ export class BuildingLayer {
     this.group.add(this.cells);
   }
 
+  private mat: THREE.MeshStandardMaterial;
+
+  private add(k: number, l: number, v: number, cap: number): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(buildingGeometry(k, l, v, this.detail), this.mat, cap);
+    mesh.userData.tint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3);
+    mesh.userData.seed = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    mesh.userData.wear = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    mesh.userData.roof = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+    withInstanceData(mesh);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.count = 0;
+    mesh.userData.tileIds = [];
+    mesh.frustumCulled = false;
+    this.meshes.set(key(k, l, v), mesh);
+    this.group.add(mesh);
+    return mesh;
+  }
+
+  /**
+   * The mesh for a design, made the first time it is needed: the widened and paired sizes of the
+   * zone designs (see `SIZE_FULL`) are only built once a street has one.
+   */
+  private meshFor(k: number, l: number, v: number): THREE.InstancedMesh | undefined {
+    const mesh = this.meshes.get(key(k, l, v));
+    if (mesh || !isZone(k) || v < 8 || v >= 24 || l < 1 || l > 3) return mesh;
+    return this.add(k, l, v, v >= 16 ? N_TILES / 4 : N_TILES / 2);
+  }
+
   /** The faint outline of every empty zone cell, shown with the zone overlay. */
   private cells: THREE.InstancedMesh;
 
@@ -172,7 +187,7 @@ export class BuildingLayer {
   body(kind: number, level: number, variant: number): Body | null {
     const k = key(kind, level, variant);
     if (!this.bodies.has(k)) {
-      const mesh = this.meshes.get(k);
+      const mesh = this.meshFor(kind, level, variant);
       this.bodies.set(k, mesh ? bodyOfGeometry(mesh.geometry) : null);
     }
     return this.bodies.get(k) ?? null;
@@ -183,7 +198,7 @@ export class BuildingLayer {
     this.detail = detail;
     this.bodies.clear();
     for (const [id, mesh] of this.meshes) {
-      const variant = id % 16, group = Math.floor(id / 16);
+      const variant = id % 32, group = Math.floor(id / 32);
       const level = group % 4, kind = Math.floor(group / 4);
       const previous = mesh.geometry;
       mesh.geometry = buildingGeometry(kind, level, variant, detail);
@@ -212,6 +227,8 @@ export class BuildingLayer {
       }
       if (k === T_PATH && parkPathMask?.[i]) continue;
       const zone = isZone(k);
+      // The second lot of a pair: its zone is shown, but the building is the lead lot's.
+      const follower = zone && level[i] > 0 && isPairFollower(i);
       if (!zone && !isService(k)) continue;
       const multi = SERVICES[k]?.footprint;
       const turn = isService(k) ? (rot?.[i] ?? 0) & 3 : 0;
@@ -230,7 +247,7 @@ export class BuildingLayer {
         this.zones.setMatrixAt(nz, m4);
         this.zones.setColorAt(nz, col.setHex(ZONE_COLOR[k]));
         nz++;
-        if (level[i] === 0) continue;
+        if (level[i] === 0 || follower) continue;
       }
       const l = zone ? level[i] : 1;
       let variant = zone ? lotVariant(i) : 0;
@@ -244,7 +261,7 @@ export class BuildingLayer {
         if (n >= 0 && (raster.cover[n] || (isZone(kind[n]) && level[n] > 0) || (isService(kind[n]) && !isDecoration(kind[n])))) variant |= 1 << d;
       }
       const kk = key(k, l, variant);
-      const mesh = this.meshes.get(kk);
+      const mesh = this.meshFor(k, l, variant);
       if (!mesh) continue;
       const n = counts.get(kk) ?? 0;
       if (n >= mesh.instanceMatrix.count) continue;
@@ -279,6 +296,11 @@ export class BuildingLayer {
         }
         m4.compose(pos, q, scale);
         m4.multiply(pivot.makeTranslation(-(w - 1) / 2, 0, -(d - 1) / 2));
+      } else if (zone && lotPartner(i) >= 0) {
+        // A pair's building stands across both lots, in the middle between them.
+        const p = lotPartner(i);
+        pos.set((raster.lotX[i] + raster.lotX[p]) / 2 - half, 0, (raster.lotZ[i] + raster.lotZ[p]) / 2 - half);
+        m4.compose(pos, q, one);
       } else {
         // Turned to an angled road, a building shrinks across the ground to stay inside its cell.
         // In its road-aligned cell a building stands full size; on a bare tile it shrinks to fit.

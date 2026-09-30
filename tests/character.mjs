@@ -105,6 +105,34 @@ test('terrace runs: houses along one side of a street come in matching rows', ()
   assert.equal(V.terraceRun(side[0]), -1);
 });
 
+test('building sizes: shops pair up side by side, houses fill their lots, a row keeps one size', () => {
+  const net = new N.Network(); net.insertPath([{ x: 10, z: 20 }, { x: 60, z: 20 }], N.KIND_ROAD);
+  const r = rasterize(net), kind = new Uint8Array(N_TILES), level = new Uint8Array(N_TILES);
+  const shops = [], houses = [];
+  for (let x = 12; x < 58; x++) {
+    for (const [z, list, k] of [[21, shops, 3], [18, houses, T_RES]]) { const i = idx(x, z); if (r.accSeg[i] >= 0) { kind[i] = k; level[i] = 1; list.push(i); } }
+  }
+  V.assignVariants(kind, level, r, net);
+  const size = i => V.lotVariant(i) >> 3;
+  let pairs = 0;
+  for (const i of shops) {
+    const p = V.lotPartner(i);
+    if (p < 0) continue;
+    pairs++;
+    // Each pair is two neighbours along the same side, drawn once, in one design at the paired size.
+    assert.equal(V.lotPartner(p), i);
+    assert.ok(shops.includes(p) && Math.abs(p - i) === 1, 'beside each other along the street');
+    assert.equal(V.isPairFollower(i), p < i);
+    assert.equal(V.lotVariant(i), V.lotVariant(p));
+    assert.equal(size(i), 2);
+  }
+  assert.ok(pairs >= 8, `${pairs / 2} pairs among ${shops.length} shops`);
+  // Houses never pair, but some rows are built wall to wall and some are not, and a row keeps one size.
+  assert.ok(houses.every(i => V.lotPartner(i) < 0));
+  assert.ok(houses.some(i => size(i) === 1) && houses.some(i => size(i) === 0), 'both sizes of house');
+  for (let k = 1; k < houses.length; k++) if (V.terraceRun(houses[k]) === V.terraceRun(houses[k - 1])) assert.equal(size(houses[k]), size(houses[k - 1]));
+});
+
 test('building tints stay close to the paint, and a run is painted alike', () => {
   const a = { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } }, b = { ...a, set: a.set };
   for (let k = 0; k < 200; k++) {
